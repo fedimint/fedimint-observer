@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -97,7 +98,7 @@ impl ConsensusMetaCache {
             metas.get(&federation_id).cloned()
         };
 
-        match current_meta_cache_entry {
+        let mut maybe_meta = match current_meta_cache_entry {
             Some((meta, last_update_started)) => {
                 let now = SystemTime::now();
                 if now.duration_since(last_update_started).unwrap_or_default() > REFRESH_INTERVAL {
@@ -131,7 +132,23 @@ impl ConsensusMetaCache {
                 // TODO: deduplicate efforts by making the content of the map subscribable
                 Self::update_meta_cache(&self.metas, config).await
             }
+        };
+
+        if config.global.calculate_federation_id()
+            == FederationId::from_str(
+                "1bcb64e68ef0b3de3ad96cb98b43a2fd972a9ffa0fb6f0e26aaee69d1d463b97",
+            )
+            .expect("valid")
+        {
+            let mut meta_fields = maybe_meta.unwrap_or_default();
+            meta_fields.insert(
+                "federation_name".into(),
+                serde_json::Value::String("Global Bitcoin Federation".into()),
+            );
+            maybe_meta = Some(meta_fields);
         }
+
+        maybe_meta
     }
 
     pub async fn update_meta_cache(

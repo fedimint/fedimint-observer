@@ -1,5 +1,7 @@
+use std::str::FromStr;
+
 use axum::Json;
-use fedimint_core::config::JsonClientConfig;
+use fedimint_core::config::{FederationId, JsonClientConfig};
 use tracing::debug;
 use tracing::log::warn;
 
@@ -42,9 +44,23 @@ pub async fn federation_meta(
         None
     };
 
-    Ok(Json(merge_metas(&[
+    let mut meta_fields = merge_metas(&[
         maybe_consensus_meta.unwrap_or_default(),
         maybe_meta_override.unwrap_or_default(),
         meta_fields_config,
-    ])))
+    ]);
+
+    if cfg.global.calculate_federation_id()
+        == FederationId::from_str(
+            "1bcb64e68ef0b3de3ad96cb98b43a2fd972a9ffa0fb6f0e26aaee69d1d463b97",
+        )
+        .expect("valid")
+    {
+        meta_fields.insert(
+            "federation_name".into(),
+            serde_json::Value::String("Global Bitcoin Federation".into()),
+        );
+    }
+
+    Ok(Json(meta_fields))
 }
