@@ -86,7 +86,14 @@ impl FederationObserver {
                             });
                         let api_latency = start_time.elapsed();
 
-                        (peer_id, status, block_height, api_latency)
+                        let software_version = api
+                            .fedimintd_version(peer_id)
+                            .await
+                            .ok()
+                            .map(|version| version.trim().to_owned())
+                            .filter(|version| !version.is_empty());
+
+                        (peer_id, status, software_version, block_height, api_latency)
                     }
                 }))
                 .await;
@@ -94,9 +101,19 @@ impl FederationObserver {
             let mut conn = self.connection().await?;
             let dbtx = conn.transaction().await?;
             let timestamp = chrono::Utc::now().naive_utc();
-            for (peer_id, status, block_height, api_latency) in peer_status_responses {
+            for (peer_id, status, software_version, block_height, api_latency) in
+                peer_status_responses
+            {
                 dbtx.execute(
-                    "INSERT INTO guardian_health VALUES ($1, $2, $3, $4, $5, $6)",
+                    "INSERT INTO guardian_health (
+                        federation_id,
+                        time,
+                        guardian_id,
+                        status,
+                        block_height,
+                        latency_ms,
+                        software_version
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
                     &[
                         &federation_id.consensus_encode_to_vec(),
                         &timestamp,
@@ -104,6 +121,7 @@ impl FederationObserver {
                         &status.map(|s| serde_json::to_value(s).expect("Can be serialized")),
                         &block_height.map(|bh| bh as i32),
                         &(api_latency.as_millis() as i32),
+                        &software_version,
                     ],
                 )
                 .await?;
@@ -128,6 +146,7 @@ impl FederationObserver {
                 latest.guardian_id,
                 latest.block_height,
                 (latest.status -> 'federation' ->> 'session_count')::integer AS session_count,
+                latest.software_version,
                 last30d.uptime,
                 last30d.latency_ms
              FROM guardian_health latest
@@ -179,6 +198,7 @@ impl FederationObserver {
                 let health = GuardianHealth {
                     avg_uptime: row.uptime,
                     avg_latency: row.latency_ms,
+                    software_version: row.software_version,
                     latest,
                 };
 
@@ -254,6 +274,7 @@ struct GuardianHealthRow {
     guardian_id: i32,
     block_height: Option<i32>,
     session_count: Option<i32>,
+    software_version: Option<String>,
     uptime: f32,
     latency_ms: f32,
 }

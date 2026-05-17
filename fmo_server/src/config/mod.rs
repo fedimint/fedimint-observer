@@ -6,6 +6,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use fedimint_core::config::{FederationId, JsonClientConfig};
 use fedimint_core::invite_code::InviteCode;
+use fmo_api_types::GatewayInfo;
 use reqwest::Method;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
@@ -14,6 +15,7 @@ use crate::config::id::fetch_federation_id;
 use crate::config::meta::fetch_federation_meta;
 use crate::config::modules::fetch_federation_module_kinds;
 use crate::error::Result;
+use crate::federation::gateways::fetch_gateways_for_config;
 use crate::util::config_to_json;
 use crate::AppState;
 
@@ -28,6 +30,7 @@ pub mod modules;
 pub fn get_config_routes() -> Router<AppState> {
     let router = Router::new()
         .route("/:invite", get(fetch_federation_config))
+        .route("/:invite/gateways", get(fetch_federation_gateways))
         .route("/:invite/meta", get(fetch_federation_meta))
         .route("/:invite/id", get(fetch_federation_id))
         .route("/:invite/module_kinds", get(fetch_federation_module_kinds));
@@ -54,6 +57,16 @@ pub async fn fetch_federation_config(
         .fetch_config_cached(&invite)
         .await?
         .into())
+}
+
+pub async fn fetch_federation_gateways(
+    Path(invite): Path<InviteCode>,
+) -> Result<Json<Vec<GatewayInfo>>> {
+    let config = fedimint_api_client::api::net::Connector::default()
+        .download_from_invite_code(&invite)
+        .await?;
+    let gateways = fetch_gateways_for_config(&config).await?;
+    Ok(gateways.into())
 }
 
 #[derive(Default, Debug, Clone)]

@@ -46,6 +46,9 @@ pub fn Guardians(federation_id: FederationId, guardians: Vec<Guardian>) -> impl 
                                         let health = health.get(&PeerId::from(guardian_idx as u16)).expect("Guardian exists").clone();
 
                                         let mut badges = vec![];
+                                        let software_version = health
+                                            .software_version
+                                            .unwrap_or_else(|| "Version unknown".to_owned());
                                         if let Some(latest) = health.latest {
                                             badges.push(view! {
                                                 <Badge level=BadgeLevel::Success>
@@ -77,6 +80,11 @@ pub fn Guardians(federation_id: FederationId, guardians: Vec<Guardian>) -> impl 
                                                 </Badge>
                                             }.into_view());
                                         }
+                                        badges.push(view! {
+                                            <Badge level=BadgeLevel::Info>
+                                                {software_version}
+                                            </Badge>
+                                        }.into_view());
 
                                         view! { {badges} }.into_any()
                                     }

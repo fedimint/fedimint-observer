@@ -24,6 +24,7 @@ interface Guardian {
 interface GuardianHealth {
   avg_uptime: number;
   avg_latency: number;
+  software_version: string | null;
   latest: {
     block_height: number;
     block_outdated: boolean;
@@ -359,6 +360,7 @@ export function FederationDetail() {
                 const block = health?.latest ? health.latest.block_height - 1 : 0;
                 const sessionOutdated = health?.latest?.session_outdated || false;
                 const blockOutdated = health?.latest?.block_outdated || false;
+                const softwareVersion = health?.software_version || 'Version unknown';
 
                 return (
                   <div key={guardian.id} className="border-b border-gray-200 dark:border-gray-700 pb-3 sm:pb-4 last:border-0">
@@ -377,6 +379,9 @@ export function FederationDetail() {
                         <>
                           <Badge level={isOnline ? 'success' : 'error'}>
                             {isOnline ? 'Online' : 'Offline'}
+                          </Badge>
+                          <Badge level="info">
+                            {softwareVersion}
                           </Badge>
                           {isOnline && (
                             <>
@@ -438,6 +443,16 @@ export function FederationDetail() {
                   {config?.confirmations_required || 'N/A'}
                 </div>
               </div>
+              {id && (
+                <div>
+                  <Link
+                    to={`/federations/${id}/gateways`}
+                    className="inline-flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg focus:ring-4 focus:outline-none focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                  >
+                    Gateway Details
+                  </Link>
+                </div>
+              )}
               {federation?.invite && hasOnlineGuardian && (
                 <div>
                   <div className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mb-2">Invite Link</div>
