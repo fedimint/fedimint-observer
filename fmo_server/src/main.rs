@@ -41,6 +41,14 @@ struct Args {
         default_value = "https://mempool.space/api"
     )]
     mempool_url: String,
+
+    #[arg(
+        long,
+        env = "FO_VIEW_REFRESH_INTERVAL_SECS",
+        default_value_t = 60,
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    view_refresh_interval_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
                 &args.database,
                 &args.admin_auth,
                 &args.mempool_url,
+                args.view_refresh_interval_secs,
             )
             .await?,
         });

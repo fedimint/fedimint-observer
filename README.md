@@ -58,6 +58,8 @@ I currently run the public instance at https://observer.fedimint.org using the f
       FO_DATABASE = "postgresql:///fmo?user=fmo";
       # Set to your admin password, used to add federations to be observed via curl
       FO_ADMIN_AUTH = ;
+      # Seconds to wait between materialized view refreshes
+      FO_VIEW_REFRESH_INTERVAL_SECS = "60";
       ALLOW_CONFIG_CORS = "true";
     };
     serviceConfig = {
