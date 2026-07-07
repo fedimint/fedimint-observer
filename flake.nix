@@ -33,7 +33,7 @@
               wasm-pack
               trunk
               nodejs
-              nodePackages.tailwindcss
+              tailwindcss
             ];
           };
           targets = (pkgs.lib.getAttrs
@@ -130,7 +130,7 @@
                 wasm-pack
                 nodejs
                 binaryen
-                nodePackages.tailwindcss
+                tailwindcss
               ];
 
               FMO_API_SERVER = api;
