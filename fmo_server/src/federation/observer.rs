@@ -52,6 +52,7 @@ pub struct FederationObserver {
     mempool_url: String,
     task_group: TaskGroup,
     consensus_meta_cache: ConsensusMetaCache,
+    view_refresh_interval: Duration,
 }
 
 impl FederationObserver {
@@ -59,7 +60,13 @@ impl FederationObserver {
         database: &str,
         admin_auth: &str,
         mempool_url: &str,
+        view_refresh_interval_secs: u64,
     ) -> anyhow::Result<FederationObserver> {
+        ensure!(
+            view_refresh_interval_secs > 0,
+            "View refresh interval must be greater than zero"
+        );
+
         let connection_pool = {
             let pool_config = deadpool_postgres::Config {
                 url: Some(database.to_owned()),
@@ -74,6 +81,7 @@ impl FederationObserver {
             mempool_url: mempool_url.to_owned(),
             task_group: Default::default(),
             consensus_meta_cache: Default::default(),
+            view_refresh_interval: Duration::from_secs(view_refresh_interval_secs),
         };
 
         slf.setup_schema().await?;
@@ -1309,8 +1317,11 @@ impl FederationObserver {
                 warn!("Error while refreshing views: {e:?}");
             }
             let elapsed = start.elapsed().unwrap_or_default().as_secs_f64();
-            info!("Views refresh completed in {elapsed:.2}s. Waiting for next refresh window");
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            let wait_secs = self.view_refresh_interval.as_secs();
+            info!(
+                "Views refresh completed in {elapsed:.2}s. Waiting {wait_secs}s for next refresh window"
+            );
+            tokio::time::sleep(self.view_refresh_interval).await;
         }
     }
 
