@@ -1,18 +1,21 @@
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, ensure};
+use anyhow::{bail, ensure, Context};
 use bitcoin::hashes::Hash;
+use bitcoin::hex::DisplayHex as _;
 use bitcoin::{Address, OutPoint, Txid};
 use chrono::{DateTime, NaiveDate};
 use deadpool_postgres::{GenericClient, Runtime, Transaction};
 use fedimint_api_client::api::net::Connector;
-use fedimint_api_client::api::DynGlobalApi;
+use fedimint_api_client::api::{DynGlobalApi, FederationApiExt};
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::DynModuleConsensusItem;
 use fedimint_core::encoding::Encodable;
 use fedimint_core::epoch::ConsensusItem;
 use fedimint_core::invite_code::InviteCode;
+use fedimint_core::module::ApiRequestErased;
 use fedimint_core::session_outcome::SessionOutcome;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::util::backoff_util::background_backoff;
@@ -23,10 +26,14 @@ use fedimint_ln_common::{
     LightningConsensusItem, LightningInput, LightningOutput, LightningOutputV0,
 };
 use fedimint_mint_common::{MintConsensusItem, MintInput, MintOutput};
-use fedimint_wallet_common::{WalletConsensusItem, WalletInput, WalletOutput, WalletOutputV0};
+use fedimint_wallet_common::endpoint_constants::WALLET_SUMMARY_ENDPOINT;
+use fedimint_wallet_common::{
+    TxOutputSummary, WalletConsensusItem, WalletInput, WalletOutput, WalletOutputV0, WalletSummary,
+};
 use fmo_api_types::{
     FederationActivity, FederationHealth, FederationSummary, FederationUtxo, FedimintTotals,
-    NonceSpendInfo,
+    GuardianClaimedUtxo, GuardianClaimedUtxoOnchain, GuardianClaimedUtxoState, GuardianUtxoClaim,
+    GuardianUtxoClaimStatus, NonceSpendInfo,
 };
 use futures::future::join_all;
 use futures::StreamExt;
@@ -114,7 +121,7 @@ impl FederationObserver {
 
         let slf = self.clone();
         let federation_id = federation.federation_id;
-        let config = federation.config;
+        let config = federation.config.clone();
         self.task_group.spawn_cancellable(
             format!("Health Monitor for {}", federation_id),
             async move {
@@ -128,6 +135,24 @@ impl FederationObserver {
                 }
             }
             .instrument(info_span!("health", fed = %federation_id.to_prefix())),
+        );
+
+        let slf = self.clone();
+        let federation_id = federation.federation_id;
+        let config = federation.config;
+        self.task_group.spawn_cancellable(
+            format!("Gateway Monitor for {}", federation_id),
+            async move {
+                loop {
+                    let e = slf
+                        .monitor_gateways(federation_id, config.clone())
+                        .await
+                        .expect_err("gateway monitor task exited unexpectedly");
+                    error!("Gateway Monitor errored, restarting in 30s: {e}");
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                }
+            }
+            .instrument(info_span!("gateways", fed = %federation_id.to_prefix())),
         );
     }
 
@@ -191,6 +216,8 @@ impl FederationObserver {
                 "/schema/v8.sql",
                 FederationObserver::backfill_reprocess_all_sessions
             ),
+            migration!("/schema/v9.sql"),
+            migration!("/schema/v10.sql"),
         ];
 
         for (index, migration) in migrations.iter().enumerate() {
@@ -1157,11 +1184,8 @@ impl FederationObserver {
                 .await?;
             }
             WalletConsensusItem::PegOutSignature(peg_out_sig) => {
-                let peg_out_txid = peg_out_sig.txid.to_string();
-                let peg_out_txid_encoded =
-                    fedimint_core::TransactionId::from_str(peg_out_txid.as_str())
-                        .expect("Invalid on chain txid")
-                        .consensus_encode_to_vec();
+                let peg_out_txid = peg_out_sig.txid;
+                let peg_out_txid_encoded = peg_out_txid.to_byte_array().to_vec();
 
                 dbtx.execute(
                     "INSERT INTO wallet_withdrawal_transactions VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -1210,7 +1234,7 @@ impl FederationObserver {
 
                 // at this point, the transaction reached threshold and should broadcast
 
-                let esplora_txid = esplora_client::Txid::from_str(peg_out_txid.as_str())
+                let esplora_txid = esplora_client::Txid::from_str(&peg_out_txid.to_string())
                     .expect("Couldn't create esplora txid");
 
                 let builder = esplora_client::Builder::new(mempool_url);
@@ -1232,11 +1256,7 @@ impl FederationObserver {
                 .expect("Reached usize::MAX retries");
 
                 for input in fetched_tx.input {
-                    let prev_out_txid = fedimint_core::TransactionId::from_str(
-                        input.previous_output.txid.to_string().as_str(),
-                    )
-                    .expect("Invalid txid")
-                    .consensus_encode_to_vec();
+                    let prev_out_txid = input.previous_output.txid.to_byte_array().to_vec();
 
                     dbtx.execute(
                         "INSERT INTO wallet_withdrawal_transaction_inputs VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
@@ -1386,6 +1406,208 @@ impl FederationObserver {
                 amount: Amount::from_msats(utxo.amount_msat.try_into()?),
             })
         }).collect()
+    }
+
+    pub async fn guardian_utxo_claims(
+        &self,
+        federation_id: FederationId,
+    ) -> anyhow::Result<Vec<GuardianUtxoClaim>> {
+        let federation = self
+            .get_federation(federation_id)
+            .await?
+            .context("Federation not observed")?;
+        let config = federation.config;
+
+        let Some(wallet_module_id) = config
+            .modules
+            .iter()
+            .find_map(|(id, module)| (module.kind.as_str() == "wallet").then_some(*id))
+        else {
+            return Ok(config
+                .global
+                .api_endpoints
+                .keys()
+                .map(|peer_id| GuardianUtxoClaim {
+                    guardian_id: peer_id.to_usize() as u16,
+                    status: GuardianUtxoClaimStatus::Unavailable,
+                    utxos: Vec::new(),
+                    error: Some("federation config has no wallet module".to_owned()),
+                })
+                .collect());
+        };
+
+        let api = DynGlobalApi::from_endpoints(
+            config
+                .global
+                .api_endpoints
+                .iter()
+                .map(|(peer_id, peer_url)| (*peer_id, peer_url.url.clone())),
+            &None,
+        )
+        .await?;
+
+        let module_api = api.with_module(wallet_module_id);
+        Ok(join_all(config.global.api_endpoints.keys().map(|peer_id| {
+            let module_api = module_api.clone();
+            let peer_id = *peer_id;
+            async move {
+                match module_api
+                    .request_single_peer::<WalletSummary>(
+                        WALLET_SUMMARY_ENDPOINT.to_owned(),
+                        ApiRequestErased::default(),
+                        peer_id,
+                    )
+                    .await
+                {
+                    Ok(summary) => GuardianUtxoClaim {
+                        guardian_id: peer_id.to_usize() as u16,
+                        status: GuardianUtxoClaimStatus::Ok,
+                        utxos: wallet_summary_claimed_utxos(summary),
+                        error: None,
+                    },
+                    Err(error) => GuardianUtxoClaim {
+                        guardian_id: peer_id.to_usize() as u16,
+                        status: GuardianUtxoClaimStatus::Error,
+                        utxos: Vec::new(),
+                        error: Some(error.to_string()),
+                    },
+                }
+            }
+        }))
+        .await)
+    }
+
+    pub async fn enrich_guardian_claims_onchain(&self, guardian_claims: &mut [GuardianUtxoClaim]) {
+        let outpoints = guardian_claims
+            .iter()
+            .filter(|claim| matches!(claim.status, GuardianUtxoClaimStatus::Ok))
+            .flat_map(|claim| claim.utxos.iter().map(|utxo| utxo.out_point))
+            .collect::<HashSet<_>>();
+
+        if outpoints.is_empty() {
+            return;
+        }
+
+        let resolutions = self.resolve_onchain_outpoints(outpoints).await;
+        for claim in guardian_claims {
+            for utxo in &mut claim.utxos {
+                if let Some(resolution) = resolutions.get(&utxo.out_point) {
+                    match resolution {
+                        Ok(onchain) => {
+                            utxo.onchain = Some(onchain.clone());
+                            utxo.resolution_error = None;
+                        }
+                        Err(error) => {
+                            utxo.onchain = None;
+                            utxo.resolution_error = Some(error.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn resolve_onchain_outpoints(
+        &self,
+        outpoints: HashSet<OutPoint>,
+    ) -> HashMap<OutPoint, Result<GuardianClaimedUtxoOnchain, String>> {
+        let mut outpoints_by_txid = HashMap::<Txid, Vec<OutPoint>>::new();
+        for outpoint in outpoints {
+            outpoints_by_txid
+                .entry(outpoint.txid)
+                .or_default()
+                .push(outpoint);
+        }
+
+        let client = match esplora_client::Builder::new(&self.mempool_url).build_async() {
+            Ok(client) => client,
+            Err(error) => {
+                return outpoints_by_txid
+                    .into_values()
+                    .flatten()
+                    .into_iter()
+                    .map(|outpoint| {
+                        (
+                            outpoint,
+                            Err(format!("failed to create Esplora client: {error}")),
+                        )
+                    })
+                    .collect();
+            }
+        };
+
+        join_all(outpoints_by_txid.into_iter().map(|(txid, outpoints)| {
+            let client = client.clone();
+            async move {
+                let tx = match client.get_tx_no_opt(&txid).await {
+                    Ok(tx) => tx,
+                    Err(error) => {
+                        return outpoints
+                            .into_iter()
+                            .map(|outpoint| {
+                                (
+                                    outpoint,
+                                    Err(format!("failed to fetch transaction: {error}")),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                    }
+                };
+
+                let status = match client.get_tx_status(&txid).await {
+                    Ok(status) => status,
+                    Err(error) => {
+                        return outpoints
+                            .into_iter()
+                            .map(|outpoint| {
+                                (
+                                    outpoint,
+                                    Err(format!("failed to fetch transaction status: {error}")),
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                    }
+                };
+
+                outpoints
+                    .into_iter()
+                    .map(|outpoint| {
+                        let result = tx
+                            .output
+                            .get(outpoint.vout as usize)
+                            .ok_or_else(|| {
+                                format!("transaction does not have vout {}", outpoint.vout)
+                            })
+                            .map(|output| {
+                                let address = Address::from_script(
+                                    &output.script_pubkey,
+                                    bitcoin::Network::Bitcoin,
+                                )
+                                .ok()
+                                .map(|address| address.to_string());
+
+                                GuardianClaimedUtxoOnchain {
+                                    script_pubkey: output
+                                        .script_pubkey
+                                        .as_bytes()
+                                        .as_hex()
+                                        .to_string(),
+                                    address,
+                                    amount: Amount::from_sats(output.value.to_sat()),
+                                    confirmed: status.confirmed,
+                                    block_height: status.block_height,
+                                }
+                            });
+
+                        (outpoint, result)
+                    })
+                    .collect::<Vec<_>>()
+            }
+        }))
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     pub async fn totals(&self) -> anyhow::Result<FedimintTotals> {
@@ -1580,6 +1802,50 @@ impl FederationObserver {
 
         Ok(())
     }
+}
+
+fn wallet_summary_claimed_utxos(summary: WalletSummary) -> Vec<GuardianClaimedUtxo> {
+    let mut utxos = Vec::new();
+    append_claimed_utxos(
+        &mut utxos,
+        summary.spendable_utxos,
+        GuardianClaimedUtxoState::Spendable,
+    );
+    append_claimed_utxos(
+        &mut utxos,
+        summary.unsigned_peg_out_txos,
+        GuardianClaimedUtxoState::UnsignedPegOut,
+    );
+    append_claimed_utxos(
+        &mut utxos,
+        summary.unsigned_change_utxos,
+        GuardianClaimedUtxoState::UnsignedChange,
+    );
+    append_claimed_utxos(
+        &mut utxos,
+        summary.unconfirmed_peg_out_txos,
+        GuardianClaimedUtxoState::UnconfirmedPegOut,
+    );
+    append_claimed_utxos(
+        &mut utxos,
+        summary.unconfirmed_change_utxos,
+        GuardianClaimedUtxoState::UnconfirmedChange,
+    );
+    utxos
+}
+
+fn append_claimed_utxos(
+    utxos: &mut Vec<GuardianClaimedUtxo>,
+    txos: Vec<TxOutputSummary>,
+    state: GuardianClaimedUtxoState,
+) {
+    utxos.extend(txos.into_iter().map(|txo| GuardianClaimedUtxo {
+        out_point: txo.outpoint,
+        amount: Amount::from_sats(txo.amount.to_sat()),
+        state,
+        onchain: None,
+        resolution_error: None,
+    }));
 }
 
 fn last_n_day_iter(now: NaiveDate, days: u32) -> impl Iterator<Item = NaiveDate> {

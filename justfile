@@ -96,7 +96,7 @@ clippy_package PACKAGE *ARGS="--locked":
 
 clippy *ARGS="--locked":
   just clippy_package fmo_server {{ARGS}}
-  RUSTFLAGS="$RUSTFLAGS --cfg getrandom_backend=\"wasm_js\"" just clippy_package fmo_frontend --target wasm32-unknown-unknown {{ARGS}}
+  RUSTFLAGS="${RUSTFLAGS:-} --cfg getrandom_backend=\"wasm_js\"" just clippy_package fmo_frontend --target wasm32-unknown-unknown {{ARGS}}
 
 # run `cargo clippy --fix` on everything
 clippy_fix-package PACKAGE *ARGS="--locked --offline":

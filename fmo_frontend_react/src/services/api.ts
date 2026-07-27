@@ -1,4 +1,10 @@
-import type { FedimintTotals, FederationSummary } from '../types/api';
+import type {
+  FedimintTotals,
+  FederationSummary,
+  FederationUtxosResponse,
+  GatewayInfo,
+  GatewayWindow,
+} from '../types/api';
 
 const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
 
@@ -51,7 +57,7 @@ export const api = {
     return response.json();
   },
 
-  async getFederationUtxos(id: string): Promise<unknown[]> {
+  async getFederationUtxos(id: string): Promise<FederationUtxosResponse> {
     const response = await fetch(`${BASE_URL}/federations/${id}/utxos`);
     if (!response.ok) {
       throw new Error(`Failed to fetch UTXOs for federation ${id}`);
@@ -71,6 +77,24 @@ export const api = {
     const response = await fetch(`${BASE_URL}/federations/${id}/health`);
     if (!response.ok) {
       throw new Error(`Failed to fetch health for federation ${id}`);
+    }
+    return response.json();
+  },
+
+  async getFederationGateways(id: string, window?: GatewayWindow): Promise<GatewayInfo[]> {
+    const query = window ? `?window=${encodeURIComponent(window)}` : '';
+    const response = await fetch(`${BASE_URL}/federations/${id}/gateways${query}`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch gateways for federation ${id} (${response.status})`);
+    }
+    return response.json();
+  },
+
+  async getFederationGatewaysByInvite(inviteCode: string): Promise<GatewayInfo[]> {
+    const encodedInvite = encodeURIComponent(inviteCode);
+    const response = await fetch(`${BASE_URL}/config/${encodedInvite}/gateways`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch gateways by invite (${response.status})`);
     }
     return response.json();
   },

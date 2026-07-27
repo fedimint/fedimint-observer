@@ -196,7 +196,7 @@ impl FederationObserver {
             FROM transactions t
                      JOIN
                  session_times st ON t.session_index = st.session_index AND t.federation_id = st.federation_id
-                     JOIN
+                     LEFT JOIN
                  (SELECT federation_id,
                          txid,
                          SUM(amount_msat) AS total_input_amount

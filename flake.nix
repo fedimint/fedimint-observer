@@ -13,6 +13,13 @@
       let
         pkgs = import nixpkgs {
           inherit system;
+          overlays = [
+            (final: prev: {
+              nodePackages = {
+                bash-language-server = final.bash-language-server;
+              };
+            })
+          ];
         };
         flakeboxLib = flakebox.lib.mkLib pkgs { };
         lib = pkgs.lib;
@@ -33,7 +40,7 @@
               wasm-pack
               trunk
               nodejs
-              nodePackages.tailwindcss
+              tailwindcss
             ];
           };
           targets = (pkgs.lib.getAttrs
@@ -130,7 +137,7 @@
                 wasm-pack
                 nodejs
                 binaryen
-                nodePackages.tailwindcss
+                tailwindcss
               ];
 
               FMO_API_SERVER = api;
@@ -157,7 +164,7 @@
             # Get the npm dependencies hash
             # To update: nix build .#fmo_frontend_react_default --impure
             # and use the hash from the error message
-            npmDepsHash = "sha256-d04Zjrg1mOhnO7FgG6rvDSh0ovt+z7PqIE8FCSG2Czk=";
+            npmDepsHash = "sha256-j+iWBBnZQLHcFx65dkyET3nKjT3W7WQQDI722xVyJNg=";
           in
           rec {
             fmo_frontend_react = api: pkgs.buildNpmPackage {

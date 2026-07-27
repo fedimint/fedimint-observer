@@ -1,4 +1,5 @@
 pub mod db;
+pub(crate) mod gateways;
 mod guardians;
 mod meta;
 pub(crate) mod nostr;
@@ -6,19 +7,27 @@ pub mod observer;
 mod session;
 mod transaction;
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Context;
 use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use axum_auth::AuthBearer;
+use bitcoin::OutPoint;
 use fedimint_core::config::{ClientConfig, FederationId, JsonClientConfig};
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
-use fmo_api_types::{FederationSummary, FedimintTotals, NonceSpendInfo, NoncesRequest};
+use fmo_api_types::{
+    FederationSummary, FederationUtxo, FederationUtxosResponse, FedimintTotals,
+    GuardianClaimedUtxo, GuardianUtxoClaim, GuardianUtxoClaimStatus, GuardianUtxoDisagreement,
+    NonceSpendInfo, NoncesRequest,
+};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::federation::gateways::get_federation_gateways;
 use crate::federation::guardians::get_federation_health;
 use crate::federation::meta::get_federation_meta;
 use crate::federation::session::{count_sessions, list_sessions};
@@ -55,6 +64,7 @@ pub fn get_federations_routes() -> Router<AppState> {
             "/:federation_id/transactions/histogram",
             get(transaction_histogram),
         )
+        .route("/:federation_id/gateways", get(get_federation_gateways))
         .route("/:federation_id/utxos", get(get_federation_utxos))
         .route("/:federation_id/sessions", get(list_sessions))
         .route("/:federation_id/sessions/count", get(count_sessions))
@@ -130,12 +140,194 @@ async fn get_federation_overview(
 async fn get_federation_utxos(
     Path(federation_id): Path<FederationId>,
     State(state): State<AppState>,
-) -> crate::error::Result<Json<Vec<fmo_api_types::FederationUtxo>>> {
+) -> crate::error::Result<Json<FederationUtxosResponse>> {
     let utxos = state
         .federation_observer
         .federation_utxos(federation_id)
         .await?;
-    Ok(utxos.into())
+    let mut guardian_claims = state
+        .federation_observer
+        .guardian_utxo_claims(federation_id)
+        .await?;
+    state
+        .federation_observer
+        .enrich_guardian_claims_onchain(&mut guardian_claims)
+        .await;
+    let disagreements = guardian_utxo_disagreements(&utxos, &guardian_claims);
+    Ok(FederationUtxosResponse {
+        observed: utxos,
+        guardian_claims,
+        disagreements,
+    }
+    .into())
+}
+
+fn guardian_utxo_disagreements(
+    observed: &[FederationUtxo],
+    guardian_claims: &[GuardianUtxoClaim],
+) -> Vec<GuardianUtxoDisagreement> {
+    let observed_by_outpoint = observed
+        .iter()
+        .map(|utxo| (utxo.out_point, utxo))
+        .collect::<HashMap<_, _>>();
+    let successful_claims = guardian_claims
+        .iter()
+        .filter(|claim| matches!(claim.status, GuardianUtxoClaimStatus::Ok))
+        .collect::<Vec<_>>();
+
+    if successful_claims.is_empty() {
+        return if guardian_claims.is_empty() {
+            Vec::new()
+        } else {
+            vec![GuardianUtxoDisagreement {
+                out_point: OutPoint::null(),
+                description: "no guardian wallet summaries could be fetched".to_owned(),
+            }]
+        };
+    }
+
+    let claimed_by_outpoint = successful_claims
+        .iter()
+        .flat_map(|claim| {
+            claim
+                .utxos
+                .iter()
+                .map(|utxo| (utxo.out_point, (claim.guardian_id, utxo)))
+        })
+        .fold(
+            HashMap::<OutPoint, Vec<(u16, &GuardianClaimedUtxo)>>::new(),
+            |mut acc, (out_point, claim)| {
+                acc.entry(out_point).or_default().push(claim);
+                acc
+            },
+        );
+
+    let mut disagreements = Vec::new();
+
+    for claim in &successful_claims {
+        for utxo in &claim.utxos {
+            if let Some(onchain) = &utxo.onchain {
+                if onchain.amount != utxo.amount {
+                    disagreements.push(GuardianUtxoDisagreement {
+                        out_point: utxo.out_point,
+                        description: format!(
+                            "guardian {} reports {} msat, but resolved Bitcoin output has {} msat",
+                            claim.guardian_id, utxo.amount.msats, onchain.amount.msats
+                        ),
+                    });
+                }
+            } else if let Some(error) = &utxo.resolution_error {
+                disagreements.push(GuardianUtxoDisagreement {
+                    out_point: utxo.out_point,
+                    description: format!(
+                        "could not resolve guardian {} claimed outpoint from Bitcoin data: {error}",
+                        claim.guardian_id
+                    ),
+                });
+            }
+        }
+    }
+
+    for observed_utxo in observed {
+        let Some(claims) = claimed_by_outpoint.get(&observed_utxo.out_point) else {
+            disagreements.push(GuardianUtxoDisagreement {
+                out_point: observed_utxo.out_point,
+                description: "observer has UTXO but no successful guardian claims it".to_owned(),
+            });
+            continue;
+        };
+
+        let mismatched_guardians = claims
+            .iter()
+            .filter(|(_, claim)| claim.amount != observed_utxo.amount)
+            .map(|(guardian_id, claim)| {
+                format!("guardian {guardian_id} reports {} msat", claim.amount.msats)
+            })
+            .collect::<Vec<_>>();
+
+        if !mismatched_guardians.is_empty() {
+            disagreements.push(GuardianUtxoDisagreement {
+                out_point: observed_utxo.out_point,
+                description: format!(
+                    "observer reports {} msat, but {}",
+                    observed_utxo.amount.msats,
+                    mismatched_guardians.join(", ")
+                ),
+            });
+        }
+
+        let observed_address = observed_utxo.address.clone().assume_checked().to_string();
+        let mismatched_addresses = claims
+            .iter()
+            .filter_map(|(guardian_id, claim)| {
+                claim
+                    .onchain
+                    .as_ref()
+                    .and_then(|onchain| onchain.address.as_ref())
+                    .filter(|address| *address != &observed_address)
+                    .map(|address| format!("guardian {guardian_id} resolves to address {address}"))
+            })
+            .collect::<Vec<_>>();
+
+        if !mismatched_addresses.is_empty() {
+            disagreements.push(GuardianUtxoDisagreement {
+                out_point: observed_utxo.out_point,
+                description: format!(
+                    "observer reconstructs address {}, but {}",
+                    observed_address,
+                    mismatched_addresses.join(", ")
+                ),
+            });
+        }
+    }
+
+    for (out_point, claims) in &claimed_by_outpoint {
+        if !observed_by_outpoint.contains_key(out_point) {
+            let guardian_ids = claims
+                .iter()
+                .map(|(guardian_id, _)| guardian_id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let onchain_hint = claims
+                .iter()
+                .find_map(|(_, claim)| claim.onchain.as_ref())
+                .map(|onchain| {
+                    format!(
+                        "; resolved script_pubkey: {}; address: {}",
+                        onchain.script_pubkey,
+                        onchain.address.as_deref().unwrap_or("non-standard")
+                    )
+                })
+                .unwrap_or_default();
+            disagreements.push(GuardianUtxoDisagreement {
+                out_point: *out_point,
+                description: format!(
+                    "guardian wallet summary claims UTXO, but observer reconstruction does not; guardians: {guardian_ids}{onchain_hint}"
+                ),
+            });
+        }
+    }
+
+    for claim in successful_claims {
+        let guardian_outpoints = claim
+            .utxos
+            .iter()
+            .map(|utxo| utxo.out_point)
+            .collect::<HashSet<_>>();
+        for out_point in claimed_by_outpoint.keys() {
+            if !guardian_outpoints.contains(out_point) {
+                disagreements.push(GuardianUtxoDisagreement {
+                    out_point: *out_point,
+                    description: format!(
+                        "guardian {} did not claim UTXO claimed by another successful guardian",
+                        claim.guardian_id
+                    ),
+                });
+            }
+        }
+    }
+
+    disagreements
 }
 
 async fn get_federation_totals(
