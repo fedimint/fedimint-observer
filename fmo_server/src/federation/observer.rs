@@ -191,6 +191,7 @@ impl FederationObserver {
                 "/schema/v8.sql",
                 FederationObserver::backfill_reprocess_all_sessions
             ),
+            migration!("/schema/v9.sql"),
         ];
 
         for (index, migration) in migrations.iter().enumerate() {
@@ -1403,13 +1404,17 @@ impl FederationObserver {
             .filter(|&health| *health == FederationHealth::Offline)
             .count() as u64;
 
+        // Reads the counters maintained by the triggers introduced in v9 instead of
+        // aggregating over `transactions` and `transaction_inputs`, which meant a full
+        // scan of both tables (~1.3GB) on every request.
         let totals = query_one::<FedimintTotalsResult>(
             &self.connection().await?,
             // language=postgresql
             "
-                SELECT (SELECT count(*) from federations)::bigint               as federations,
-                       (SELECT count(*) from transactions)::bigint               as tx_count,
-                       (SELECT sum(amount_msat) from transaction_inputs)::bigint as tx_volume
+                SELECT (SELECT count(*) from federations)::bigint as federations,
+                       COALESCE(sum(tx_count), 0)::bigint         as tx_count,
+                       COALESCE(sum(tx_volume_msat), 0)::bigint   as tx_volume
+                FROM federation_totals
             ",
             &[],
         )
