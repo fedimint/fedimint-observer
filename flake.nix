@@ -16,7 +16,6 @@
         };
         flakeboxLib = flakebox.lib.mkLib pkgs { };
         lib = pkgs.lib;
-        stdenv = pkgs.stdenv;
 
         toolchains = flakeboxLib.mkFenixToolchain {
           components = [
@@ -151,8 +150,6 @@
             pkgs.nixpkgs-fmt
             # cmake is required for building aws-lc-sys (fedimint dependency)
             pkgs.cmake
-          ] ++ lib.optionals stdenv.isDarwin [
-            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
           ];
 
           shellHook = ''
