@@ -30,6 +30,38 @@ export interface FederationUtxo {
   amount: number;
 }
 
+export interface GatewayInfo {
+  gateway_id: string;
+  node_pub_key: string;
+  lightning_alias: string;
+  api_endpoint: string;
+  vetted: boolean;
+  raw?: Record<string, unknown>;
+  first_seen?: string;
+  last_seen?: string;
+  activity_7d?: GatewayActivityMetrics;
+  activity_window?: GatewayActivityMetrics;
+  uptime_window?: GatewayUptimeMetrics;
+  metrics_window?: GatewayWindow;
+}
+
+export interface GatewayActivityMetrics {
+  fund_count: number;
+  settle_count: number;
+  cancel_count: number;
+  total_volume_msat: number;
+}
+
+export interface GatewayUptimeMetrics {
+  sample_count: number;
+  seen_samples: number;
+  online_minutes: number;
+  offline_minutes: number;
+  uptime_pct: number;
+}
+
+export type GatewayWindow = '1h' | '24h' | '7d' | '30d' | '90d';
+
 export interface GuardianHealth {
   avg_uptime: number;
   avg_latency: number;

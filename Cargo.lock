@@ -2185,6 +2185,7 @@ dependencies = [
  "chrono",
  "fedimint-core 0.10.0",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -122,7 +122,7 @@ impl FederationObserver {
 
         let slf = self.clone();
         let federation_id = federation.federation_id;
-        let config = federation.config;
+        let config = federation.config.clone();
         self.task_group.spawn_cancellable(
             format!("Health Monitor for {}", federation_id),
             async move {
@@ -136,6 +136,24 @@ impl FederationObserver {
                 }
             }
             .instrument(info_span!("health", fed = %federation_id.to_prefix())),
+        );
+
+        let slf = self.clone();
+        let federation_id = federation.federation_id;
+        let config = federation.config;
+        self.task_group.spawn_cancellable(
+            format!("Gateway Monitor for {}", federation_id),
+            async move {
+                loop {
+                    let e = slf
+                        .monitor_gateways(federation_id, config.clone())
+                        .await
+                        .expect_err("gateway monitor task exited unexpectedly");
+                    error!("Gateway Monitor errored, restarting in 30s: {e}");
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                }
+            }
+            .instrument(info_span!("gateways", fed = %federation_id.to_prefix())),
         );
     }
 
@@ -200,6 +218,7 @@ impl FederationObserver {
                 FederationObserver::backfill_reprocess_all_sessions
             ),
             migration!("/schema/v9.sql"),
+            migration!("/schema/v10.sql"),
         ];
 
         for (index, migration) in migrations.iter().enumerate() {

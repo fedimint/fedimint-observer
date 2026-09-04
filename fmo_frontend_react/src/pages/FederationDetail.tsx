@@ -438,6 +438,16 @@ export function FederationDetail() {
                   {config?.confirmations_required || 'N/A'}
                 </div>
               </div>
+              {id && (
+                <div>
+                  <Link
+                    to={`/federations/${id}/gateways`}
+                    className="inline-flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg focus:ring-4 focus:outline-none focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                  >
+                    Gateway Details
+                  </Link>
+                </div>
+              )}
               {federation?.invite && hasOnlineGuardian && (
                 <div>
                   <div className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mb-2">Invite Link</div>
