@@ -185,9 +185,11 @@ impl FederationObserver {
         Ok(health_rows
             .into_iter()
             .map(|row| {
-                let latest = if row.session_count.is_some() && row.block_height.is_some() {
-                    let block_height = row.block_height.expect("checked above") as u32;
-                    let session_count = row.session_count.expect("checked above") as u32;
+                let latest = if let (Some(block_height), Some(session_count)) =
+                    (row.block_height, row.session_count)
+                {
+                    let block_height = block_height as u32;
+                    let session_count = session_count as u32;
                     Some(GuardianHealthLatest {
                         block_height,
                         block_outdated: our_block_height.saturating_sub(block_height) > 6,

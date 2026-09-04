@@ -388,18 +388,34 @@ impl FederationObserver {
         let now = chrono::offset::Utc::now();
 
         // language=postgresql
+        // Note: the previous version summed each transaction's inputs via a
+        // correlated subquery re-executed once per matching transaction row
+        // (an N+1 pattern) instead of once total -- on a federation with
+        // hundreds of thousands of transactions this meant hundreds of
+        // thousands of separate subquery executions. This version narrows to
+        // the relevant (federation, time-window) transactions first, then
+        // aggregates only the transaction_inputs belonging to those specific
+        // transactions, computing each sum once instead of once per row.
         let activity = query::<FederationActivityRow>(&self.connection().await?, "
-            SELECT DATE(st.estimated_session_timestamp) AS date,
-                   COUNT(DISTINCT t.txid)::bigint       AS tx_count,
-                   COALESCE(SUM((SELECT SUM(amount_msat)
-                        FROM transaction_inputs
-                        WHERE transaction_inputs.txid = t.txid AND transaction_inputs.federation_id = t.federation_id))::bigint, 0)   AS total_amount
-            FROM transactions t
-                     JOIN
-                 session_times st ON t.session_index = st.session_index AND t.federation_id = st.federation_id
-            WHERE t.federation_id = $1  AND st.estimated_session_timestamp >= $2
-            GROUP BY date
-            ORDER BY date;
+            WITH windowed_txns AS (
+                SELECT t.txid, t.federation_id, DATE(st.estimated_session_timestamp) AS date
+                FROM transactions t
+                JOIN session_times st ON t.session_index = st.session_index AND t.federation_id = st.federation_id
+                WHERE t.federation_id = $1 AND st.estimated_session_timestamp >= $2
+            ),
+            input_sums AS (
+                SELECT wt.txid, SUM(ti.amount_msat) AS total_amount
+                FROM windowed_txns wt
+                JOIN transaction_inputs ti ON ti.federation_id = wt.federation_id AND ti.txid = wt.txid
+                GROUP BY wt.txid
+            )
+            SELECT wt.date,
+                   COUNT(DISTINCT wt.txid)::bigint AS tx_count,
+                   COALESCE(SUM(ins.total_amount), 0)::bigint AS total_amount
+            FROM windowed_txns wt
+            LEFT JOIN input_sums ins ON ins.txid = wt.txid
+            GROUP BY wt.date
+            ORDER BY wt.date;
         ", &[&federation_id.consensus_encode_to_vec(), &(now - chrono::Duration::days(8)).naive_utc()]).await?;
 
         Ok(last_n_day_iter(now.date_naive(), days)
