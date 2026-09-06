@@ -1,3 +1,4 @@
+mod api_announcements;
 pub mod db;
 mod guardians;
 mod meta;

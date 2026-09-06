@@ -6,7 +6,6 @@ use bitcoin::hashes::Hash;
 use bitcoin::{Address, OutPoint, Txid};
 use chrono::{DateTime, NaiveDate};
 use deadpool_postgres::{GenericClient, Runtime, Transaction};
-use fedimint_api_client::api::DynGlobalApi;
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::DynModuleConsensusItem;
@@ -200,6 +199,7 @@ impl FederationObserver {
                 FederationObserver::backfill_reprocess_all_sessions
             ),
             migration!("/schema/v9.sql"),
+            migration!("/schema/v10.sql"),
         ];
 
         for (index, migration) in migrations.iter().enumerate() {
@@ -320,9 +320,19 @@ impl FederationObserver {
             async move {
                 let deposits = self.get_federation_assets(federation.federation_id).await?;
 
+                let resolved_urls = self
+                    .resolved_api_urls(federation.federation_id, &federation.config)
+                    .await?;
+                let mut resolved_config = federation.config.clone();
+                for (peer_id, url) in &resolved_urls {
+                    if let Some(endpoint) = resolved_config.global.api_endpoints.get_mut(peer_id) {
+                        endpoint.url = url.clone();
+                    }
+                }
+
                 let name = self
                     .consensus_meta_cache
-                    .fetch_meta_cached(&federation.config.to_json())
+                    .fetch_meta_cached(&resolved_config.to_json())
                     .await
                     .and_then(|meta| meta.get_as::<String>("federation_name"))
                     .or_else(|| {
@@ -343,8 +353,7 @@ impl FederationObserver {
                     .federation_activity(federation.federation_id, 7)
                     .await?;
 
-                let (first_peer_id, first_peer_url) = federation
-                    .config
+                let (first_peer_id, first_peer_url) = resolved_config
                     .global
                     .api_endpoints
                     .first_key_value()
@@ -546,13 +555,13 @@ impl FederationObserver {
         federation_id: FederationId,
         config: ClientConfig,
     ) -> anyhow::Result<()> {
-        let peers = config
-            .global
-            .api_endpoints
-            .iter()
-            .map(|(&peer_id, peer_url)| (peer_id, peer_url.url.clone()))
-            .collect();
-        let api = DynGlobalApi::new(self.connectors.clone(), peers, None)?;
+        let mut api = self.api_for_federation(federation_id, &config).await?;
+        if self
+            .refresh_api_announcements(federation_id, &config, &api)
+            .await?
+        {
+            api = self.api_for_federation(federation_id, &config).await?;
+        }
         let decoders = decoders_from_config(&config);
 
         info!("Starting background job for {federation_id}");

@@ -6,6 +6,13 @@ clear to users what is and isn't visible I hope to make Fedimint more transparen
 Furthermore, I hope that it can inform developer decisions around improving privacy by having access to easily queryable
 federation data to quantify possible privacy improvements.
 
+Guardian API URLs are refreshed from the federation's signed endpoint
+announcements. Verified newer announcements are stored in PostgreSQL; health
+connections rebuild immediately, and session and metadata connections plus
+generated invite codes reuse the stored URLs. Older
+federations without broadcast public keys continue using their configured
+endpoints because their announcements cannot be authenticated.
+
 Currently, Fedimint Observer consists of two sub-APIs:
 
 ## Federation Observer

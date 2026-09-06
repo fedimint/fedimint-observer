@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Context};
 use axum::extract::{Path, State};
 use axum::Json;
-use fedimint_api_client::api::{DynGlobalApi, FederationApiExt, StatusResponse};
+use fedimint_api_client::api::{FederationApiExt, StatusResponse};
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::encoding::Encodable;
 use fedimint_core::endpoint_constants::STATUS_ENDPOINT;
@@ -25,15 +25,11 @@ impl FederationObserver {
         config: ClientConfig,
     ) -> anyhow::Result<()> {
         const REQUEST_INTERVAL: Duration = Duration::from_secs(60);
+        const API_ANNOUNCEMENT_REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
         let mut interval = tokio::time::interval(REQUEST_INTERVAL);
-        let peers = config
-            .global
-            .api_endpoints
-            .iter()
-            .map(|(&peer_id, peer_url)| (peer_id, peer_url.url.clone()))
-            .collect();
-        let api = DynGlobalApi::new(self.connectors().clone(), peers, None)?;
+        let mut api = self.api_for_federation(federation_id, &config).await?;
+        let mut next_api_announcement_refresh = Instant::now();
 
         let wallet_module = config
             .modules
@@ -45,6 +41,16 @@ impl FederationObserver {
 
         loop {
             interval.tick().await;
+
+            if Instant::now() >= next_api_announcement_refresh {
+                if self
+                    .refresh_api_announcements(federation_id, &config, &api)
+                    .await?
+                {
+                    api = self.api_for_federation(federation_id, &config).await?;
+                }
+                next_api_announcement_refresh = Instant::now() + API_ANNOUNCEMENT_REFRESH_INTERVAL;
+            }
 
             let peer_status_responses =
                 join_all(config.global.api_endpoints.keys().map(|&peer_id| {

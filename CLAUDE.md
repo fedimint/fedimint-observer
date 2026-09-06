@@ -73,7 +73,7 @@ just test_package fmo_server
 
 ### Key Patterns
 1. **Shared Types**: All API types are defined in `fmo_api_types` and used by both frontend and backend
-2. **Database Migrations**: Version-controlled SQL migrations in `fmo_server/schema/` (v0-v8)
+2. **Database Migrations**: Version-controlled SQL migrations in `fmo_server/schema/` (v0-v10)
 3. **Background Monitoring**: `FederationObserver` spawns tasks to monitor multiple federations concurrently
 4. **State Management**: Backend uses shared app state with Arc/RwLock for thread safety
 5. **Error Handling**: Custom `AppError` type wrapping `anyhow::Error` for consistent error propagation
