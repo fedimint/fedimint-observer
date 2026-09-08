@@ -256,6 +256,12 @@ impl TryFrom<Event> for ParsedFederationEvent {
     type Error = anyhow::Error;
 
     fn try_from(event: Event) -> Result<Self, Self::Error> {
+        // The observer stores and re-serves these events, so validate the id and
+        // signature ourselves instead of trusting the relays that accepted them.
+        event
+            .verify()
+            .map_err(|e| anyhow!("Invalid event id or signature: {e}"))?;
+
         ensure!(
             event.kind == FEDERATION_ANNOUNCEMENT_EVENT_KIND,
             "Not a federation invite event"
@@ -314,6 +320,12 @@ impl TryFrom<Event> for ParsedRecommendationEvent {
     type Error = anyhow::Error;
 
     fn try_from(event: Event) -> Result<Self, Self::Error> {
+        // The observer stores and re-serves these events, so validate the id and
+        // signature ourselves instead of trusting the relays that accepted them.
+        event
+            .verify()
+            .map_err(|e| anyhow!("Invalid event id or signature: {e}"))?;
+
         ensure!(
             event.kind == RECOMMENDATION_EVENT_KIND,
             "Not a federation recommendation"
