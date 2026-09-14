@@ -1,9 +1,8 @@
 
 import React, { Suspense } from 'react';
 import { Link } from 'react-router-dom';
-import type { FederationHealth, FederationRating } from '../types/api';
+import type { FederationHealth } from '../types/api';
 import { Badge } from './Badge';
-import { Rating } from './Rating';
 const CombinedMiniChart = React.lazy(() => import('./MiniChart').then((m) => ({ default: m.CombinedMiniChart })));
 import { asBitcoin } from '../utils/format';
 
@@ -15,7 +14,6 @@ interface ActivityData {
 interface FederationRowProps {
   id: string;
   name: string;
-  rating: FederationRating;
   totalAssets: number;
   health: FederationHealth;
   activityData: ActivityData[];
@@ -26,7 +24,6 @@ interface FederationRowProps {
 export function FederationRow({
   id,
   name,
-  rating,
   totalAssets,
   health,
   activityData,
@@ -62,8 +59,8 @@ export function FederationRow({
     >
       {/* Mobile Layout (3 rows) */}
       <div className="md:hidden space-y-3">
-        {/* Row 1: Name, Recommendations, Total Assets */}
-        <div className="grid grid-cols-[1.5fr,1fr,1fr] gap-3 items-start">
+        {/* Row 1: Name, Total Assets */}
+        <div className="grid grid-cols-[1.5fr,1fr] gap-3 items-start">
           {/* Name */}
           <div className="font-medium text-gray-900 dark:text-white min-w-0">
             <span className="text-[10px] uppercase text-gray-600 dark:text-gray-400 block mb-1">Name</span>
@@ -75,10 +72,6 @@ export function FederationRow({
             </div>
           </div>
 
-          {/* Recommendations */}
-          <div className="flex-shrink-0 flex items-end justify-center mt-1">
-            <Rating count={rating.count} rating={rating.avg} />
-          </div>
 
           {/* Total Assets */}
           <div className="text-right flex-shrink-0">
@@ -104,8 +97,8 @@ export function FederationRow({
         </div>
       </div>
 
-      {/* Desktop Layout (4 columns) */}
-      <div className="hidden md:grid md:grid-cols-4 md:gap-3">
+      {/* Desktop Layout (3 columns) */}
+      <div className="hidden md:grid md:grid-cols-3 md:gap-3">
         {/* Name */}
         <div className="font-medium text-gray-900 dark:text-white">
           <div className="flex items-center gap-1.5">
@@ -116,10 +109,6 @@ export function FederationRow({
           </div>
         </div>
 
-        {/* Recommendations */}
-        <div>
-          <Rating count={rating.count} rating={rating.avg} />
-        </div>
 
         {/* Total Assets */}
         <div>

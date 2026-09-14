@@ -3,7 +3,6 @@ import { api } from '../services/api';
 import type { FederationSummary } from '../types/api';
 import { Totals } from '../components/Totals';
 import { FederationRow } from '../components/FederationRow';
-import { ratingIndex } from '../utils/format';
 
 export function Home() {
   const [federations, setFederations] = useState<FederationSummary[]>([]);
@@ -15,13 +14,8 @@ export function Home() {
     api
       .getFederations()
       .then((data) => {
-        const federationsWithStats = data
-          .sort((a, b) => {
-            const aIndex = ratingIndex(a.nostr_votes.count, a.nostr_votes.avg);
-            const bIndex = ratingIndex(b.nostr_votes.count, b.nostr_votes.avg);
-            return bIndex - aIndex;
-          });
-        setFederations(federationsWithStats);
+        // Order by assets under management, largest first
+        setFederations([...data].sort((a, b) => b.deposits - a.deposits));
         setLoading(false);
       })
       .catch((err) => {
@@ -122,16 +116,8 @@ export function Home() {
             List of all active federations this instance is collecting statistics on
           </p>
         </div>
-        <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-400 uppercase font-semibold grid-cols-4 gap-4 border-y border-gray-200 dark:border-gray-600">
+        <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-400 uppercase font-semibold grid-cols-3 gap-4 border-y border-gray-200 dark:border-gray-600">
           <div>Name</div>
-          <div>
-            <a
-              href="https://github.com/nostr-protocol/nips/pull/1110"
-              className="underline hover:no-underline"
-            >
-              Recommendations
-            </a>
-          </div>
           <div>Total Assets</div>
           <div>Activity Charts (7d)</div>
         </div>
@@ -150,7 +136,6 @@ export function Home() {
                 key={fed.id}
                 id={fed.id}
                 name={fed.name || 'Unnamed'}
-                rating={fed.nostr_votes}
                 totalAssets={fed.deposits}
                 health={fed.health}
                 activityData={fed.last_7d_activity}
@@ -188,16 +173,8 @@ export function Home() {
         </div>
         {!collapseOffline && (
           <>
-            <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-400 uppercase font-semibold grid-cols-4 gap-4 border-y border-gray-200 dark:border-gray-600">
+            <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-400 uppercase font-semibold grid-cols-3 gap-4 border-y border-gray-200 dark:border-gray-600">
               <div>Name</div>
-              <div>
-                <a
-                  href="https://github.com/nostr-protocol/nips/pull/1110"
-                  className="underline hover:no-underline"
-                >
-                  Recommendations
-                </a>
-              </div>
               <div>Total Assets</div>
               <div>Activity Charts (7d)</div>
             </div>
@@ -216,7 +193,6 @@ export function Home() {
                     key={fed.id}
                     id={fed.id}
                     name={fed.name || 'Unnamed'}
-                    rating={fed.nostr_votes}
                     totalAssets={fed.deposits}
                     health={fed.health}
                     activityData={fed.last_7d_activity}
