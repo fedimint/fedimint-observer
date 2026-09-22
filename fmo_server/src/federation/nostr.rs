@@ -256,6 +256,12 @@ impl TryFrom<Event> for ParsedFederationEvent {
     type Error = anyhow::Error;
 
     fn try_from(event: Event) -> Result<Self, Self::Error> {
+        // The observer stores and re-serves these events, so validate the id and
+        // signature ourselves instead of trusting the relays that accepted them.
+        event
+            .verify()
+            .map_err(|e| anyhow!("Invalid event id or signature: {e}"))?;
+
         ensure!(
             event.kind == FEDERATION_ANNOUNCEMENT_EVENT_KIND,
             "Not a federation invite event"
@@ -314,6 +320,12 @@ impl TryFrom<Event> for ParsedRecommendationEvent {
     type Error = anyhow::Error;
 
     fn try_from(event: Event) -> Result<Self, Self::Error> {
+        // The observer stores and re-serves these events, so validate the id and
+        // signature ourselves instead of trusting the relays that accepted them.
+        event
+            .verify()
+            .map_err(|e| anyhow!("Invalid event id or signature: {e}"))?;
+
         ensure!(
             event.kind == RECOMMENDATION_EVENT_KIND,
             "Not a federation recommendation"
@@ -479,4 +491,86 @@ pub(crate) async fn publish_federation_event(
     Json(event): Json<nostr_sdk::Event>,
 ) -> crate::error::Result<()> {
     Ok(state.federation_observer.submit_federation(event).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use nostr_sdk::{EventBuilder, Event, Keys, Tag};
+
+    use fedimint_core::BitcoinHash;
+
+    use super::{
+        FederationId, ParsedFederationEvent, ParsedRecommendationEvent,
+        FEDERATION_ANNOUNCEMENT_EVENT_KIND, RECOMMENDATION_EVENT_KIND,
+    };
+
+    fn federation_id(seed: u8) -> FederationId {
+        FederationId(bitcoin::hashes::sha256::Hash::from_byte_array([seed; 32]))
+    }
+
+    #[test]
+    fn valid_recommendation_event_is_accepted() {
+        let keys = Keys::generate();
+        let fed_id = federation_id(7);
+        let event = EventBuilder::new(
+            RECOMMENDATION_EVENT_KIND,
+            "[5/5] solid federation",
+            [Tag::identifier(fed_id.to_string())],
+        )
+        .to_event(&keys)
+        .expect("valid event");
+
+        let parsed = ParsedRecommendationEvent::try_from(event).expect("should parse");
+        assert_eq!(parsed.federation_id, fed_id);
+        assert_eq!(parsed.star_vote, Some(5));
+    }
+
+    #[test]
+    fn tampered_recommendation_event_is_rejected() {
+        let keys = Keys::generate();
+        let fed_id = federation_id(7);
+        let event = EventBuilder::new(
+            RECOMMENDATION_EVENT_KIND,
+            "[5/5] solid federation",
+            [Tag::identifier(fed_id.to_string())],
+        )
+        .to_event(&keys)
+        .expect("valid event");
+
+        // Rewrite the signed content: the id no longer commits to it and the
+        // signature no longer matches, exactly like a forged 1-star submission.
+        let mut json = serde_json::to_value(&event).expect("serializable");
+        json["content"] = serde_json::json!("[1/5] forged downvote");
+        let forged: Event = serde_json::from_value(json).expect("deserializable");
+
+        let err = ParsedRecommendationEvent::try_from(forged).expect_err("must be rejected");
+        assert!(
+            err.to_string().contains("Invalid event id or signature"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn forged_federation_announcement_is_rejected() {
+        let keys = Keys::generate();
+        let fed_id = federation_id(9);
+        let event = EventBuilder::new(
+            FEDERATION_ANNOUNCEMENT_EVENT_KIND,
+            "announcement",
+            [Tag::identifier(fed_id.to_string())],
+        )
+        .to_event(&keys)
+        .expect("valid event");
+
+        // Keep the id but swap in a syntactically valid, incorrect signature.
+        let mut json = serde_json::to_value(&event).expect("serializable");
+        json["sig"] = serde_json::json!("00".repeat(64));
+        let forged: Event = serde_json::from_value(json).expect("deserializable");
+
+        let err = ParsedFederationEvent::try_from(forged).expect_err("must be rejected");
+        assert!(
+            err.to_string().contains("Invalid event id or signature"),
+            "unexpected error: {err}"
+        );
+    }
 }
