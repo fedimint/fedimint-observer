@@ -10,8 +10,12 @@ use fedimint_core::encoding::Encodable;
 use fedimint_core::endpoint_constants::STATUS_ENDPOINT;
 use fedimint_core::module::ApiRequestErased;
 use fedimint_core::{NumPeers, PeerId};
-use fedimint_wallet_common::endpoint_constants::BLOCK_COUNT_LOCAL_ENDPOINT;
-use fmo_api_types::{FederationHealth, GuardianHealth, GuardianHealthLatest};
+use fedimint_wallet_common::endpoint_constants::{BLOCK_COUNT_LOCAL_ENDPOINT, WALLET_SUMMARY_ENDPOINT};
+use fedimint_wallet_common::WalletSummary;
+use fmo_api_types::{
+    FederationHealth, GuardianHealth, GuardianHealthLatest, GuardianUtxo,
+    GuardianWalletReport, GuardianWalletStatus, GuardianWalletSummary,
+};
 use futures::future::join_all;
 use postgres_from_row::FromRow;
 
@@ -126,6 +130,82 @@ impl FederationObserver {
             }
             dbtx.commit().await?;
         }
+    }
+
+    pub async fn fetch_guardian_wallet_reports(
+        &self,
+        config: &ClientConfig,
+    ) -> anyhow::Result<Vec<GuardianWalletReport>> {
+        let peers = config
+            .global
+            .api_endpoints
+            .iter()
+            .map(|(&peer_id, peer_url)| (peer_id, peer_url.url.clone()))
+            .collect();
+        let api = DynGlobalApi::new(self.connectors().clone(), peers, None)?;
+
+        let wallet_module = config
+            .modules
+            .iter()
+            .find_map(|(&module_instance_id, module)| {
+                (module.kind.as_str() == "wallet").then_some(module_instance_id)
+            })
+            .context("Wallet module not found")?;
+
+        Ok(join_all(config.global.api_endpoints.keys().map(|&peer_id| {
+            let api = api.clone();
+            async move {
+                let result = api
+                    .with_module(wallet_module)
+                    .request_single_peer(
+                        WALLET_SUMMARY_ENDPOINT.to_owned(),
+                        ApiRequestErased::default(),
+                        peer_id,
+                    )
+                    .await
+                    .context("guardian request failed")
+                    .and_then(|json| {
+                        serde_json::from_value::<WalletSummary>(json)
+                            .context("failed to parse wallet_summary response")
+                    });
+
+                let status = match result {
+                    Ok(summary) => GuardianWalletStatus::Ok {
+                        summary: GuardianWalletSummary {
+                            spendable: summary
+                                .spendable_utxos
+                                .into_iter()
+                                .map(|u| GuardianUtxo { out_point: u.outpoint, amount: u.amount.into() })
+                                .collect(),
+                            unsigned_peg_out: summary
+                                .unsigned_peg_out_txos
+                                .into_iter()
+                                .map(|u| GuardianUtxo { out_point: u.outpoint, amount: u.amount.into() })
+                                .collect(),
+                            unsigned_change: summary
+                                .unsigned_change_utxos
+                                .into_iter()
+                                .map(|u| GuardianUtxo { out_point: u.outpoint, amount: u.amount.into() })
+                                .collect(),
+                            unconfirmed_peg_out: summary
+                                .unconfirmed_peg_out_txos
+                                .into_iter()
+                                .map(|u| GuardianUtxo { out_point: u.outpoint, amount: u.amount.into() })
+                                .collect(),
+                            unconfirmed_change: summary
+                                .unconfirmed_change_utxos
+                                .into_iter()
+                                .map(|u| GuardianUtxo { out_point: u.outpoint, amount: u.amount.into() })
+                                .collect(),
+                        },
+                    },
+                    Err(error) => GuardianWalletStatus::Unreachable { error: error.to_string() },
+                };
+
+                GuardianWalletReport { peer_id: peer_id.to_usize() as u16, status }
+            }
+        }))
+        .await)
     }
 
     pub async fn get_guardian_health(

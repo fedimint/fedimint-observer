@@ -25,8 +25,8 @@ use fedimint_ln_common::{
 use fedimint_mint_common::{MintConsensusItem, MintInput, MintOutput};
 use fedimint_wallet_common::{WalletConsensusItem, WalletInput, WalletOutput, WalletOutputV0};
 use fmo_api_types::{
-    FederationActivity, FederationHealth, FederationSummary, FederationUtxo, FedimintTotals,
-    NonceSpendInfo,
+    DiscrepancyKind, FederationActivity, FederationHealth, FederationSummary, FederationUtxo,
+    FederationUtxoReport, FedimintTotals, GuardianWalletStatus, NonceSpendInfo, UtxoDiscrepancy,
 };
 use futures::future::join_all;
 use futures::StreamExt;
@@ -1411,6 +1411,119 @@ impl FederationObserver {
                 amount: Amount::from_msats(utxo.amount_msat.try_into()?),
             })
         }).collect()
+    }
+
+    pub async fn federation_utxo_report(
+        &self,
+        federation_id: FederationId,
+        config: &ClientConfig,
+    ) -> anyhow::Result<FederationUtxoReport> {
+        let observed = self.federation_utxos(federation_id).await?;
+        let guardian_reports = self.fetch_guardian_wallet_reports(config).await?;
+
+        // Only "settled" guardian holdings count toward reconciliation.
+        // unsigned_peg_out / unsigned_change are excluded on purpose: they
+        // represent withdrawals that are still in flight, so mismatches
+        // there are expected and not a sign of a real discrepancy.
+        let mut discrepancies = Vec::new();
+
+        for utxo in &observed {
+            let mut claimants: Vec<u16> = Vec::new();
+            let mut amount_mismatches: Vec<(u16, Amount)> = Vec::new();
+
+            for report in &guardian_reports {
+                let GuardianWalletStatus::Ok { summary } = &report.status else {
+                    continue;
+                };
+
+                let claim = summary
+                    .spendable
+                    .iter()
+                    .chain(summary.unconfirmed_change.iter())
+                    .find(|g| g.out_point == utxo.out_point);
+
+                if let Some(claim) = claim {
+                    claimants.push(report.peer_id);
+                    if claim.amount != utxo.amount {
+                        amount_mismatches.push((report.peer_id, claim.amount));
+                    }
+                }
+            }
+
+            if claimants.is_empty() {
+                discrepancies.push(UtxoDiscrepancy {
+                    out_point: utxo.out_point,
+                    kind: DiscrepancyKind::UnclaimedByAnyGuardian,
+                });
+            }
+
+            for (peer_id, guardian_amount) in amount_mismatches {
+                discrepancies.push(UtxoDiscrepancy {
+                    out_point: utxo.out_point,
+                    kind: DiscrepancyKind::AmountMismatch {
+                        peer_id,
+                        guardian_amount,
+                        observed_amount: utxo.amount,
+                    },
+                });
+            }
+        }
+
+        // UTXOs claimed by at least one guardian (in the settled buckets)
+        // but never observed on-chain by us at all. If multiple guardians
+        // agree on it, that's most likely our own index being behind, not a
+        // real problem. If they disagree with each other on the amount,
+        // that's a genuine guardian conflict worth flagging.
+        let observed_points: std::collections::HashSet<_> =
+            observed.iter().map(|u| u.out_point).collect();
+
+        let mut guardian_only: std::collections::HashMap<bitcoin::OutPoint, Vec<(u16, Amount)>> =
+            std::collections::HashMap::new();
+
+        for report in &guardian_reports {
+            let GuardianWalletStatus::Ok { summary } = &report.status else {
+                continue;
+            };
+            for claim in summary.spendable.iter().chain(summary.unconfirmed_change.iter()) {
+                if !observed_points.contains(&claim.out_point) {
+                    guardian_only
+                        .entry(claim.out_point)
+                        .or_default()
+                        .push((report.peer_id, claim.amount));
+                }
+            }
+        }
+
+        for (out_point, claims) in guardian_only {
+            let distinct_amounts: std::collections::HashSet<Amount> =
+                claims.iter().map(|(_, amount)| *amount).collect();
+
+            if distinct_amounts.len() > 1 {
+                discrepancies.push(UtxoDiscrepancy {
+                    out_point,
+                    kind: DiscrepancyKind::GuardianConflict {
+                        peer_ids: claims.iter().map(|(peer_id, _)| *peer_id).collect(),
+                        amounts: claims.iter().map(|(_, amount)| *amount).collect(),
+                    },
+                });
+            } else if claims.len() > 1 {
+                discrepancies.push(UtxoDiscrepancy {
+                    out_point,
+                    kind: DiscrepancyKind::MissedByObserver {
+                        peer_ids: claims.iter().map(|(peer_id, _)| *peer_id).collect(),
+                    },
+                });
+            } else {
+                for (peer_id, _) in claims {
+                    discrepancies.push(UtxoDiscrepancy {
+                        out_point,
+                        kind: DiscrepancyKind::ClaimedByGuardianOnly { peer_id },
+                    });
+                }
+            }
+        }
+
+        Ok(FederationUtxoReport { observed, guardian_reports, discrepancies })
     }
 
     pub async fn totals(&self) -> anyhow::Result<FedimintTotals> {

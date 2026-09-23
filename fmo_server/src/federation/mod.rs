@@ -63,6 +63,7 @@ pub fn get_federations_routes() -> Router<AppState> {
             get(get_federation_gateway_uptime_trend),
         )
         .route("/:federation_id/utxos", get(get_federation_utxos))
+        .route("/:federation_id/utxo_report", get(get_federation_utxo_report))
         .route("/:federation_id/sessions", get(list_sessions))
         .route("/:federation_id/sessions/count", get(count_sessions))
         .route("/:federation_id/backfill", post(backfill_federation))
@@ -143,6 +144,23 @@ async fn get_federation_utxos(
         .federation_utxos(federation_id)
         .await?;
     Ok(utxos.into())
+}
+
+async fn get_federation_utxo_report(
+    Path(federation_id): Path<FederationId>,
+    State(state): State<AppState>,
+) -> crate::error::Result<Json<fmo_api_types::FederationUtxoReport>> {
+    let federation = state
+        .federation_observer
+        .get_federation(federation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Federation not found"))?;
+
+    let report = state
+        .federation_observer
+        .federation_utxo_report(federation_id, &federation.config)
+        .await?;
+    Ok(report.into())
 }
 
 async fn get_federation_totals(

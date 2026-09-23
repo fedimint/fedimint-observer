@@ -42,6 +42,61 @@ pub struct FederationUtxo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardianUtxo {
+    pub out_point: bitcoin::OutPoint,
+    pub amount: Amount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardianWalletSummary {
+    pub spendable: Vec<GuardianUtxo>,
+    pub unsigned_peg_out: Vec<GuardianUtxo>,
+    pub unsigned_change: Vec<GuardianUtxo>,
+    pub unconfirmed_peg_out: Vec<GuardianUtxo>,
+    pub unconfirmed_change: Vec<GuardianUtxo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum GuardianWalletStatus {
+    Ok { summary: GuardianWalletSummary },
+    Unreachable { error: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardianWalletReport {
+    pub peer_id: u16,
+    pub status: GuardianWalletStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscrepancyKind {
+    UnclaimedByAnyGuardian,
+    ClaimedByGuardianOnly { peer_id: u16 },
+    AmountMismatch { peer_id: u16, guardian_amount: Amount, observed_amount: Amount },
+    /// Multiple guardians agree on a UTXO the observer never saw on-chain.
+    /// Likely means the observer's index is behind, not a real problem.
+    MissedByObserver { peer_ids: Vec<u16> },
+    /// Guardians genuinely disagree with each other (conflicting amounts)
+    /// about the same outpoint.
+    GuardianConflict { peer_ids: Vec<u16>, amounts: Vec<Amount> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UtxoDiscrepancy {
+    pub out_point: bitcoin::OutPoint,
+    pub kind: DiscrepancyKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationUtxoReport {
+    pub observed: Vec<FederationUtxo>,
+    pub guardian_reports: Vec<GuardianWalletReport>,
+    pub discrepancies: Vec<UtxoDiscrepancy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardianHealth {
     pub avg_uptime: f32,
     pub avg_latency: f32,
