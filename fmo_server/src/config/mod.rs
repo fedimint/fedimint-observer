@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use fedimint_core::config::{FederationId, JsonClientConfig};
 use fedimint_core::invite_code::InviteCode;
 use fmo_api_types::GatewayInfo;
 use reqwest::Method;
+use serde::Deserialize;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
 
@@ -59,15 +60,33 @@ pub async fn fetch_federation_config(
         .into())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct FetchFederationGatewaysParams {
+    /// `all` to include LNv2 gateways. Omitted, only LNv1 gateways are
+    /// returned, exactly as before LNv2 support existed.
+    protocols: Option<String>,
+}
+
 pub async fn fetch_federation_gateways(
     Path(invite): Path<InviteCode>,
+    Query(params): Query<FetchFederationGatewaysParams>,
 ) -> Result<Json<Vec<GatewayInfo>>> {
+    let include_lnv2 = match params.protocols.as_deref() {
+        None => false,
+        Some("all") => true,
+        Some(invalid) => {
+            return Err(
+                anyhow::anyhow!("Invalid protocols '{invalid}'. Supported values: all").into(),
+            )
+        }
+    };
+
     let connectors = fedimint_connectors::ConnectorRegistry::build_from_client_env()?
         .bind()
         .await?;
     let (config, _api) =
         fedimint_api_client::download_from_invite_code(&connectors, &invite).await?;
-    let gateways = fetch_gateways_for_config(&config).await?;
+    let gateways = fetch_gateways_for_config(&config, include_lnv2).await?;
     Ok(gateways.into())
 }
 

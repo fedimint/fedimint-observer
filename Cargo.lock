@@ -2401,6 +2401,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fedimint-lnv2-common"
+version = "0.12.0"
+source = "git+https://github.com/fedimint/fedimint?tag=v0.12.0#2ead392ba22141bbe5898cdb724ec3dbc55387a9"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin 0.32.102",
+ "fedimint-connectors",
+ "fedimint-core 0.12.0",
+ "fedimint-ln-common",
+ "fedimint-tpe",
+ "group",
+ "lightning-invoice 0.33.3",
+ "rand 0.8.8",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "fedimint-logging"
 version = "0.4.4"
 source = "git+https://github.com/elsirion/fedimint?branch=v0.4.4-patch-xyz#ca970accfcb128a1d573cc0dee6844b84df235d8"
@@ -2520,6 +2541,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fedimint-tpe"
+version = "0.12.0"
+source = "git+https://github.com/fedimint/fedimint?tag=v0.12.0#2ead392ba22141bbe5898cdb724ec3dbc55387a9"
+dependencies = [
+ "bitcoin_hashes 0.14.101",
+ "bls12_381",
+ "fedimint-core 0.12.0",
+ "group",
+ "rand 0.8.8",
+ "rand_chacha 0.3.1",
+ "serde",
+ "serde-big-array",
+]
+
+[[package]]
 name = "fedimint-util-error"
 version = "0.12.0"
 source = "git+https://github.com/fedimint/fedimint?tag=v0.12.0#2ead392ba22141bbe5898cdb724ec3dbc55387a9"
@@ -2613,6 +2649,7 @@ dependencies = [
  "fedimint-connectors",
  "fedimint-core 0.12.0",
  "fedimint-ln-common",
+ "fedimint-lnv2-common",
  "fedimint-meta-client",
  "fedimint-mint-common",
  "fedimint-wallet-common",

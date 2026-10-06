@@ -111,6 +111,65 @@ pub struct GatewayInfo {
     /// `7d`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics_window: Option<String>,
+    /// Lightning module protocols this gateway is registered under. A gateway
+    /// appears under both only if its identity was verified to match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocols: Option<Vec<GatewayProtocol>>,
+    /// LNv2 registration details, present if the gateway is registered with
+    /// the federation's LNv2 module
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lnv2: Option<Lnv2GatewayInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GatewayProtocol {
+    Lnv1,
+    Lnv2,
+}
+
+/// Result of asking an LNv2 gateway for its routing info. `Ok` only means the
+/// gateway advertises routing info for this federation, not that payments
+/// through it succeed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lnv2RoutingStatus {
+    /// The gateway returned routing info for this federation
+    Ok,
+    /// The gateway answered but does not serve this federation
+    NotServing,
+    /// The gateway could not be reached or returned an invalid response
+    Unreachable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Lnv2GatewayInfo {
+    /// Gateway API URL as listed in the federation's LNv2 registry
+    pub api_endpoint: String,
+    pub routing_status: Lnv2RoutingStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing_checked_at: Option<DateTime<Utc>>,
+    /// LN node public key (hex-encoded), from the gateway's routing info
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lightning_public_key: Option<String>,
+    /// Key the gateway uses to claim and refund LNv2 contracts (hex-encoded)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_public_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_fee_minimum: Option<GatewayFee>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_fee_default: Option<GatewayFee>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receive_fee: Option<GatewayFee>,
+    /// Registry presence of the LNv2 registration over the requested window
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime_window: Option<GatewayUptimeMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayFee {
+    pub base_msat: u64,
+    pub parts_per_million: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -37,6 +37,31 @@ export interface GatewayInfo {
   activity_window?: GatewayActivityMetrics;
   uptime_window?: GatewayUptimeMetrics;
   metrics_window?: GatewayWindow;
+  protocols?: GatewayProtocol[];
+  lnv2?: Lnv2GatewayInfo;
+}
+
+export type GatewayProtocol = 'lnv1' | 'lnv2';
+
+// 'ok' only means the gateway advertises routing info for this federation,
+// not that payments through it succeed.
+export type Lnv2RoutingStatus = 'ok' | 'not_serving' | 'unreachable';
+
+export interface Lnv2GatewayInfo {
+  api_endpoint: string;
+  routing_status: Lnv2RoutingStatus;
+  routing_checked_at?: string;
+  lightning_public_key?: string;
+  module_public_key?: string;
+  send_fee_minimum?: GatewayFee;
+  send_fee_default?: GatewayFee;
+  receive_fee?: GatewayFee;
+  uptime_window?: GatewayUptimeMetrics;
+}
+
+export interface GatewayFee {
+  base_msat: number;
+  parts_per_million: number;
 }
 
 export interface GatewayActivityMetrics {
