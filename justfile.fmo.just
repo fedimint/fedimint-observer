@@ -13,3 +13,11 @@ pg_restore BACKUP_FILE:
 # run the backend server
 run *ARGS:
   cargo run -p fmo_server {{ARGS}}
+
+# run the LN gateway prober (see fmo_prober/README.md)
+run_prober *ARGS:
+  cargo run -p fmo_prober {{ARGS}}
+
+# run the LN gateway prober tests
+test_prober:
+  cargo test -p fmo_prober

@@ -2,6 +2,7 @@ import type {
   FedimintTotals,
   FederationSummary,
   GatewayInfo,
+  GatewayProbeReport,
   GatewayUptimeTrendPoint,
   GatewayWindow,
 } from '../types/api';
@@ -38,6 +39,34 @@ export const api = {
     const response = await fetch(`${BASE_URL}/federations/${id}/gateways${query}`);
     if (!response.ok) {
       throw new Error(`Failed to fetch gateways for federation ${id} (${response.status})`);
+    }
+    return response.json();
+  },
+
+  async getFederationGateway(
+    id: string,
+    gatewayId: string,
+    window: GatewayWindow,
+  ): Promise<GatewayInfo> {
+    const response = await fetch(
+      `${BASE_URL}/federations/${id}/gateways/${encodeURIComponent(gatewayId)}?window=${encodeURIComponent(window)}`,
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to fetch gateway ${gatewayId} (${response.status})`);
+    }
+    return response.json();
+  },
+
+  async getGatewayProbes(
+    id: string,
+    gatewayId: string,
+    window: GatewayWindow,
+  ): Promise<GatewayProbeReport> {
+    const response = await fetch(
+      `${BASE_URL}/federations/${id}/gateways/${encodeURIComponent(gatewayId)}/probes?window=${encodeURIComponent(window)}`,
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to fetch probe results for gateway ${gatewayId} (${response.status})`);
     }
     return response.json();
   },

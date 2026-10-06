@@ -4,6 +4,7 @@ import { Home } from './pages/Home';
 import { Nostr } from './pages/Nostr';
 import { FederationDetail } from './pages/FederationDetail';
 import { FederationGateways } from './pages/FederationGateways';
+import { GatewayDetail } from './pages/GatewayDetail';
 import { useTheme } from './hooks/useTheme';
 
 function App() {
@@ -18,6 +19,7 @@ function App() {
           <Route path="/nostr" element={<Nostr />} />
           <Route path="/federations/:id" element={<FederationDetail />} />
           <Route path="/federations/:id/gateways" element={<FederationGateways />} />
+          <Route path="/federations/:id/gateways/:gatewayId" element={<GatewayDetail />} />
           <Route path="*" element={<div className="p-4 text-gray-900 dark:text-white">Page not found</div>} />
         </Routes>
       </main>

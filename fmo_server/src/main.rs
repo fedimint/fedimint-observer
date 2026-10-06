@@ -13,6 +13,7 @@ use crate::config::{get_config_routes, FederationConfigCache};
 use crate::federation::get_federations_routes;
 use crate::federation::nostr::{get_nostr_federations, publish_federation_event};
 use crate::federation::observer::FederationObserver;
+use crate::federation::probes::get_gateway_probe_routes;
 
 /// Fedimint config fetching service implementation
 mod config;
@@ -41,6 +42,11 @@ struct Args {
         default_value = "https://mempool.space/api"
     )]
     mempool_url: String,
+
+    /// Bearer token for LN probers submitting gateway probe results. Probe
+    /// ingestion is disabled if unset.
+    #[arg(long, env = "FO_PROBER_AUTH")]
+    prober_auth: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +55,7 @@ struct AppState {
     meta_override_cache: MetaOverrideCache,
     consensus_meta_cache: ConsensusMetaCache,
     federation_observer: FederationObserver,
+    prober_auth: Option<String>,
 }
 
 #[tokio::main]
@@ -71,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(|| async { "Server is up and running!" }))
         .nest("/config", get_config_routes())
         .nest("/federations", get_federations_routes())
+        .nest("/gateways", get_gateway_probe_routes())
         // TODO: move into nostr service/module
         .route("/nostr/federations", get(get_nostr_federations))
         .route("/nostr/federations", put(publish_federation_event))
@@ -85,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
                 &args.mempool_url,
             )
             .await?,
+            prober_auth: args.prober_auth.filter(|auth| !auth.is_empty()),
         });
 
     let listener = tokio::net::TcpListener::bind(&args.bind)

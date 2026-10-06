@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "fmo_api_types",
+    "fmo_prober",
     "fmo_server",
 ]
 
