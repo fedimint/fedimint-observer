@@ -11,6 +11,7 @@ fedimint-api-client = { version = "0.12.0", git = "https://github.com/fedimint/f
 fedimint-connectors = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-core = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-ln-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
+fedimint-lnv2-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-meta-client = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-mint-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-wallet-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
