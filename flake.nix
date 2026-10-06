@@ -48,6 +48,7 @@
             ./Cargo.lock
             (lib.fileset.maybeMissing ./.cargo)
             ./fmo_api_types
+            ./fmo_prober
             ./fmo_server
           ];
         };
@@ -69,6 +70,10 @@
                 cargoArtifacts = workspaceDeps;
               };
               fmo_server = craneLib.buildPackage { };
+              fmo_prober = craneLib.buildPackage {
+                pname = "fmo_prober";
+                cargoExtraArgs = "--package=fmo_prober";
+              };
               fmo_server_image = pkgs.dockerTools.buildLayeredImage {
                 name = "fmo_server";
                 contents = [ fmo_server pkgs.bash pkgs.coreutils ];

@@ -63,4 +63,58 @@ export interface GatewayUptimeTrendPoint {
 
 export type GatewayWindow = '1h' | '24h' | '7d' | '30d' | '90d';
 
+export type ProbeOutcome =
+  | 'success'
+  | 'insufficient_liquidity'
+  | 'unreachable'
+  | 'route_failure'
+  | 'no_route'
+  | 'local_failure'
+  | 'timeout'
+  | 'error';
+
+export interface GatewayProbeResult {
+  node_pub_key: string;
+  probe_time: string;
+  amount_msat: number;
+  outcome: ProbeOutcome;
+  latency_ms?: number;
+  failure_code?: string;
+  failure_source_index?: number;
+  route_hops?: number;
+  route_fee_msat?: number;
+}
+
+export interface GatewayProbeSummary {
+  window: GatewayWindow;
+  /** Conclusive probes at the base amount */
+  conclusive_probes: number;
+  successes: number;
+  /** Routing success rate at the base amount */
+  success_rate_pct: number | null;
+  inconclusive_probes: number;
+  outcome_counts: Partial<Record<ProbeOutcome, number>>;
+  last_probe_time: string | null;
+  base_amount_msat: number | null;
+  base_amount_last_outcome: ProbeOutcome | null;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  max_successful_amount_msat: number | null;
+}
+
+export interface GatewayProbeTrendPoint {
+  bucket: string;
+  conclusive_probes: number;
+  successes: number;
+  success_rate_pct: number | null;
+  latency_p50_ms: number | null;
+}
+
+export interface GatewayProbeReport {
+  node_pub_key: string;
+  summary: GatewayProbeSummary;
+  trend: GatewayProbeTrendPoint[];
+  recent: GatewayProbeResult[];
+}
+
 export type FederationHealth = 'online' | 'degraded' | 'offline';

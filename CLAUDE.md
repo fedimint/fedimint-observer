@@ -70,10 +70,11 @@ just test_package fmo_server
   - `/federations/*` endpoints - Federation monitoring API (unstable)
   - Background tasks for monitoring federations and syncing data
 - `fmo_frontend_react/` - Frontend (React + TypeScript)
+- `fmo_prober/` - Standalone LN prober (LND REST) measuring gateway reachability/latency/liquidity, pushes results to `POST /gateways/probes`
 
 ### Key Patterns
 1. **Shared Types**: All API types are defined in `fmo_api_types` and used by both frontend and backend
-2. **Database Migrations**: Version-controlled SQL migrations in `fmo_server/schema/` (v0-v8)
+2. **Database Migrations**: Version-controlled SQL migrations in `fmo_server/schema/` (v0-v11)
 3. **Background Monitoring**: `FederationObserver` spawns tasks to monitor multiple federations concurrently
 4. **State Management**: Backend uses shared app state with Arc/RwLock for thread safety
 5. **Error Handling**: Custom `AppError` type wrapping `anyhow::Error` for consistent error propagation
@@ -85,6 +86,7 @@ Required environment variables (see `sample.env`):
 - `FO_ADMIN_AUTH`: Admin authentication password
 - `FO_MEMPOOL_URL`: Mempool API URL (default: "https://mempool.space/api")
 - `ALLOW_CONFIG_CORS`: Enable CORS for config endpoints
+- `FO_PROBER_AUTH`: Bearer token for probe result ingestion (optional, ingestion disabled if unset)
 
 ### API Endpoints
 - **Config API** (`/config/*`): Stable API for federation configuration inspection
@@ -97,4 +99,6 @@ PostgreSQL with materialized views and complex indexes. Key tables:
 - `sessions` - Consensus sessions
 - `transactions` - Transaction records
 - `guardian_health_*` - Guardian monitoring data
+- `gateways`, `gateway_poll_snapshots` - Gateway registry history
+- `gateway_probes` - LN probe results, keyed by gateway LN node pubkey
 - `nostr_*` - Nostr protocol integration

@@ -27,7 +27,7 @@ const GATEWAY_SNAPSHOT_RETENTION_DAYS: i64 = 90;
 const GATEWAY_PRUNE_INTERVAL_HOURS: i64 = 6;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-enum GatewayMetricsWindow {
+pub(super) enum GatewayMetricsWindow {
     H1,
     H24,
     D7,
@@ -36,7 +36,7 @@ enum GatewayMetricsWindow {
 }
 
 impl GatewayMetricsWindow {
-    fn parse(value: Option<&str>) -> anyhow::Result<Self> {
+    pub(super) fn parse(value: Option<&str>) -> anyhow::Result<Self> {
         match value.unwrap_or("7d") {
             "1h" => Ok(Self::H1),
             "24h" => Ok(Self::H24),
@@ -49,7 +49,7 @@ impl GatewayMetricsWindow {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::H1 => "1h",
             Self::H24 => "24h",
@@ -59,7 +59,7 @@ impl GatewayMetricsWindow {
         }
     }
 
-    fn duration(self) -> chrono::Duration {
+    pub(super) fn duration(self) -> chrono::Duration {
         match self {
             Self::H1 => chrono::Duration::hours(1),
             Self::H24 => chrono::Duration::hours(24),
@@ -367,7 +367,7 @@ impl FederationObserver {
         Ok(())
     }
 
-    async fn list_federation_gateways(
+    pub(super) async fn list_federation_gateways(
         &self,
         federation_id: FederationId,
         window: GatewayMetricsWindow,
@@ -684,4 +684,20 @@ pub(super) async fn get_federation_gateway_uptime_trend(
         .federation_gateway_uptime_trend(federation_id, window)
         .await?
         .into())
+}
+
+pub(super) async fn get_federation_gateway(
+    Path((federation_id, gateway_id)): Path<(FederationId, String)>,
+    Query(params): Query<GetFederationGatewaysParams>,
+    State(state): State<crate::AppState>,
+) -> crate::error::Result<Json<GatewayInfo>> {
+    let window = GatewayMetricsWindow::parse(params.window.as_deref())?;
+    let gateway = state
+        .federation_observer
+        .list_federation_gateways(federation_id, window)
+        .await?
+        .into_iter()
+        .find(|gateway| gateway.gateway_id == gateway_id)
+        .with_context(|| format!("Gateway {gateway_id} not found in federation {federation_id}"))?;
+    Ok(gateway.into())
 }

@@ -219,6 +219,7 @@ impl FederationObserver {
             ),
             migration!("/schema/v9.sql"),
             migration!("/schema/v10.sql"),
+            migration!("/schema/v11.sql"),
         ];
 
         for (index, migration) in migrations.iter().enumerate() {

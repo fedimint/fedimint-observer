@@ -8,6 +8,7 @@ import type {
   GatewayWindow,
 } from '../types/api';
 import { GatewayWarningPage, type GatewayWarningState } from '../components/GatewayWarningPage';
+import { formatMsats, formatRelative, shortId } from '../utils/format';
 
 type GatewayStatus = 'online' | 'degraded' | 'offline' | 'unknown';
 type UptimeStripStatus = 'online' | 'degraded' | 'offline' | 'unknown';
@@ -67,38 +68,12 @@ function formatDateTime(date: Date | null): string {
   });
 }
 
-function formatRelative(date: Date | null): string {
-  if (!date) return 'Never seen';
-
-  const diffMs = Date.now() - date.getTime();
-  const minutes = Math.floor(diffMs / (1000 * 60));
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
-function shortId(value: string): string {
-  if (value.length <= 16) return value;
-  return `${value.slice(0, 8)}...${value.slice(-8)}`;
-}
-
 function formatCompactDuration(minutes: number): string {
   const safe = Math.max(0, Math.round(minutes));
   if (safe >= 60 * 24) return `${Math.round(safe / (60 * 24))}d`;
   if (safe >= 60) return `${Math.round(safe / 60)}h`;
   if (safe === 0) return '0m';
   return `${safe}m`;
-}
-
-function formatMsats(msat: number): string {
-  const sats = msat / 1000;
-  if (sats >= 100_000_000) return `${(sats / 100_000_000).toFixed(2)} BTC`;
-  if (sats >= 100_000) return `${(sats / 100_000).toFixed(1)}M sats`;
-  if (sats >= 1_000) return `${(sats / 1000).toFixed(1)}k sats`;
-  return `${Math.round(sats).toLocaleString()} sats`;
 }
 
 function statusClasses(status: GatewayStatus): string {
@@ -745,9 +720,13 @@ export function FederationGateways() {
                 className="align-top border-b border-gray-200 bg-white transition-colors last:border-b-0 hover:bg-blue-50/40 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-blue-950/20"
               >
                 <td className="px-4 py-4 sm:px-5">
-                  <div className="truncate font-semibold text-gray-950 dark:text-white" title={gateway.lightning_alias || 'Unnamed Gateway'}>
+                  <Link
+                    to={`/federations/${id}/gateways/${gateway.gateway_id}`}
+                    className="block truncate font-semibold text-gray-950 hover:text-blue-700 hover:underline dark:text-white dark:hover:text-blue-300"
+                    title={`${gateway.lightning_alias || 'Unnamed Gateway'} · view details`}
+                  >
                     {gateway.lightning_alias || 'Unnamed Gateway'}
-                  </div>
+                  </Link>
                   <div
                     className="text-xs font-mono text-gray-600 dark:text-gray-400 mt-1"
                     title={gateway.gateway_id}

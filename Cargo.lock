@@ -2592,6 +2592,28 @@ dependencies = [
  "fedimint-core 0.12.0",
  "serde",
  "serde_json",
+ "socket2 0.5.10",
+]
+
+[[package]]
+name = "fmo_prober"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "fmo_api_types",
+ "hex",
+ "rand 0.8.8",
+ "reqwest 0.12.28",
+ "rustls 0.23.45",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
