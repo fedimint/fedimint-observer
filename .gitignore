@@ -5,3 +5,5 @@ fedimint_observer.db
 .direnv
 .pg_dev
 /db_backups
+.pg_dev17
+/delete_old_cluster.sh

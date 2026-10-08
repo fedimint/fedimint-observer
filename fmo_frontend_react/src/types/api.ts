@@ -24,6 +24,45 @@ export interface FederationActivity {
   amount_transferred: number;
 }
 
+export interface FederationUtxosResponse {
+  /** Guardians that must agree before an output counts as held or not held */
+  threshold: number;
+  guardians: GuardianUtxoReport[];
+  /** Most severe status first, then largest amount first */
+  utxos: UtxoComparisonRow[];
+}
+
+export interface GuardianUtxoReport {
+  guardian_id: number;
+  status: 'unavailable' | 'ok' | 'lagging' | 'error';
+  session_count: number | null;
+  error: string | null;
+  /** Outputs a threshold of guardians agrees are held that this guardian does not list */
+  missing_outputs: number;
+  /** Outputs this guardian lists that a threshold of guardians agrees are not held */
+  extra_outputs: number;
+  /** Outputs this guardian lists with another amount than the agreed one */
+  wrong_amounts: number;
+}
+
+export interface UtxoComparisonRow {
+  out_point: string;
+  amount: number;
+  address: string | null;
+  /** Keyed by guardian id */
+  guardian_states: Record<string, GuardianClaimedUtxoState>;
+  status: 'mismatch' | 'pending' | 'verified';
+  disagreement: 'evidence_mismatch' | 'inventory_difference' | 'observer_difference' | 'on_chain_conflict' | null;
+  detail: string | null;
+}
+
+export type GuardianClaimedUtxoState =
+  | 'spendable'
+  | 'unsigned_peg_out'
+  | 'unsigned_change'
+  | 'unconfirmed_peg_out'
+  | 'unconfirmed_change';
+
 export interface GatewayInfo {
   gateway_id: string;
   node_pub_key: string;

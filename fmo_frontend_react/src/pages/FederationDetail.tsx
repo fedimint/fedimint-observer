@@ -2,10 +2,58 @@ import { useEffect, useState, useMemo, lazy, Suspense } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../services/api';
-import type { FederationSummary } from '../types/api';
+import type {
+  FederationSummary,
+  GuardianClaimedUtxoState,
+  GuardianUtxoReport,
+  UtxoComparisonRow,
+} from '../types/api';
 import { Badge } from '../components/Badge';
 import { Alert } from '../components/Alert';
 import { Copyable } from '../components/Copyable';
+
+const MSATS_PER_BTC = 100_000_000_000;
+const UTXOS_PER_PAGE = 25;
+
+type UtxoView = 'all' | 'verified' | 'pending' | 'mismatch';
+
+interface UtxoInventoryRow {
+  outPoint: string;
+  amount: number;
+  address: string | null;
+  /** State each responding guardian lists this output in */
+  guardianStates: Map<number, GuardianClaimedUtxoState>;
+  kind: Exclude<UtxoView, 'all'>;
+  detail?: string;
+}
+
+const UTXO_KIND_STYLES: Record<UtxoInventoryRow['kind'], { label: string; pill: string; detail?: string }> = {
+  verified: {
+    label: 'Verified',
+    pill: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300',
+    detail: 'text-gray-500 dark:text-gray-400',
+  },
+  pending: {
+    label: 'Pending',
+    pill: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
+    detail: 'text-amber-700 dark:text-amber-300/90',
+  },
+  mismatch: {
+    label: 'Mismatch',
+    pill: 'bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-300',
+    detail: 'text-rose-700 dark:text-rose-300/90',
+  },
+};
+
+// Page numbers to show around the current page, with gaps for skipped ranges
+function utxoPageItems(current: number, total: number): (number | 'gap')[] {
+  const pages = [...new Set([1, current - 1, current, current + 1, total])]
+    .filter((page) => page >= 1 && page <= total)
+    .sort((left, right) => left - right);
+  return pages.flatMap((page, index) =>
+    index > 0 && page - pages[index - 1] > 1 ? (['gap', page] as const) : [page]
+  );
+}
 
 // Lazy load the chart component for code splitting
 const TransactionChart = lazy(() => import('../components/TransactionChart').then(module => ({ default: module.TransactionChart })));
@@ -41,12 +89,6 @@ interface FederationConfig {
   rawConfig: Record<string, unknown>; // Store raw config for display
 }
 
-interface UTXO {
-  out_point: string;
-  amount: number; // millisats
-  address: string;
-}
-
 interface HistogramEntry {
   date: string;
   volume: number;
@@ -61,11 +103,16 @@ export function FederationDetail() {
   const { id } = useParams<{ id: string }>();
   const [federation, setFederation] = useState<FederationSummary | null>(null);
   const [config, setConfig] = useState<FederationConfig | null>(null);
-  const [utxos, setUtxos] = useState<UTXO[]>([]);
+  const [utxoRows, setUtxoRows] = useState<UtxoComparisonRow[]>([]);
+  const [utxoGuardians, setUtxoGuardians] = useState<GuardianUtxoReport[]>([]);
+  const [utxoThreshold, setUtxoThreshold] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'activity' | 'utxos' | 'config'>('activity');
   const [utxosLoading, setUtxosLoading] = useState(false);
+  const [utxoView, setUtxoView] = useState<UtxoView>('all');
+  const [utxoPage, setUtxoPage] = useState(1);
+  const [utxoSearch, setUtxoSearch] = useState('');
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
   const [ratingError, setRatingError] = useState<string | null>(null);
@@ -84,6 +131,71 @@ export function FederationDetail() {
       (health) => health?.latest !== null && health?.latest !== undefined
     );
   }, [guardianHealth]);
+
+  const comparedGuardianIds = useMemo(
+    () => utxoGuardians
+      .filter((guardian) => guardian.status === 'ok')
+      .map((guardian) => guardian.guardian_id)
+      .sort((left, right) => left - right),
+    [utxoGuardians]
+  );
+  const successfulGuardianCount = comparedGuardianIds.length;
+
+  // The backend classifies every output; this only reshapes rows for display
+  const utxoInventory = useMemo(
+    () => utxoRows.map((row): UtxoInventoryRow => ({
+      outPoint: row.out_point,
+      amount: row.amount,
+      address: row.address,
+      guardianStates: new Map(
+        Object.entries(row.guardian_states).map(([guardianId, state]) => [Number(guardianId), state])
+      ),
+      kind: row.status,
+      detail: row.detail ?? undefined,
+    })),
+    [utxoRows]
+  );
+
+  const utxoCounts = useMemo(() => ({
+    all: utxoInventory.length,
+    verified: utxoInventory.filter((utxo) => utxo.kind === 'verified').length,
+    pending: utxoInventory.filter((utxo) => utxo.kind === 'pending').length,
+    mismatch: utxoInventory.filter((utxo) => utxo.kind === 'mismatch').length,
+  }), [utxoInventory]);
+
+  const filteredUtxos = useMemo(() => {
+    const query = utxoSearch.trim().toLowerCase();
+    return utxoInventory.filter((utxo) =>
+      (utxoView === 'all' || utxo.kind === utxoView)
+      && (!query
+        || utxo.outPoint.toLowerCase().includes(query)
+        || (utxo.address?.toLowerCase().includes(query) ?? false)
+        || formatMsatsAsBtc(utxo.amount).includes(query))
+    );
+  }, [utxoInventory, utxoView, utxoSearch]);
+
+  const utxoPageCount = Math.max(1, Math.ceil(filteredUtxos.length / UTXOS_PER_PAGE));
+  // Clamped so a refresh that shrinks the list never leaves an empty page
+  const currentUtxoPage = Math.min(utxoPage, utxoPageCount);
+  const utxoPageStart = (currentUtxoPage - 1) * UTXOS_PER_PAGE;
+  const visibleUtxos = filteredUtxos.slice(utxoPageStart, utxoPageStart + UTXOS_PER_PAGE);
+  const guardianSummaryUnavailable = utxoGuardians.length > 0 && successfulGuardianCount === 0;
+
+  const tooFewGuardians = successfulGuardianCount > 0 && successfulGuardianCount < utxoThreshold;
+  // Deviations from what a threshold of guardians agrees on, one sentence each
+  const guardianFindings = utxoGuardians.flatMap((guardian) => [
+    guardian.missing_outputs > 0
+      && `Guardian ${guardian.guardian_id} is missing ${pluralOutputs(guardian.missing_outputs)} the other guardians agree the federation holds.`,
+    guardian.extra_outputs > 0
+      && `Guardian ${guardian.guardian_id} lists ${pluralOutputs(guardian.extra_outputs)} the other guardians agree the federation does not hold.`,
+    guardian.wrong_amounts > 0
+      && `Guardian ${guardian.guardian_id} reports a different amount for ${pluralOutputs(guardian.wrong_amounts)}.`,
+  ].filter((finding): finding is string => Boolean(finding)));
+  const laggingGuardians = utxoGuardians.filter((guardian) => guardian.status === 'lagging');
+
+  useEffect(() => {
+    setUtxoPage(1);
+  }, [id, utxoView, utxoSearch]);
   
   // Calculate initial zoom to show last 3 months of data by default
   const initialZoom = useMemo(() => {
@@ -242,14 +354,15 @@ export function FederationDetail() {
   const fetchUTXOs = async (federationId: string) => {
     setUtxosLoading(true);
     try {
-  const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
-      const response = await fetch(`${BASE_URL}/federations/${federationId}/utxos`);
-      if (response.ok) {
-        const data = await response.json();
-        setUtxos(data);
-      }
+      const data = await api.getFederationUtxos(federationId);
+      setUtxoRows(data.utxos);
+      setUtxoGuardians(data.guardians);
+      setUtxoThreshold(data.threshold);
     } catch (err) {
       console.error('Failed to fetch UTXOs:', err);
+      setUtxoRows([]);
+      setUtxoGuardians([]);
+      setUtxoThreshold(0);
     } finally {
       setUtxosLoading(false);
     }
@@ -633,10 +746,10 @@ export function FederationDetail() {
                     )}
                     <div className="relative">
                       <select
-                        className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white text-xs sm:text-sm min-w-[140px] appearance-none cursor-pointer debug-select"
+                        className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white text-xs sm:text-sm min-w-[140px] appearance-none cursor-pointer"
                         value={chartMetric}
                         onChange={(e) => setChartMetric(e.target.value as 'volume' | 'count')}
-                        aria-label="Chart metric (debug)"
+                        aria-label="Chart metric"
                       >
                         <option value="volume">Volume</option>
                         <option value="count">Transactions</option>
@@ -686,50 +799,227 @@ export function FederationDetail() {
             <>
               <Alert
                 level="info"
-                message="The UTXO view is reconstructed from a combination of the public federation log and on-chain transactions, hence unconfirmed change UTXOs may be missing."
+                message="This view compares reconstructed observer history with guardian wallet data. Results may change while history is catching up."
               />
 
-              <div className="mt-4 relative shadow-md sm:rounded-lg">
-                <div className="bg-gray-100 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-400 uppercase font-semibold">
-                  UTXOs ({utxos.length} total)
+              <section className="mt-5 overflow-hidden border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+                <div className="flex flex-wrap items-end justify-between gap-3 border-b border-gray-200 px-4 py-4 dark:border-gray-700 sm:px-6">
+                  <div>
+                    <h2 className="text-base font-semibold text-gray-950 dark:text-white">Wallet UTXO Inventory</h2>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      One row per outpoint. Guardian agreement is shown alongside the reconstructed observer record.
+                    </p>
+                  </div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400">
+                    {successfulGuardianCount} of {utxoGuardians.length} guardians compared
+                  </div>
                 </div>
-                <div className="divide-y divide-gray-200 dark:divide-gray-700">
-                  {utxosLoading ? (
-                    <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
-                      Loading UTXOs...
+
+                {guardianSummaryUnavailable && (
+                  <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200 sm:px-6">
+                    Guardian wallet data is unavailable right now, so outputs are only checked for having been spent on-chain.
+                  </div>
+                )}
+
+                {tooFewGuardians && (
+                  <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200 sm:px-6">
+                    Only {successfulGuardianCount} of {utxoGuardians.length} guardians responded, but {utxoThreshold} must agree, so outputs cannot be verified right now.
+                  </div>
+                )}
+
+                {guardianFindings.length > 0 && (
+                  <div className="border-b border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-900 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200 sm:px-6">
+                    {guardianFindings.join(' ')}
+                  </div>
+                )}
+
+                {laggingGuardians.length > 0 && (
+                  <div className="border-b border-gray-200 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300 sm:px-6">
+                    Left out of the comparison because they are behind the federation:{' '}
+                    {laggingGuardians.map((guardian) => `guardian ${guardian.guardian_id} (session ${guardian.session_count})`).join(', ')}.
+                  </div>
+                )}
+                <div className="flex flex-col gap-3 border-b border-gray-200 px-4 py-3 dark:border-gray-700 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex flex-wrap gap-2" role="group" aria-label="Filter UTXOs by status">
+                    {(['all', 'verified', 'pending', 'mismatch'] as const).map((view) => {
+                      const active = utxoView === view;
+                      const alert = view === 'mismatch' && utxoCounts.mismatch > 0;
+                      return (
+                        <button
+                          key={view}
+                          type="button"
+                          onClick={() => setUtxoView(view)}
+                          aria-pressed={active}
+                          className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                            active
+                              ? 'border-blue-600 bg-blue-600 text-white'
+                              : alert
+                                ? 'border-rose-300 text-rose-700 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-300 dark:hover:bg-rose-950/40'
+                                : 'border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700/50'
+                          }`}
+                        >
+                          <span>{view === 'all' ? 'All' : UTXO_KIND_STYLES[view].label}</span>
+                          <span className={`tabular-nums ${active ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'}`}>{utxoCounts[view]}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <input
+                      type="search"
+                      value={utxoSearch}
+                      onChange={(event) => setUtxoSearch(event.target.value)}
+                      aria-label="Search UTXOs"
+                      placeholder="Search outpoint, txid, address or amount"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white sm:w-80"
+                    />
+                    <div className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
+                      {filteredUtxos.length === 0
+                        ? '0 UTXOs'
+                        : `${utxoPageStart + 1}–${utxoPageStart + visibleUtxos.length} of ${filteredUtxos.length}`}
                     </div>
-                  ) : utxos.length === 0 ? (
-                    <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
-                      No UTXOs found
-                    </div>
-                  ) : (
-                    utxos.map((utxo, index) => (
-                      <div key={index} className="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 px-3 sm:px-6 py-3 sm:py-4">
-                        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
-                          <div className="flex-1 min-w-0">
-                            <span className="text-[10px] sm:hidden uppercase text-gray-500 dark:text-gray-400 block mb-1">UTXO</span>
-                            <a
-                              href={`https://mempool.space/address/${utxo.address}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-600 underline dark:text-blue-500 hover:no-underline font-mono text-[10px] sm:text-xs block truncate"
-                              title={utxo.out_point}
-                            >
-                              {utxo.out_point}
-                            </a>
-                          </div>
-                          <div className="sm:text-right shrink-0">
-                            <span className="text-[10px] sm:hidden uppercase text-gray-500 dark:text-gray-400 block mb-1">Amount</span>
-                            <span className="text-xs sm:text-sm text-gray-900 dark:text-white font-mono whitespace-nowrap">
-                              {(utxo.amount / 100000000000).toFixed(8)} BTC
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    ))
-                  )}
+                  </div>
                 </div>
-              </div>
+
+                <table className="w-full table-fixed text-left text-sm">
+                  <colgroup>
+                    <col />
+                    <col className="hidden w-32 sm:table-column" />
+                    <col className="hidden w-28 sm:table-column" />
+                    <col className="w-36 sm:w-40" />
+                  </colgroup>
+                  <thead className="border-b border-gray-200 bg-gray-50 text-[11px] font-medium uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-400">
+                    <tr>
+                      <th scope="col" className="px-4 py-2 sm:px-6">Outpoint</th>
+                      <th scope="col" className="hidden px-2 py-2 sm:table-cell">Guardians</th>
+                      <th scope="col" className="hidden px-2 py-2 sm:table-cell">Status</th>
+                      <th scope="col" className="px-4 py-2 text-right sm:px-6">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-700/70">
+                    {utxosLoading ? (
+                      <tr>
+                        <td colSpan={4} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">Loading UTXOs...</td>
+                      </tr>
+                    ) : filteredUtxos.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+                          {utxoSearch.trim() ? `No UTXOs match "${utxoSearch.trim()}"` : 'No UTXOs found'}
+                        </td>
+                      </tr>
+                    ) : (
+                      visibleUtxos.map((utxo) => {
+                        const style = UTXO_KIND_STYLES[utxo.kind];
+                        const heldBy = comparedGuardianIds.filter((guardianId) => utxo.guardianStates.has(guardianId)).length;
+                        return (
+                          <tr
+                            key={utxo.outPoint}
+                            className={`align-top transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40 ${utxo.kind === 'mismatch' ? 'bg-rose-50/50 dark:bg-rose-950/10' : ''}`}
+                          >
+                            <td className="px-4 py-2.5 sm:px-6">
+                              <a
+                                href={mempoolTxUrl(utxo.outPoint)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block truncate font-mono text-xs text-blue-700 hover:underline dark:text-blue-400"
+                                title={utxo.outPoint}
+                              >
+                                {shortOutpoint(utxo.outPoint)}
+                              </a>
+                              {utxo.address && (
+                                <a
+                                  href={mempoolAddressUrl(utxo.address)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="mt-0.5 block truncate font-mono text-[11px] text-gray-500 hover:underline dark:text-gray-400"
+                                  title={utxo.address}
+                                >
+                                  {shortMiddle(utxo.address, 10, 8)}
+                                </a>
+                              )}
+                              {utxo.detail && <p className={`mt-1 text-xs ${style.detail}`}>{linkTxids(utxo.detail)}</p>}
+                            </td>
+                            <td className="hidden px-2 py-2.5 sm:table-cell">
+                              {comparedGuardianIds.length > 0 && (
+                                <div className="flex items-center gap-2" aria-label={`Listed by ${heldBy} of ${comparedGuardianIds.length} guardians`}>
+                                  <div className="flex gap-1">
+                                    {comparedGuardianIds.map((guardianId) => {
+                                      const state = utxo.guardianStates.get(guardianId);
+                                      const dot = !state
+                                        ? 'border border-gray-400 dark:border-gray-500'
+                                        : state === 'spendable' || state === 'unconfirmed_change'
+                                          ? 'bg-emerald-500'
+                                          : 'bg-amber-400';
+                                      return (
+                                        <span
+                                          key={guardianId}
+                                          title={`Guardian ${guardianId}: ${state ? state.replaceAll('_', ' ') : 'not listed'}`}
+                                          className={`h-2.5 w-2.5 rounded-full ${dot}`}
+                                        />
+                                      );
+                                    })}
+                                  </div>
+                                  <span className="text-xs tabular-nums text-gray-500 dark:text-gray-400">{heldBy}/{comparedGuardianIds.length}</span>
+                                </div>
+                              )}
+                            </td>
+                            <td className="hidden px-2 py-2.5 sm:table-cell">
+                              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${style.pill}`}>{style.label}</span>
+                            </td>
+                            <td className="px-4 py-2.5 text-right sm:px-6">
+                              <div className="whitespace-nowrap font-mono text-xs tabular-nums text-gray-900 dark:text-white">
+                                {formatMsatsAsBtc(utxo.amount)}
+                              </div>
+                              <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium sm:hidden ${style.pill}`}>{style.label}</span>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+
+                {utxoPageCount > 1 && (
+                  <nav
+                    aria-label="UTXO pages"
+                    className="flex flex-wrap items-center justify-between gap-2 border-t border-gray-200 px-4 py-3 dark:border-gray-700 sm:px-6"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setUtxoPage(currentUtxoPage - 1)}
+                      disabled={currentUtxoPage === 1}
+                      className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                    >
+                      ← Previous
+                    </button>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {utxoPageItems(currentUtxoPage, utxoPageCount).map((item, index) =>
+                        item === 'gap' ? (
+                          <span key={`gap-${index}`} className="px-1 text-xs text-gray-400">…</span>
+                        ) : (
+                          <button
+                            key={item}
+                            type="button"
+                            onClick={() => setUtxoPage(item)}
+                            aria-current={item === currentUtxoPage ? 'page' : undefined}
+                            className={`min-w-8 rounded-md px-2 py-1.5 text-xs font-medium ${item === currentUtxoPage ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700'}`}
+                          >
+                            {item}
+                          </button>
+                        )
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setUtxoPage(currentUtxoPage + 1)}
+                      disabled={currentUtxoPage === utxoPageCount}
+                      className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                    >
+                      Next →
+                    </button>
+                  </nav>
+                )}
+              </section>
             </>
           )}
 
@@ -746,6 +1036,53 @@ export function FederationDetail() {
   );
 }
 
+function pluralOutputs(count: number): string {
+  return `${count} ${count === 1 ? 'output' : 'outputs'}`;
+}
+
+function formatMsatsAsBtc(msats: number): string {
+  return `${(msats / MSATS_PER_BTC).toFixed(8)} BTC`;
+}
+
+// `txid:vout` with the txid shortened in the middle; the full value is in the title
+function shortOutpoint(outPoint: string): string {
+  const [txid, vout] = outPoint.split(':');
+  return vout === undefined ? shortMiddle(outPoint, 12, 12) : `${shortMiddle(txid, 12, 12)}:${vout}`;
+}
+
+function shortMiddle(value: string, head: number, tail: number): string {
+  return value.length <= head + tail + 1 ? value : `${value.slice(0, head)}…${value.slice(-tail)}`;
+}
+
+// Shortens transaction ids in backend descriptions and links them to mempool
+function linkTxids(text: string) {
+  return text.split(/\b([0-9a-f]{64})\b/).map((part, index) =>
+    index % 2 === 1 ? (
+      <a
+        key={index}
+        href={mempoolTxUrl(part)}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="font-mono underline hover:no-underline"
+        title={part}
+      >
+        {shortMiddle(part, 8, 8)}
+      </a>
+    ) : (
+      part
+    )
+  );
+}
+
+function mempoolTxUrl(outPoint: string): string {
+  const txid = outPoint.split(':')[0] ?? outPoint;
+  return `https://mempool.space/tx/${txid}`;
+}
+
+function mempoolAddressUrl(address: string): string {
+  return `https://mempool.space/address/${address}`;
+}
+
 async function fetchFederationConfig(federationId: string, inviteCode: string): Promise<FederationConfig> {
   const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
 
@@ -757,7 +1094,7 @@ async function fetchFederationConfig(federationId: string, inviteCode: string): 
       return parseConfig(config);
     }
   } catch {
-    console.log('Failed to fetch from /federations/{id}/config, trying invite code fallback');
+    // Fallback below handles federations that are not actively observed.
   }
 
   // Fallback: fetch config using invite code (works for any federation with valid invite)

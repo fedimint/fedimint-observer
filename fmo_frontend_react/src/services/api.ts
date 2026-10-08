@@ -1,6 +1,7 @@
 import type {
   FedimintTotals,
   FederationSummary,
+  FederationUtxosResponse,
   GatewayInfo,
   GatewayUptimeTrendPoint,
   GatewayWindow,
@@ -29,6 +30,14 @@ export const api = {
     const response = await fetch(`${BASE_URL}/nostr/federations`);
     if (!response.ok) {
       throw new Error('Failed to fetch nostr federations');
+    }
+    return response.json();
+  },
+
+  async getFederationUtxos(id: string): Promise<FederationUtxosResponse> {
+    const response = await fetch(`${BASE_URL}/federations/${id}/utxos`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch UTXOs for federation ${id} (${response.status})`);
     }
     return response.json();
   },
