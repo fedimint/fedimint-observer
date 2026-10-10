@@ -138,3 +138,18 @@ pub struct GatewayUptimeTrendPoint {
     pub total_samples: u64,
     pub uptime_pct: f64,
 }
+
+/// A federation's gateways and their availability trend for one window,
+/// computed at the same moment so both always agree
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayOverview {
+    /// The window label, e.g. `7d`
+    pub window: String,
+    pub computed_at: DateTime<Utc>,
+    /// Left out when `include` doesn't ask for `gateways`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateways: Option<Vec<GatewayInfo>>,
+    /// Left out when `include` doesn't ask for `trend`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime_trend: Option<Vec<GatewayUptimeTrendPoint>>,
+}

@@ -61,6 +61,15 @@ export interface GatewayUptimeTrendPoint {
   uptime_pct: number;
 }
 
-export type GatewayWindow = '1h' | '24h' | '7d' | '30d' | '90d';
+export type GatewayWindow = '24h' | '7d' | '30d' | '90d';
+
+// Gateways and their trend for one window, computed together on the server
+export interface GatewayOverview {
+  window: GatewayWindow;
+  computed_at: string;
+  // Both are present unless the request narrows them with ?include=
+  gateways?: GatewayInfo[];
+  uptime_trend?: GatewayUptimeTrendPoint[];
+}
 
 export type FederationHealth = 'online' | 'degraded' | 'offline';

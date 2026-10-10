@@ -2,7 +2,7 @@ import type {
   FedimintTotals,
   FederationSummary,
   GatewayInfo,
-  GatewayUptimeTrendPoint,
+  GatewayOverview,
   GatewayWindow,
 } from '../types/api';
 
@@ -33,31 +33,17 @@ export const api = {
     return response.json();
   },
 
-  async getFederationGateways(id: string, window?: GatewayWindow): Promise<GatewayInfo[]> {
-    const query = window ? `?window=${encodeURIComponent(window)}` : '';
-    const response = await fetch(`${BASE_URL}/federations/${id}/gateways${query}`);
+  async getFederationGatewayOverview(id: string, window: GatewayWindow, signal?: AbortSignal): Promise<GatewayOverview> {
+    const response = await fetch(`${BASE_URL}/federations/${id}/gateways/overview?window=${encodeURIComponent(window)}`, { signal });
     if (!response.ok) {
-      throw new Error(`Failed to fetch gateways for federation ${id} (${response.status})`);
+      throw new Error(`Failed to fetch gateways (${response.status})`);
     }
     return response.json();
   },
 
-  async getFederationGatewayUptimeTrend(
-    id: string,
-    window: GatewayWindow,
-  ): Promise<GatewayUptimeTrendPoint[]> {
-    const response = await fetch(
-      `${BASE_URL}/federations/${id}/gateways/uptime-trend?window=${encodeURIComponent(window)}`,
-    );
-    if (!response.ok) {
-      throw new Error(`Failed to fetch gateway uptime trend (${response.status})`);
-    }
-    return response.json();
-  },
-
-  async getFederationGatewaysByInvite(inviteCode: string): Promise<GatewayInfo[]> {
+  async getFederationGatewaysByInvite(inviteCode: string, signal?: AbortSignal): Promise<GatewayInfo[]> {
     const encodedInvite = encodeURIComponent(inviteCode);
-    const response = await fetch(`${BASE_URL}/config/${encodedInvite}/gateways`);
+    const response = await fetch(`${BASE_URL}/config/${encodedInvite}/gateways`, { signal });
     if (!response.ok) {
       throw new Error(`Failed to fetch gateways by invite (${response.status})`);
     }
