@@ -61,13 +61,14 @@ pub async fn fetch_federation_config(
 
 pub async fn fetch_federation_gateways(
     Path(invite): Path<InviteCode>,
+    State(state): State<AppState>,
 ) -> Result<Json<Vec<GatewayInfo>>> {
-    let connectors = fedimint_connectors::ConnectorRegistry::build_from_client_env()?
-        .bind()
-        .await?;
+    // Reuse the observer's registry: a registry built per request keeps its
+    // guardian connections open after the request ends
+    let connectors = state.federation_observer.connectors();
     let (config, _api) =
-        fedimint_api_client::download_from_invite_code(&connectors, &invite).await?;
-    let gateways = fetch_gateways_for_config(&config).await?;
+        fedimint_api_client::download_from_invite_code(connectors, &invite).await?;
+    let gateways = fetch_gateways_for_config(connectors, &config).await?;
     Ok(gateways.into())
 }
 

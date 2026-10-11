@@ -49,6 +49,7 @@ use tracing::{debug, error, info_span, warn, Instrument};
 use crate::config::meta::{ConsensusMetaCache, MetaFieldsExt};
 use crate::db::DbMigration;
 use crate::federation::db::Federation;
+use crate::federation::gateways::GatewayOverviewCache;
 use crate::federation::{db, decoders_from_config, instance_to_kind};
 use crate::util::{execute, query, query_one, query_opt, query_value};
 use crate::{migration, migration_backfill, schema_setup};
@@ -90,6 +91,7 @@ pub struct FederationObserver {
     connectors: ConnectorRegistry,
     guardian_claims_cache: Arc<Mutex<HashMap<FederationId, GuardianClaimsSlot>>>,
     onchain_cache: Arc<Mutex<HashMap<OutPoint, (Instant, OnChainOutput)>>>,
+    gateway_overviews: GatewayOverviewCache,
 }
 
 impl FederationObserver {
@@ -117,6 +119,7 @@ impl FederationObserver {
             connectors,
             guardian_claims_cache: Default::default(),
             onchain_cache: Default::default(),
+            gateway_overviews: Default::default(),
         };
 
         slf.setup_schema().await?;
@@ -131,11 +134,20 @@ impl FederationObserver {
             .spawn_cancellable("sync nostr events", Self::sync_nostr_events(slf.clone()));
         slf.task_group
             .spawn_cancellable("refresh views", Self::refresh_views(slf.clone()));
+        slf.task_group.spawn_cancellable(
+            "refresh gateway overviews",
+            Self::refresh_gateway_overviews(slf.clone()),
+        );
+
         Ok(slf)
     }
 
     pub fn connectors(&self) -> &ConnectorRegistry {
         &self.connectors
+    }
+
+    pub(crate) fn gateway_overviews(&self) -> &GatewayOverviewCache {
+        &self.gateway_overviews
     }
 
     async fn spawn_observer(&self, federation: Federation) {

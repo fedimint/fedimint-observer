@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { readStorage, writeStorage } from '../utils/storage';
 
 export type Theme = 'light' | 'dark' | 'auto';
 
@@ -15,7 +16,7 @@ const getStoredTheme = (): Theme | null => {
   if (typeof window === 'undefined') {
     return null;
   }
-  const stored = window.localStorage.getItem('theme');
+  const stored = readStorage('theme');
   if (stored === 'light' || stored === 'dark' || stored === 'auto') {
     return stored;
   }
@@ -100,11 +101,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       
       // Save to localStorage, or clear it for auto mode
       if (typeof window !== 'undefined') {
-        if (newTheme === 'auto') {
-          window.localStorage.removeItem('theme');
-        } else {
-          window.localStorage.setItem('theme', newTheme);
-        }
+        writeStorage('theme', newTheme === 'auto' ? null : newTheme);
       }
       return newTheme;
     });
