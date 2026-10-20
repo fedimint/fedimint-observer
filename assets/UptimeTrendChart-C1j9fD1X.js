@@ -1,0 +1,1 @@
+import{j as s}from"./index-C62Bk_pu.js";import{T as a,U as r,Q as e,V as i,W as o,X as l}from"./installCanvasRenderer-CjgGiOBt.js";import{i as n}from"./install-Cual4tPE.js";e([n,i,o,l]);function h({option:t}){return s.jsx(a,{echarts:r,option:t,style:{height:210},notMerge:!0,lazyUpdate:!0})}export{h as UptimeTrendChart};
