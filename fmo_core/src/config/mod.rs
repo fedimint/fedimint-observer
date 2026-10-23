@@ -16,6 +16,7 @@ use crate::config::meta::fetch_federation_meta;
 use crate::config::modules::fetch_federation_module_kinds;
 use crate::error::Result;
 use crate::federation::gateways::fetch_gateways_for_config;
+use crate::module::ModuleRegistry;
 use crate::util::config_to_json;
 use crate::AppState;
 
@@ -54,7 +55,7 @@ pub async fn fetch_federation_config(
 ) -> Result<Json<JsonClientConfig>> {
     Ok(state
         .federation_config_cache
-        .fetch_config_cached(&invite)
+        .fetch_config_cached(&invite, state.federation_observer.modules())
         .await?
         .into())
 }
@@ -81,6 +82,7 @@ impl FederationConfigCache {
     pub async fn fetch_config_cached(
         &self,
         invite: &InviteCode,
+        modules: &ModuleRegistry,
     ) -> anyhow::Result<JsonClientConfig> {
         let federation_id = invite.federation_id();
 
@@ -88,7 +90,7 @@ impl FederationConfigCache {
             return Ok(config);
         }
 
-        let config = fetch_config_inner(invite).await?;
+        let config = fetch_config_inner(invite, modules).await?;
         let mut cache = self.federations.write().await;
         if let Some(replaced) = cache.insert(federation_id, config.clone()) {
             if replaced != config {
@@ -101,11 +103,14 @@ impl FederationConfigCache {
     }
 }
 
-async fn fetch_config_inner(invite: &InviteCode) -> anyhow::Result<JsonClientConfig> {
+async fn fetch_config_inner(
+    invite: &InviteCode,
+    modules: &ModuleRegistry,
+) -> anyhow::Result<JsonClientConfig> {
     let connectors = fedimint_connectors::ConnectorRegistry::build_from_client_env()?
         .bind()
         .await?;
     let (raw_config, _api) =
         fedimint_api_client::download_from_invite_code(&connectors, invite).await?;
-    config_to_json(raw_config)
+    config_to_json(raw_config, modules)
 }

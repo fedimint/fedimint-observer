@@ -27,7 +27,7 @@ pub async fn fetch_federation_meta(
 ) -> crate::error::Result<Json<MetaFields>> {
     let config = state
         .federation_config_cache
-        .fetch_config_cached(&invite)
+        .fetch_config_cached(&invite, state.federation_observer.modules())
         .await?;
 
     federation_meta(&config, &state).await

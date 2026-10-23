@@ -2595,11 +2595,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "fmo_server"
+name = "fmo_core"
 version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-stream",
+ "async-trait",
  "axum 0.7.9",
  "axum-auth",
  "bitcoin 0.32.102",
@@ -2614,7 +2615,6 @@ dependencies = [
  "fedimint-core 0.12.0",
  "fedimint-ln-common",
  "fedimint-meta-client",
- "fedimint-mint-common",
  "fedimint-wallet-common",
  "fmo_api_types",
  "futures",
@@ -2625,12 +2625,73 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "stability-pool-common",
  "tokio",
  "tokio-postgres",
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "fmo_module_ln"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fedimint-core 0.12.0",
+ "fedimint-ln-common",
+ "fmo_core",
+ "serde_json",
+]
+
+[[package]]
+name = "fmo_module_mint"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "fedimint-core 0.12.0",
+ "fedimint-mint-common",
+ "fmo_core",
+ "serde_json",
+]
+
+[[package]]
+name = "fmo_module_stability_pool"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "fedimint-core 0.12.0",
+ "fmo_core",
+ "serde_json",
+ "stability-pool-common",
+]
+
+[[package]]
+name = "fmo_module_wallet"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin 0.32.102",
+ "esplora-client 0.10.0",
+ "fedimint-core 0.12.0",
+ "fedimint-wallet-common",
+ "fmo_core",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "fmo_server"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "fmo_core",
+ "fmo_module_ln",
+ "fmo_module_mint",
+ "fmo_module_stability_pool",
+ "fmo_module_wallet",
+ "tokio",
 ]
 
 [[package]]

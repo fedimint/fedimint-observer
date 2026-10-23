@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use crate::federation::db;
 use crate::federation::observer::FederationObserver;
-use crate::util::{get_decoders, query, query_one, query_value};
+use crate::util::{query, query_one, query_value};
 use crate::AppState;
 
 pub(super) async fn list_transactions(
@@ -121,11 +121,7 @@ impl FederationObserver {
 
         let tx = query_one::<db::Transaction>(&self.connection().await?, "SELECT txid, session_index, item_index, data FROM transactions WHERE federation_id = $1 AND txid = $2", &[&federation_id.consensus_encode_to_vec(), &transaction_id.consensus_encode_to_vec()]).await?;
 
-        let decoders = get_decoders(
-            cfg.modules
-                .into_iter()
-                .map(|(module_instance_id, module_cfg)| (module_instance_id, module_cfg.kind)),
-        );
+        let decoders = self.modules().decoders_for_config(&cfg);
 
         let inputs = tx
             .data

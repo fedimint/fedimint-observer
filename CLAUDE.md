@@ -58,25 +58,30 @@ just pg_restore BACKUP_FILE
 
 ### Testing Specific Components
 ```bash
-just test_package fmo_server
+just test_package fmo_core
 ```
 
 ## Architecture Overview
 
 ### Workspace Structure
 - `fmo_api_types/` - Shared API types between frontend and backend
-- `fmo_server/` - Backend server (Axum + PostgreSQL)
+- `fmo_core/` - Backend library (Axum + PostgreSQL): fetching, storage, API and shared services
   - `/config/*` endpoints - Federation configuration API (stable)
   - `/federations/*` endpoints - Federation monitoring API (unstable)
   - Background tasks for monitoring federations and syncing data
+  - `module.rs` - the `ObserverModule` trait and `ModuleRegistry`
+- `fmo_modules/` - One crate per Fedimint module (`fmo_module_mint`, `_wallet`, `_ln`): decoding and processing of that module's inputs, outputs and consensus items
+  - `fmo_module_stability_pool` (Fedi's stability pool v1) is optional and outside the workspace members: `fmo_server --features stability_pool_v1` registers it, and it doesn't build until Fedi's `stability-pool-common` supports this Fedimint version
+- `fmo_server/` - The default build: `FedimintObserver::builder().with_module(...)` with the mint, wallet and ln modules
 - `fmo_frontend_react/` - Frontend (React + TypeScript)
 
 ### Key Patterns
 1. **Shared Types**: All API types are defined in `fmo_api_types` and used by both frontend and backend
-2. **Database Migrations**: Version-controlled SQL migrations in `fmo_server/schema/` (v0-v8)
-3. **Background Monitoring**: `FederationObserver` spawns tasks to monitor multiple federations concurrently
-4. **State Management**: Backend uses shared app state with Arc/RwLock for thread safety
-5. **Error Handling**: Custom `AppError` type wrapping `anyhow::Error` for consistent error propagation
+2. **Database Migrations**: Version-controlled SQL migrations in `fmo_core/schema/` (v0-v11)
+3. **Modules**: Core writes the module-agnostic rows of every session item from the summary the owning module returns, then lets the module write its own tables in the same transaction. Kinds without a module in the build are stored without amounts or details, and adding the module later does not fill them in yet (core rows are written once). The default build must keep mint, wallet and ln: the v8 and v11 backfills need them. Module-specific API endpoints and background tasks (UTXOs, nonces, gateways) still live in `fmo_core`.
+4. **Background Monitoring**: `FederationObserver` spawns tasks to monitor multiple federations concurrently
+5. **State Management**: Backend uses shared app state with Arc/RwLock for thread safety
+6. **Error Handling**: Custom `AppError` type wrapping `anyhow::Error` for consistent error propagation
 
 ### Environment Configuration
 Required environment variables (see `sample.env`):

@@ -18,7 +18,6 @@ use bitcoin::OutPoint;
 use fedimint_core::config::{ClientConfig, FederationId, JsonClientConfig};
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::invite_code::InviteCode;
-use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::Amount;
 use fmo_api_types::{
     FederationSummary, FederationUtxo, FederationUtxosResponse, FedimintTotals,
@@ -37,7 +36,7 @@ use crate::federation::session::{count_sessions, list_sessions};
 use crate::federation::transaction::{
     count_transactions, list_transactions, transaction, transaction_histogram,
 };
-use crate::util::{config_to_json, get_decoders};
+use crate::util::config_to_json;
 use crate::{federation, AppState};
 
 pub fn get_federations_routes() -> Router<AppState> {
@@ -112,13 +111,14 @@ pub(crate) async fn get_federation_config(
     Path(federation_id): Path<FederationId>,
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<JsonClientConfig>> {
+    let observer = &state.federation_observer;
     Ok(config_to_json(
-        state
-            .federation_observer
+        observer
             .get_federation(federation_id)
             .await?
             .context("Federation not observed, you might want to try /config/:federation_invite")?
             .config,
+        observer.modules(),
     )?
     .into())
 }
@@ -698,18 +698,6 @@ async fn backfill_federation(
         .federation_observer
         .backfill_federation(federation_id, params.session_start, params.session_end)
         .await?)
-}
-
-fn decoders_from_config(config: &ClientConfig) -> ModuleDecoderRegistry {
-    get_decoders(
-        config
-            .modules
-            .iter()
-            .map(|(module_instance_id, module_config)| {
-                (*module_instance_id, module_config.kind.clone())
-            }),
-    )
-    .with_fallback()
 }
 
 fn instance_to_kind(config: &ClientConfig, module_instance_id: ModuleInstanceId) -> String {

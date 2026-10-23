@@ -19,5 +19,9 @@ pub(super) async fn get_federation_meta(
         .context("Federation not observed, you might want to try /config/:federation_invite")?
         .config;
 
-    federation_meta(&config_to_json(config)?, &state).await
+    federation_meta(
+        &config_to_json(config, state.federation_observer.modules())?,
+        &state,
+    )
+    .await
 }

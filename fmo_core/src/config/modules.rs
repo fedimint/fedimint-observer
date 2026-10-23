@@ -13,7 +13,7 @@ pub async fn fetch_federation_module_kinds(
 ) -> crate::error::Result<Json<BTreeSet<ModuleKind>>> {
     let config = state
         .federation_config_cache
-        .fetch_config_cached(&invite)
+        .fetch_config_cached(&invite, state.federation_observer.modules())
         .await?;
     let module_kinds = config
         .modules

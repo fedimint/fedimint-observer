@@ -22,15 +22,8 @@ use fedimint_core::task::TaskGroup;
 use fedimint_core::util::backoff_util::background_backoff;
 use fedimint_core::util::retry;
 use fedimint_core::{Amount, PeerId};
-use fedimint_ln_common::contracts::{Contract, IdentifiableContract};
-use fedimint_ln_common::{
-    LightningConsensusItem, LightningInput, LightningOutput, LightningOutputV0,
-};
-use fedimint_mint_common::{MintConsensusItem, MintInput, MintOutput};
 use fedimint_wallet_common::endpoint_constants::WALLET_SUMMARY_ENDPOINT;
-use fedimint_wallet_common::{
-    TxOutputSummary, WalletConsensusItem, WalletInput, WalletOutput, WalletOutputV0, WalletSummary,
-};
+use fedimint_wallet_common::{TxOutputSummary, WalletInput, WalletSummary};
 use fmo_api_types::{
     FederationActivity, FederationHealth, FederationSummary, FederationUtxo, FedimintTotals,
     GuardianClaimedUtxo, GuardianClaimedUtxoState, GuardianUtxoClaim, GuardianUtxoClaimStatus,
@@ -39,8 +32,6 @@ use fmo_api_types::{
 use futures::future::join_all;
 use futures::StreamExt;
 use postgres_from_row::FromRow;
-#[cfg(feature = "stability_pool_v1")]
-use stability_pool_common::{StabilityPoolConsensusItem, StabilityPoolInput, StabilityPoolOutput};
 use tokio::time::sleep;
 use tokio_postgres::NoTls;
 use tracing::log::info;
@@ -50,7 +41,8 @@ use crate::config::meta::{ConsensusMetaCache, MetaFieldsExt};
 use crate::db::DbMigration;
 use crate::federation::db::Federation;
 use crate::federation::gateways::GatewayOverviewCache;
-use crate::federation::{db, decoders_from_config, instance_to_kind};
+use crate::federation::{db, instance_to_kind};
+use crate::module::{CiMeta, ItemMeta, ModuleRegistry, ProcessCtx};
 use crate::util::{execute, query, query_one, query_opt, query_value};
 use crate::{migration, migration_backfill, schema_setup};
 
@@ -92,6 +84,7 @@ pub struct FederationObserver {
     guardian_claims_cache: Arc<Mutex<HashMap<FederationId, GuardianClaimsSlot>>>,
     onchain_cache: Arc<Mutex<HashMap<OutPoint, (Instant, OnChainOutput)>>>,
     gateway_overviews: GatewayOverviewCache,
+    modules: ModuleRegistry,
 }
 
 impl FederationObserver {
@@ -99,6 +92,7 @@ impl FederationObserver {
         database: &str,
         admin_auth: &str,
         mempool_url: &str,
+        modules: ModuleRegistry,
     ) -> anyhow::Result<FederationObserver> {
         let connection_pool = {
             let pool_config = deadpool_postgres::Config {
@@ -120,6 +114,7 @@ impl FederationObserver {
             guardian_claims_cache: Default::default(),
             onchain_cache: Default::default(),
             gateway_overviews: Default::default(),
+            modules,
         };
 
         slf.setup_schema().await?;
@@ -144,6 +139,10 @@ impl FederationObserver {
 
     pub fn connectors(&self) -> &ConnectorRegistry {
         &self.connectors
+    }
+
+    pub fn modules(&self) -> &ModuleRegistry {
+        &self.modules
     }
 
     pub(crate) fn gateway_overviews(&self) -> &GatewayOverviewCache {
@@ -280,6 +279,25 @@ impl FederationObserver {
             "Database schema is newer than this binary; use a compatible observer version"
         );
 
+        // Backfills reprocess stored sessions with the registered modules and
+        // mark the migration done, so a build missing one would leave its
+        // data incomplete for good
+        const BACKFILL_MODULES: [&str; 3] = ["ln", "mint", "wallet"];
+        let needs_backfill = migrations.iter().enumerate().any(|(index, migration)| {
+            migration.backfill.is_some()
+                && maybe_schema_version.is_some_and(|schema_version| index > schema_version)
+        });
+        if needs_backfill {
+            let missing = BACKFILL_MODULES
+                .into_iter()
+                .filter(|kind| self.modules.get(kind).is_none())
+                .collect::<Vec<_>>();
+            ensure!(
+                missing.is_empty(),
+                "Pending migrations reprocess stored data and need the {missing:?} modules, which this build doesn't include"
+            );
+        }
+
         for (index, migration) in migrations.iter().enumerate() {
             if maybe_schema_version.is_none_or(|schema_version| index > schema_version) {
                 let mut conn = self.connection().await?;
@@ -330,7 +348,7 @@ impl FederationObserver {
                 "Parsing all session outcomes for fed: {}",
                 fed.federation_id
             );
-            let decoders = decoders_from_config(&fed.config);
+            let decoders = self.modules.decoders_for_config(&fed.config);
             let session_outcome_rows = dbtx
                 .query(
                     "SELECT * FROM sessions WHERE federation_id = $1",
@@ -387,7 +405,7 @@ impl FederationObserver {
         // wallet_withdrawal_addresses locks the federations table it references
         // until commit, so another connection would wait on us forever
         for fed in query::<Federation>(dbtx, "SELECT * FROM federations", &[]).await? {
-            let decoders = decoders_from_config(&fed.config);
+            let decoders = self.modules.decoders_for_config(&fed.config);
             let rows = dbtx
                 .query(
                     "SELECT p.on_chain_txid, p.on_chain_vout, p.in_index, t.data
@@ -718,7 +736,7 @@ impl FederationObserver {
             .map(|(&peer_id, peer_url)| (peer_id, peer_url.url.clone()))
             .collect();
         let api = DynGlobalApi::new(self.connectors.clone(), peers, None)?;
-        let decoders = decoders_from_config(&config);
+        let decoders = self.modules.decoders_for_config(&config);
 
         info!("Starting background job for {federation_id}");
         let next_session = self.federation_session_count(federation_id).await?;
@@ -796,7 +814,7 @@ impl FederationObserver {
         for (item_idx, item) in signed_session_outcome.items.into_iter().enumerate() {
             match item.item {
                 ConsensusItem::Transaction(transaction) => {
-                    Self::process_transaction(
+                    self.process_transaction(
                         dbtx,
                         federation_id,
                         &config,
@@ -807,7 +825,7 @@ impl FederationObserver {
                     .await?;
                 }
                 ConsensusItem::Module(module_ci) => {
-                    Self::process_ci(
+                    self.process_ci(
                         dbtx,
                         federation_id,
                         &config,
@@ -815,7 +833,6 @@ impl FederationObserver {
                         item_idx as u64,
                         item.peer,
                         module_ci,
-                        &self.mempool_url,
                     )
                     .await?;
                 }
@@ -830,14 +847,20 @@ impl FederationObserver {
     }
 
     async fn process_transaction(
+        &self,
         dbtx: &Transaction<'_>,
         federation_id: FederationId,
         config: &ClientConfig,
         session_index: u64,
         item_index: u64,
         transaction: fedimint_core::transaction::Transaction,
-    ) -> Result<(), tokio_postgres::Error> {
+    ) -> anyhow::Result<()> {
         let fedimint_txid = transaction.tx_hash();
+        let ctx = ProcessCtx {
+            dbtx,
+            config,
+            mempool_url: &self.mempool_url,
+        };
 
         dbtx.execute(
             "INSERT INTO transactions VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
@@ -853,48 +876,10 @@ impl FederationObserver {
 
         for (in_idx, input) in transaction.inputs.into_iter().enumerate() {
             let kind = instance_to_kind(config, input.module_instance_id());
-            let (maybe_amount_msat, maybe_ln_contract_id) = match kind.as_str() {
-                "ln" => {
-                    let input = input
-                        .as_any()
-                        .downcast_ref::<LightningInput>()
-                        .expect("Not LN input")
-                        .maybe_v0_ref()
-                        .expect("Not v0");
-
-                    (Some(input.amount.msats), Some(input.contract_id))
-                }
-                "mint" => {
-                    let amount_msat = input
-                        .as_any()
-                        .downcast_ref::<MintInput>()
-                        .expect("Not Mint input")
-                        .maybe_v0_ref()
-                        .expect("Not v0")
-                        .amount
-                        .msats;
-
-                    (Some(amount_msat), None)
-                }
-                "wallet" => {
-                    let amount = match input
-                        .as_any()
-                        .downcast_ref::<WalletInput>()
-                        .expect("Not Wallet input")
-                    {
-                        WalletInput::V0(wallet_input) => wallet_input.tx_output().value,
-                        WalletInput::V1(wallet_input) => wallet_input.tx_out.value,
-                        _ => {
-                            panic!("Unsupported WalletInput version");
-                        }
-                    };
-
-                    let amount_msat = amount.to_sat() * 1000;
-
-                    (Some(amount_msat), None)
-                }
-                _ => (None, None),
-            };
+            let module = self.modules.get(&kind);
+            let summary = module
+                .map(|module| module.summarize_input(&input))
+                .unwrap_or_default();
 
             dbtx.execute(
                 "INSERT INTO transaction_inputs VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
@@ -903,103 +888,26 @@ impl FederationObserver {
                     &fedimint_txid.consensus_encode_to_vec(),
                     &(in_idx as i32),
                     &kind,
-                    &maybe_ln_contract_id.map(|cid| cid.consensus_encode_to_vec()),
-                    &maybe_amount_msat.map(|amt| amt as i64),
+                    &summary.ln_contract_id,
+                    &summary.amount_msat.map(|amt| amt as i64),
                 ],
             )
             .await?;
 
-            if kind.as_str() == "wallet" {
-                let (outpoint, script) = match input
-                    .as_any()
-                    .downcast_ref::<WalletInput>()
-                    .expect("Not Wallet input")
-                {
-                    WalletInput::V0(peg_in_proof) => {
-                        let outpoint = peg_in_proof.outpoint();
-                        let script = peg_in_proof.tx_output().script_pubkey;
-                        (outpoint, script)
-                    }
-                    WalletInput::V1(v1) => (v1.outpoint, v1.tx_out.script_pubkey.clone()),
-                    WalletInput::Default { variant, .. } => {
-                        panic!("WalletInput v{variant} not implemented");
-                    }
-                };
-
-                let address = bitcoin::Address::from_script(&script, bitcoin::Network::Bitcoin)
-                    .expect("Invalid output address");
-
-                dbtx.execute(
-                        "INSERT INTO wallet_peg_ins VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
-                        &[
-                            &outpoint.txid[..].to_owned(),
-                            &(outpoint.vout as i32),
-                            &address.to_string(),
-                            &maybe_amount_msat.map(|amt| amt as i64).expect("Wallet input must have amount"),
-                            &federation_id.consensus_encode_to_vec(),
-                            &fedimint_txid.consensus_encode_to_vec(),
-                            &(in_idx as i32),
-                        ]
-                    ).await?;
+            let meta = ItemMeta {
+                federation_id,
+                module_instance_id: input.module_instance_id(),
+                txid: fedimint_txid,
+                session_index,
+                item_index,
+                index: in_idx as u64,
+            };
+            match module {
+                Some(module) => module.process_input(&ctx, &meta, &input, &summary).await?,
+                None => warn!("Transaction Input of kind {kind}. Not implemented."),
             }
 
-            let json_txi: Option<serde_json::Value> = match kind.as_str() {
-                "mint" => match input.as_any().downcast_ref::<MintInput>() {
-                    Some(input) => {
-                        let value = serde_json::to_value(input)
-                            .expect("Should be able to serialize to JSON");
-                        debug!("found Mint Transaction Input: {value:?}");
-                        Some(value)
-                    }
-                    None => {
-                        warn!("could not downcast (check decoders registry). {input:?}");
-                        None
-                    }
-                },
-                "wallet" => match input.as_any().downcast_ref::<WalletInput>() {
-                    Some(input) => {
-                        let value = serde_json::to_value(input)
-                            .expect("Should be able to serialize to JSON");
-                        debug!("found Wallet Transaction Input: {value:?}");
-                        Some(value)
-                    }
-                    None => {
-                        warn!("could not downcast (check decoders registry). {input:?}");
-                        None
-                    }
-                },
-                "ln" => match input.as_any().downcast_ref::<LightningInput>() {
-                    Some(input) => {
-                        let value = serde_json::to_value(input)
-                            .expect("Should be able to serialize to JSON");
-                        debug!("found Lightning Transaction Input: {value:?}");
-                        Some(value)
-                    }
-                    None => {
-                        warn!("could not downcast (check decoders registry). {input:?}");
-                        None
-                    }
-                },
-                #[cfg(feature = "stability_pool_v1")]
-                "stability_pool" => match input.as_any().downcast_ref::<StabilityPoolInput>() {
-                    Some(input) => {
-                        let value = serde_json::to_value(input)
-                            .expect("Should be able to serialize to JSON");
-                        debug!("found Stability Pool Input: {value:?}");
-                        Some(value)
-                    }
-                    None => {
-                        warn!("could not downcast (check decoders registry). {input:?}");
-                        None
-                    }
-                },
-                other => {
-                    warn!("Transaction Input of kind {other}. Not implemented.");
-                    None
-                }
-            };
-
-            if let Some(json_value) = json_txi {
+            if let Some(json_value) = &summary.details {
                 dbtx.execute(
                     "INSERT INTO transaction_input_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
                     &[
@@ -1007,7 +915,7 @@ impl FederationObserver {
                         &fedimint_txid.consensus_encode_to_vec(),
                         &(in_idx as i32),
                         &kind,
-                        &json_value,
+                        json_value,
                     ],
                 )
                 .await?;
@@ -1016,75 +924,10 @@ impl FederationObserver {
 
         for (out_idx, output) in transaction.outputs.into_iter().enumerate() {
             let kind = instance_to_kind(config, output.module_instance_id());
-            let (maybe_amount_msat, maybe_ln_contract) = match kind.as_str() {
-                "ln" => {
-                    let ln_output = output
-                        .as_any()
-                        .downcast_ref::<LightningOutput>()
-                        .expect("Not LN input")
-                        .maybe_v0_ref()
-                        .expect("Not v0");
-                    let (maybe_amount_msat, ln_contract_interaction_kind, contract_id) =
-                        match ln_output {
-                            LightningOutputV0::Contract(contract) => {
-                                let contract_id = contract.contract.contract_id();
-                                let (contract_type, payment_hash) = match &contract.contract {
-                                    Contract::Incoming(c) => ("incoming", c.hash),
-                                    Contract::Outgoing(c) => ("outgoing", c.hash),
-                                };
-
-                                dbtx.execute(
-                                    "INSERT INTO ln_contracts VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                                    &[
-                                        &federation_id.consensus_encode_to_vec(),
-                                        &contract_id.consensus_encode_to_vec(),
-                                        &contract_type,
-                                        &payment_hash.consensus_encode_to_vec(),
-                                    ],
-                                )
-                                .await?;
-
-                                (Some(contract.amount.msats), "fund", contract_id)
-                            }
-                            LightningOutputV0::Offer(offer) => {
-                                // For incoming contracts payment has == cotnract id
-                                (Some(0), "offer", offer.hash.into())
-                            }
-                            LightningOutputV0::CancelOutgoing { contract, .. } => {
-                                (Some(0), "cancel", *contract)
-                            }
-                        };
-
-                    (
-                        maybe_amount_msat,
-                        Some((ln_contract_interaction_kind, contract_id)),
-                    )
-                }
-                "mint" => {
-                    let amount_msat = output
-                        .as_any()
-                        .downcast_ref::<MintOutput>()
-                        .expect("Not Mint input")
-                        .maybe_v0_ref()
-                        .expect("Not v0")
-                        .amount
-                        .msats;
-                    (Some(amount_msat), None)
-                }
-                "wallet" => {
-                    let amount_msat = output
-                        .as_any()
-                        .downcast_ref::<WalletOutput>()
-                        .expect("Not Wallet input")
-                        .maybe_v0_ref()
-                        .expect("Not v0")
-                        .amount()
-                        .to_sat()
-                        * 1000;
-                    (Some(amount_msat), None)
-                }
-                _ => (None, None),
-            };
+            let module = self.modules.get(&kind);
+            let summary = module
+                .map(|module| module.summarize_output(&output))
+                .unwrap_or_default();
 
             dbtx.execute(
                 "INSERT INTO transaction_outputs VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
@@ -1093,104 +936,31 @@ impl FederationObserver {
                     &fedimint_txid.consensus_encode_to_vec(),
                     &(out_idx as i32),
                     &kind,
-                    &maybe_ln_contract.map(|(kind, _id)| kind),
-                    &maybe_ln_contract.map(|(_kind, id)| id.consensus_encode_to_vec()),
-                    &maybe_amount_msat.map(|amt| amt as i64),
+                    &summary.ln_contract.as_ref().map(|(kind, _id)| *kind),
+                    &summary.ln_contract.as_ref().map(|(_kind, id)| id),
+                    &summary.amount_msat.map(|amt| amt as i64),
                 ],
             )
             .await?;
 
-            if kind.as_str() == "wallet" {
-                let wallet_v0_output = output
-                    .as_any()
-                    .downcast_ref::<WalletOutput>()
-                    .expect("Not Wallet input")
-                    .maybe_v0_ref()
-                    .expect("Not v0");
-
-                match wallet_v0_output {
-                    WalletOutputV0::PegOut(_) => {}
-                    WalletOutputV0::Rbf(_) => {
-                        // panic, since the benefits may outweigh the annoyance of removing and
-                        // restarting
-                        panic!(
-                            r#"
-                            You've discovered a terribly unfortunate situation: an RBF wallet output
-
-                            Federation ID: {}
-                            Name: {}
-
-                            If you know any of the guardians of the federation, please give them a heads up
-                            that they should expect failures re-syncing, or worse. They can reach out to the
-                            core dev team on Discord (chat.fedimint.org).
-
-                            For more context, see: https://github.com/fedimint/fedimint/pull/5496
-                        "#,
-                            federation_id,
-                            config.global.federation_name().unwrap_or("no name defined"),
-                        );
-                    }
+            let meta = ItemMeta {
+                federation_id,
+                module_instance_id: output.module_instance_id(),
+                txid: fedimint_txid,
+                session_index,
+                item_index,
+                index: out_idx as u64,
+            };
+            match module {
+                Some(module) => {
+                    module
+                        .process_output(&ctx, &meta, &output, &summary)
+                        .await?
                 }
+                None => warn!("Transaction Output of kind {kind}. Not implemented."),
             }
 
-            let json_txo: Option<serde_json::Value> = match kind.as_str() {
-                "mint" => match output.as_any().downcast_ref::<MintOutput>() {
-                    Some(output) => {
-                        let value = serde_json::to_value(output)
-                            .expect("Should be able to serialize to JSON");
-                        debug!("found Mint Transaction Output: {value:?}");
-                        Some(value)
-                    }
-                    None => {
-                        warn!("could not downcast (check decoders registry). {output:?}");
-                        None
-                    }
-                },
-                "wallet" => match output.as_any().downcast_ref::<WalletOutput>() {
-                    Some(output) => {
-                        let value = serde_json::to_value(output)
-                            .expect("Should be able to serialize to JSON");
-                        debug!("found Wallet Transaction Output: {value:?}");
-                        Some(value)
-                    }
-                    None => {
-                        warn!("could not downcast (check decoders registry). {output:?}");
-                        None
-                    }
-                },
-                "ln" => match output.as_any().downcast_ref::<LightningOutput>() {
-                    Some(output) => {
-                        let value = serde_json::to_value(output)
-                            .expect("Should be able to serialize to JSON");
-                        debug!("found Lightning Transaction Output: {value:?}");
-                        Some(value)
-                    }
-                    None => {
-                        warn!("could not downcast (check decoders registry). {output:?}");
-                        None
-                    }
-                },
-                #[cfg(feature = "stability_pool_v1")]
-                "stability_pool" => match output.as_any().downcast_ref::<StabilityPoolOutput>() {
-                    Some(output) => {
-                        let value = serde_json::to_value(output)
-                            .expect("Should be able to serialize to JSON");
-                        debug!("found Stability Pool Output: {value:?}");
-                        Some(value)
-                    }
-                    None => {
-                        warn!("could not downcast (check decoders registry). {output:?}");
-                        None
-                    }
-                },
-
-                other => {
-                    warn!("Transaction Output of kind {other}. Not implemented.");
-                    None
-                }
-            };
-
-            if let Some(json_value) = json_txo {
+            if let Some(json_value) = &summary.details {
                 dbtx.execute(
                     "INSERT INTO transaction_output_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
                     &[
@@ -1198,7 +968,7 @@ impl FederationObserver {
                         &fedimint_txid.consensus_encode_to_vec(),
                         &(out_idx as i32),
                         &kind,
-                        &json_value,
+                        json_value,
                     ],
                 )
                 .await?;
@@ -1210,6 +980,7 @@ impl FederationObserver {
 
     #[allow(clippy::too_many_arguments)]
     async fn process_ci(
+        &self,
         dbtx: &Transaction<'_>,
         federation_id: FederationId,
         config: &ClientConfig,
@@ -1217,67 +988,14 @@ impl FederationObserver {
         item_index: u64,
         peer_id: PeerId,
         ci: DynModuleConsensusItem,
-        mempool_url: &str,
-    ) -> Result<(), tokio_postgres::Error> {
+    ) -> anyhow::Result<()> {
         let kind = instance_to_kind(config, ci.module_instance_id());
-
-        let json_ci: Option<serde_json::Value> = match kind.as_str() {
-            "mint" => match ci.as_any().downcast_ref::<MintConsensusItem>() {
-                Some(ci) => {
-                    let value =
-                        serde_json::to_value(ci).expect("Should be able to serialize to JSON");
-                    debug!("found Mint CI: {value:?}");
-                    Some(value)
-                }
-                None => {
-                    warn!("could not downcast (check decoders registry). {ci:?}");
-                    None
-                }
-            },
-            "wallet" => match ci.as_any().downcast_ref::<WalletConsensusItem>() {
-                Some(ci) => {
-                    let value =
-                        serde_json::to_value(ci).expect("Should be able to serialize to JSON");
-                    debug!("found Wallet CI: {value:?}");
-                    Some(value)
-                }
-                None => {
-                    warn!("could not downcast (check decoders registry). {ci:?}");
-                    None
-                }
-            },
-            "ln" => match ci.as_any().downcast_ref::<LightningConsensusItem>() {
-                Some(ci) => {
-                    let value =
-                        serde_json::to_value(ci).expect("Should be able to serialize to JSON");
-                    debug!("found Lightning CI: {value:?}");
-                    Some(value)
-                }
-                None => {
-                    warn!("could not downcast (check decoders registry). {ci:?}");
-                    None
-                }
-            },
-            #[cfg(feature = "stability_pool_v1")]
-            "stability_pool" => match ci.as_any().downcast_ref::<StabilityPoolConsensusItem>() {
-                Some(ci) => {
-                    let value =
-                        serde_json::to_value(ci).expect("Should be able to serialize to JSON");
-                    debug!("found Stability Pool CI: {value:?}");
-                    Some(value)
-                }
-                None => {
-                    warn!("could not downcast (check decoders registry). {ci:?}");
-                    None
-                }
-            },
-            other => {
-                warn!("Consensus Item of kind {other}. Not implemented.");
-                None
-            }
+        let Some(module) = self.modules.get(&kind) else {
+            warn!("Consensus Item of kind {kind}. Not implemented.");
+            return Ok(());
         };
 
-        if let Some(json_value) = json_ci {
+        if let Some(json_value) = module.summarize_ci(&ci) {
             dbtx.execute(
                 "INSERT INTO consensus_items VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
                 &[
@@ -1292,150 +1010,19 @@ impl FederationObserver {
             .await?;
         }
 
-        if kind != "wallet" {
-            return Ok(());
-        }
-
-        let wallet_ci = ci
-            .as_any()
-            .downcast_ref::<WalletConsensusItem>()
-            .expect("config says this should be a wallet CI");
-        match wallet_ci {
-            WalletConsensusItem::BlockCount(height_vote) => {
-                dbtx.execute(
-                    "INSERT INTO block_height_votes VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                    &[
-                        &federation_id.consensus_encode_to_vec(),
-                        &(session_index as i32),
-                        &(item_index as i32),
-                        &(peer_id.to_usize() as i32),
-                        &(*height_vote as i32),
-                    ],
-                )
-                .await?;
-            }
-            WalletConsensusItem::PegOutSignature(peg_out_sig) => {
-                let peg_out_txid = peg_out_sig.txid.to_string();
-                let peg_out_txid_encoded = peg_out_sig.txid.to_byte_array().to_vec();
-
-                dbtx.execute(
-                    "INSERT INTO wallet_withdrawal_transactions (on_chain_txid, federation_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                    &[
-                        &peg_out_txid_encoded,
-                        &federation_id.consensus_encode_to_vec(),
-                    ],
-                )
-                .await?;
-
-                dbtx.execute(
-                    "INSERT INTO wallet_withdrawal_signatures VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                    &[
-                        &peg_out_txid_encoded,
-                        &(session_index as i32),
-                        &(item_index as i32),
-                        &(peer_id.to_usize() as i32),
-                    ],
-                )
-                .await?;
-
-                let num_sigs = dbtx
-                    .query_one(
-                        "
-                        SELECT COUNT(peer_id)::INT num_sigs
-                        FROM wallet_withdrawal_signatures
-                        WHERE on_chain_txid = $1
-                        GROUP BY on_chain_txid
-                        ",
-                        &[&peg_out_txid_encoded],
-                    )
-                    .await?
-                    .get::<_, i32>("num_sigs") as usize;
-
-                // 3n + 1 <= num_peers
-                // n <= (num_peers - 1) / 3
-                // threshold = num_peers - floor((num_peers - 1) / 3)
-                let threshold = {
-                    let num_peers = config.global.api_endpoints.len();
-                    num_peers - (num_peers - 1) / 3
-                };
-
-                if num_sigs < threshold {
-                    return Ok(());
-                }
-
-                // at this point, the transaction reached threshold and should broadcast
-
-                let cached: bool = dbtx.query_one(
-                    "SELECT EXISTS(SELECT 1 FROM wallet_withdrawal_transaction_outputs WHERE on_chain_txid=$1)",
-                    &[&peg_out_txid_encoded],
-                ).await?.get(0);
-                // Every signature after the threshold lands here too; the
-                // transaction only needs fetching once
-                if cached {
-                    return Ok(());
-                }
-
-                let esplora_txid = esplora_client::Txid::from_str(peg_out_txid.as_str())
-                    .expect("Couldn't create esplora txid");
-
-                let builder = esplora_client::Builder::new(mempool_url);
-                let client = builder
-                    .build_async()
-                    .expect("Failed to build esplora client");
-
-                let fetched_tx = retry(
-                    "fetching tx from esplora".to_string(),
-                    background_backoff(),
-                    || async {
-                        client.get_tx_no_opt(&esplora_txid).await.map_err(|e| {
-                            warn!("failed to fetch tx: {e:?}");
-                            anyhow::anyhow!("failed fetching tx from esplora")
-                        })
-                    },
-                )
-                .await
-                .expect("Reached usize::MAX retries");
-
-                for input in fetched_tx.input {
-                    let prev_out_txid = input.previous_output.txid.to_byte_array().to_vec();
-
-                    dbtx.execute(
-                        "INSERT INTO wallet_withdrawal_transaction_inputs VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-                        &[
-                            &prev_out_txid,
-                            &(input.previous_output.vout as i32),
-                            &peg_out_txid_encoded,
-                        ],
-                    )
-                    .await?;
-                }
-
-                for (out_idx, output) in fetched_tx.output.iter().enumerate() {
-                    let address = bitcoin::Address::from_script(
-                        bitcoin::Script::from_bytes(output.script_pubkey.as_bytes()),
-                        bitcoin::Network::Bitcoin,
-                    )
-                    .expect("Invalid bitcoin address");
-
-                    dbtx.execute(
-                        "INSERT INTO wallet_withdrawal_transaction_outputs VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                        &[
-                            &peg_out_txid_encoded,
-                            &(out_idx as i32),
-                            &address.to_string(),
-                            &((output.value.to_sat() as i64) * 1000),
-
-                        ],
-                    )
-                    .await?;
-                }
-            }
-            _ => {
-                // other WalletConsesnsusItems are not needed yet
-            }
-        }
-
-        Ok(())
+        let ctx = ProcessCtx {
+            dbtx,
+            config,
+            mempool_url: &self.mempool_url,
+        };
+        let meta = CiMeta {
+            federation_id,
+            module_instance_id: ci.module_instance_id(),
+            session_index,
+            item_index,
+            peer: peer_id,
+        };
+        module.process_ci(&ctx, &meta, &ci).await
     }
 
     async fn refresh_views(self) {
@@ -1856,7 +1443,7 @@ impl FederationObserver {
             .map(|non_zero_cpus| non_zero_cpus.get())
             .unwrap_or(12);
 
-        let decoders = decoders_from_config(&federation.config);
+        let decoders = self.modules.decoders_for_config(&federation.config);
 
         let mut connection = self.connection().await?;
         let dbtx = connection.transaction().await?;

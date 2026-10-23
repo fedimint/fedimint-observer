@@ -48,6 +48,8 @@
             ./Cargo.lock
             (lib.fileset.maybeMissing ./.cargo)
             ./fmo_api_types
+            ./fmo_core
+            ./fmo_modules
             ./fmo_server
           ];
         };
