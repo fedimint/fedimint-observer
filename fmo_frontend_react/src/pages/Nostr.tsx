@@ -324,9 +324,9 @@ export function Nostr() {
                 onChange={(e) => setInviteCode(e.target.value)}
                 disabled={checking || announcing}
                 placeholder=" "
-                className="block px-2.5 h-11 w-full text-sm text-gray-900 bg-gray-50 rounded-lg border-gray-300 appearance-none dark:text-white dark:bg-gray-700 dark:border-gray-600 dark:focus:border-blue-500 focus:outline-none focus:ring-0 focus:border-blue-600 peer border disabled:opacity-50 disabled:cursor-not-allowed"
+                className="block px-2.5 h-11 w-full text-sm text-gray-900 bg-gray-50 rounded-lg border-gray-300 appearance-none dark:text-white dark:bg-gray-700 dark:border-gray-600 dark:focus:border-blue-500 focus:outline-hidden focus:ring-0 focus:border-blue-600 peer border disabled:opacity-50 disabled:cursor-not-allowed"
               />
-              <label className="absolute text-sm text-gray-600 dark:text-gray-400 duration-300 transform -translate-y-4 scale-75 top-2 z-10 origin-[0] bg-gray-50 dark:bg-gray-700 px-2 peer-focus:px-2 peer-focus:text-blue-600 peer-focus:dark:text-blue-500 peer-placeholder-shown:scale-100 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:top-1/2 peer-focus:top-2 peer-focus:scale-75 peer-focus:-translate-y-4 rtl:peer-focus:translate-x-1/4 rtl:peer-focus:left-auto start-1">
+              <label className="absolute text-sm text-gray-600 dark:text-gray-400 duration-300 transform -translate-y-4 scale-75 top-2 z-10 origin-left bg-gray-50 dark:bg-gray-700 px-2 peer-focus:px-2 peer-focus:text-blue-600 dark:peer-focus:text-blue-500 peer-placeholder-shown:scale-100 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:top-1/2 peer-focus:top-2 peer-focus:scale-75 peer-focus:-translate-y-4 peer-focus:rtl:translate-x-1/4 peer-focus:rtl:left-auto inset-s-1">
                 Invite Code
               </label>
             </div>
@@ -334,7 +334,7 @@ export function Nostr() {
               <button
                 type="submit"
                 disabled={checking}
-                className="h-11 w-full sm:w-auto whitespace-nowrap font-medium rounded-lg text-sm px-5 py-2.5 text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-none dark:focus:ring-blue-800 disabled:bg-blue-400 disabled:cursor-not-allowed"
+                className="h-11 w-full sm:w-auto whitespace-nowrap font-medium rounded-lg text-sm px-5 py-2.5 text-white bg-blue-700 hover:bg-blue-800 focus:ring-4 focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 focus:outline-hidden dark:focus:ring-blue-800 disabled:bg-blue-400 disabled:cursor-not-allowed"
               >
                 {checking ? 'Checking...' : 'Check Federation'}
               </button>
@@ -342,7 +342,7 @@ export function Nostr() {
                 type="button"
                 onClick={handleAnnounceFederation}
                 disabled={!federationInfo || announcing || announceSuccess || checking}
-                className="h-11 w-full sm:w-auto whitespace-nowrap font-medium rounded-lg text-sm px-5 py-2.5 text-white bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 focus:outline-none disabled:bg-green-400 disabled:cursor-not-allowed"
+                className="h-11 w-full sm:w-auto whitespace-nowrap font-medium rounded-lg text-sm px-5 py-2.5 text-white bg-green-700 hover:bg-green-800 focus:ring-4 focus:ring-green-300 dark:bg-green-600 dark:hover:bg-green-700 focus:outline-hidden disabled:bg-green-400 disabled:cursor-not-allowed"
               >
                 {announcing ? 'Announcing...' : announceSuccess ? 'Announced!' : 'Announce Federation'}
               </button>
@@ -358,7 +358,7 @@ export function Nostr() {
                       <th scope="row" className="px-3 sm:px-6 py-3 sm:py-4 font-medium text-gray-900 dark:text-white w-24 sm:w-auto">
                         Name
                       </th>
-                      <td className="px-3 sm:px-6 py-3 sm:py-4 break-words">
+                      <td className="px-3 sm:px-6 py-3 sm:py-4 wrap-break-word">
                         {checking ? (
                           <div className="h-2.5 bg-gray-200 rounded-full dark:bg-gray-700 w-32 sm:w-48"></div>
                         ) : (
@@ -370,7 +370,7 @@ export function Nostr() {
                       <th scope="row" className="px-3 sm:px-6 py-3 sm:py-4 font-medium text-gray-900 dark:text-white w-24 sm:w-auto">
                         Guardians
                       </th>
-                      <td className="px-3 sm:px-6 py-3 sm:py-4 break-words">
+                      <td className="px-3 sm:px-6 py-3 sm:py-4 wrap-break-word">
                         {checking ? (
                           <div className="h-2.5 bg-gray-200 rounded-full dark:bg-gray-700 w-32 sm:w-48"></div>
                         ) : (
@@ -382,7 +382,7 @@ export function Nostr() {
                       <th scope="row" className="px-3 sm:px-6 py-3 sm:py-4 font-medium text-gray-900 dark:text-white w-24 sm:w-auto align-top">
                         Modules
                       </th>
-                      <td className="px-3 sm:px-6 py-3 sm:py-4 break-words">
+                      <td className="px-3 sm:px-6 py-3 sm:py-4 wrap-break-word">
                         {checking ? (
                           <div className="h-2.5 bg-gray-200 rounded-full dark:bg-gray-700 w-32 sm:w-48"></div>
                         ) : (
@@ -390,7 +390,7 @@ export function Nostr() {
                             {federationInfo?.modules?.map((mod) => (
                               <span
                                 key={mod}
-                                className="bg-blue-600 text-white text-xs font-medium px-2.5 py-0.5 rounded  dark:bg-indigo-500"
+                                className="bg-blue-600 text-white text-xs font-medium px-2.5 py-0.5 rounded-sm  dark:bg-indigo-500"
                               >
                                 {mod}
                               </span>
@@ -403,7 +403,7 @@ export function Nostr() {
                       <th scope="row" className="px-3 sm:px-6 py-3 sm:py-4 font-medium text-gray-900 dark:text-white w-24 sm:w-auto">
                         Network
                       </th>
-                      <td className="px-3 sm:px-6 py-3 sm:py-4 break-words">
+                      <td className="px-3 sm:px-6 py-3 sm:py-4 wrap-break-word">
                         {checking ? (
                           <div className="h-2.5 bg-gray-200 rounded-full dark:bg-gray-700 w-32 sm:w-48"></div>
                         ) : (
@@ -418,7 +418,7 @@ export function Nostr() {
           )}
 
           {error && (
-            <div className="p-3 sm:p-4 mb-4 mt-4 text-xs sm:text-sm text-red-800 rounded-lg bg-red-50 dark:bg-gray-800 dark:text-red-400 break-words">
+            <div className="p-3 sm:p-4 mb-4 mt-4 text-xs sm:text-sm text-red-800 rounded-lg bg-red-50 dark:bg-gray-800 dark:text-red-400 wrap-break-word">
               <span className="font-bold">Error: </span>
               {error}
             </div>
@@ -467,7 +467,7 @@ export function Nostr() {
                     <div className="flex items-center gap-2 flex-wrap">
                       {fed.name}
                       {!observedFederationIds.has(fed.id) && (
-                        <span className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded dark:bg-blue-900 dark:text-blue-300">
+                        <span className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-sm dark:bg-blue-900 dark:text-blue-300">
                           Unobserved
                         </span>
                       )}

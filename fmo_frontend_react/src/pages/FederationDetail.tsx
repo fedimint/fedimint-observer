@@ -448,7 +448,7 @@ export function FederationDetail() {
         </Link>
       </div>
 
-      <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-6 sm:mb-8 break-words">
+      <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-6 sm:mb-8 wrap-break-word">
         {federation.name || 'Unnamed Federation'}
       </h1>
 
@@ -560,7 +560,7 @@ export function FederationDetail() {
                 <div>
                   <Link
                     to={`/federations/${id}/gateways`}
-                    className="inline-flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg focus:ring-4 focus:outline-none focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                    className="inline-flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg focus:ring-4 focus:outline-hidden focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
                   >
                     Gateway Details
                   </Link>
@@ -692,7 +692,7 @@ export function FederationDetail() {
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
                 <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4 sm:mb-6">
                   <div className="flex-1 min-w-0">
-                    <h3 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white break-words">
+                    <h3 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white wrap-break-word">
                       {chartMetric === 'volume'
                         ? histogram.reduce((sum, entry) => sum + entry.volume, 0).toFixed(6) + ' BTC'
                         : histogram.reduce((sum, entry) => sum + entry.count, 0).toString()}
@@ -721,7 +721,7 @@ export function FederationDetail() {
                       >
                         <input
                           type="checkbox"
-                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 shrink-0"
+                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded-sm focus:ring-blue-500 shrink-0"
                           checked={useLogScale}
                           onChange={(e) => setUseLogScale(e.target.checked)}
                         />
@@ -736,7 +736,7 @@ export function FederationDetail() {
                       >
                         <input
                           type="checkbox"
-                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 shrink-0"
+                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded-sm focus:ring-blue-500 shrink-0"
                           checked={filterOutliers}
                           onChange={(e) => setFilterOutliers(e.target.checked)}
                         />
@@ -871,7 +871,7 @@ export function FederationDetail() {
                       onChange={(event) => setUtxoSearch(event.target.value)}
                       aria-label="Search UTXOs"
                       placeholder="Search outpoint, txid, address or amount"
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white sm:w-80"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 outline-hidden focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white sm:w-80"
                     />
                     <div className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
                       {filteredUtxos.length === 0
@@ -1025,7 +1025,7 @@ export function FederationDetail() {
 
           {activeTab === 'config' && (
             <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-3 sm:p-6 overflow-hidden">
-              <pre className="text-[10px] sm:text-xs lg:text-sm text-gray-900 dark:text-white overflow-x-auto whitespace-pre break-words">
+              <pre className="text-[10px] sm:text-xs lg:text-sm text-gray-900 dark:text-white overflow-x-auto whitespace-pre wrap-break-word">
                 {config?.rawConfig ? JSON.stringify(config.rawConfig, null, 2) : 'Loading config...'}
               </pre>
             </div>

@@ -59,7 +59,10 @@ export function TransactionChart({
         right: '4%',
         bottom: '15%',
         top: '10%',
-        containLabel: true
+        // ECharts 6 form of `containLabel: true`, which it lays out the same
+        // way but warns about unless the legacy layout is registered
+        outerBoundsMode: 'same',
+        outerBoundsContain: 'axisLabel'
       },
       xAxis: {
         type: 'category',

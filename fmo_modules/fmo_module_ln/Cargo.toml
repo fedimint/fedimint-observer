@@ -1,0 +1,13 @@
+[package]
+name = "fmo_module_ln"
+version = "0.2.0"
+edition = "2021"
+description = "Fedimint Observer support for the Lightning (v1) module"
+
+[dependencies]
+anyhow = "1.0.81"
+async-trait = "0.1.92"
+fedimint-core = { workspace = true }
+fedimint-ln-common = { workspace = true }
+fmo_core = { path = "../../fmo_core" }
+serde_json = "1.0.115"

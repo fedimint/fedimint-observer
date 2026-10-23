@@ -1,0 +1,18 @@
+[package]
+name = "fmo_module_wallet"
+version = "0.2.0"
+edition = "2021"
+description = "Fedimint Observer support for the wallet (on-chain) module"
+
+[dependencies]
+anyhow = "1.0.81"
+async-trait = "0.1.92"
+bitcoin = "0.32.5"
+esplora-client = { version = "0.10.0", default-features = false, features = [
+    "async-https-rustls",
+] }
+fedimint-core = { workspace = true }
+fedimint-wallet-common = { workspace = true }
+fmo_core = { path = "../../fmo_core" }
+serde_json = "1.0.115"
+tracing = "0.1.40"

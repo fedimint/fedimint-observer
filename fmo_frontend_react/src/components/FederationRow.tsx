@@ -60,12 +60,12 @@ export function FederationRow({
       {/* Mobile Layout (3 rows) */}
       <div className="md:hidden space-y-3">
         {/* Row 1: Name, Total Assets */}
-        <div className="grid grid-cols-[1.5fr,1fr] gap-3 items-start">
+        <div className="grid grid-cols-[1.5fr_1fr] gap-3 items-start">
           {/* Name */}
           <div className="font-medium text-gray-900 dark:text-white min-w-0">
             <span className="text-[10px] uppercase text-gray-600 dark:text-gray-400 block mb-1">Name</span>
             <div className="flex items-center gap-1.5">
-              <span className="font-medium text-gray-900 dark:text-white break-words">
+              <span className="font-medium text-gray-900 dark:text-white wrap-break-word">
                 {name}
               </span>
               {showWarning && <Badge level={badgeLevel} tooltip={healthMessage} showIcon>{''}</Badge>}
@@ -74,7 +74,7 @@ export function FederationRow({
 
 
           {/* Total Assets */}
-          <div className="text-right flex-shrink-0">
+          <div className="text-right shrink-0">
             <span className="text-[10px] uppercase text-gray-600 dark:text-gray-400 block mb-1">Total Assets</span>
             <span className="text-gray-900 dark:text-white whitespace-nowrap">{asBitcoin(totalAssets, 6)}</span>
           </div>
@@ -102,7 +102,7 @@ export function FederationRow({
         {/* Name */}
         <div className="font-medium text-gray-900 dark:text-white">
           <div className="flex items-center gap-1.5">
-            <span className="font-medium text-gray-900 dark:text-white break-words">
+            <span className="font-medium text-gray-900 dark:text-white wrap-break-word">
               {name}
             </span>
             {showWarning && <Badge level={badgeLevel} tooltip={healthMessage} showIcon>{''}</Badge>}
