@@ -43,7 +43,7 @@ export function CombinedMiniChart({
   maxTransaction,
   maxVolume
 }: CombinedMiniChartProps) {
-  const { theme } = useTheme();
+  const { isDark } = useTheme();
   
   const transactionAvg = useMemo(() => {
     if (transactionData.length === 0) return 0;
@@ -91,18 +91,18 @@ export function CombinedMiniChart({
     ],
     tooltip: {
       trigger: 'axis',
-      backgroundColor: theme === 'dark' ? '#1f2937' : '#ffffff',
-      borderColor: theme === 'dark' ? '#374151' : '#e5e7eb',
+      backgroundColor: isDark ? '#1f2937' : '#ffffff',
+      borderColor: isDark ? '#374151' : '#e5e7eb',
       textStyle: { 
-        color: theme === 'dark' ? '#fff' : '#111827', 
+        color: isDark ? '#fff' : '#111827',
         fontSize: 11 
       },
       formatter: (params: unknown) => {
         const p = params as TooltipParamItem[];
         if (!p || p.length === 0) return '';
         const dateStr = p[0].axisValue || '';
-        const subtextColor = theme === 'dark' ? '#9ca3af' : '#6b7280';
-        const borderColor = theme === 'dark' ? '#374151' : '#e5e7eb';
+        const subtextColor = isDark ? '#9ca3af' : '#6b7280';
+        const borderColor = isDark ? '#374151' : '#e5e7eb';
         let result = `<div style="font-size: 11px;">
           <div style="color: ${subtextColor}; margin-bottom: 4px;">${dateStr}</div>`;
         
@@ -201,7 +201,7 @@ export function CombinedMiniChart({
         barWidth: '30%',
       },
     ],
-  }), [transactionData, volumeData, dates, formatTransaction, formatVolume, maxTransaction, maxVolume, transactionAvg, volumeAvg, theme]);
+  }), [transactionData, volumeData, dates, formatTransaction, formatVolume, maxTransaction, maxVolume, transactionAvg, volumeAvg, isDark]);
 
   return (
     <div className="w-full h-10 md:h-14 xl:h-16">

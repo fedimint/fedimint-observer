@@ -34,7 +34,7 @@ export function GatewayWarningPage({ warning, className = '', action }: GatewayW
       <h2 className="text-sm sm:text-base font-semibold">{warning.title}</h2>
       <p className="mt-1 text-sm leading-relaxed">{warning.message}</p>
       {warning.detail && (
-        <p className="mt-2 text-xs sm:text-sm opacity-90 break-words">
+        <p className="mt-2 text-xs sm:text-sm opacity-90 wrap-break-word">
           {warning.detail}
         </p>
       )}

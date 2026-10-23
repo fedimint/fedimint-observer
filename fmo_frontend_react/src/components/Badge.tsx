@@ -6,7 +6,7 @@ export type BadgeLevel = 'info' | 'warning' | 'error' | 'success';
 interface BadgeProps {
   level: BadgeLevel;
   tooltip?: string;
-  children: ReactNode;
+  children?: ReactNode; // not needed for the icon-only badge (showIcon with a tooltip)
   showIcon?: boolean;
 }
 
@@ -39,10 +39,10 @@ function WarningIcon({ level }: { level: BadgeLevel }) {
 
 export function Badge({ level, tooltip, children, showIcon }: BadgeProps) {
   const styles = {
-    info: 'bg-indigo-600 text-white text-xs font-medium me-2 px-2.5 py-0.5 rounded dark:bg-indigo-500',
-    warning: 'bg-yellow-100 text-yellow-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded dark:bg-yellow-900 dark:text-yellow-300',
-    error: 'bg-red-100 text-red-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded dark:bg-red-900 dark:text-red-300',
-    success: 'bg-green-100 text-green-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded dark:bg-green-900 dark:text-green-300',
+    info: 'bg-indigo-600 text-white text-xs font-medium me-2 px-2.5 py-0.5 rounded-sm dark:bg-indigo-500',
+    warning: 'bg-yellow-100 text-yellow-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded-sm dark:bg-yellow-900 dark:text-yellow-300',
+    error: 'bg-red-100 text-red-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded-sm dark:bg-red-900 dark:text-red-300',
+    success: 'bg-green-100 text-green-800 text-xs font-medium me-2 px-2.5 py-0.5 rounded-sm dark:bg-green-900 dark:text-green-300',
   };
 
   const [showTooltip, setShowTooltip] = useState(false);

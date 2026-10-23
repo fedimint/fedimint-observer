@@ -1,21 +1,29 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { readStorage, writeStorage } from '../utils/storage';
 
 export type Theme = 'light' | 'dark' | 'auto';
 
 type ThemeContextValue = {
   theme: Theme;
+  // Whether the page is dark, with 'auto' following the system; for charts and
+  // anything else the dark: classes can't reach
+  isDark: boolean;
   toggleTheme: () => void;
 };
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
-const prefersDarkMode = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+const DARK_QUERY = '(prefers-color-scheme: dark)';
+
+const subscribeToColorScheme = (onChange: () => void) => {
+  const media = window.matchMedia(DARK_QUERY);
+  media.addEventListener('change', onChange);
+  return () => media.removeEventListener('change', onChange);
+};
+
+const prefersDarkMode = () => window.matchMedia(DARK_QUERY).matches;
 
 const getStoredTheme = (): Theme | null => {
-  if (typeof window === 'undefined') {
-    return null;
-  }
   const stored = readStorage('theme');
   if (stored === 'light' || stored === 'dark' || stored === 'auto') {
     return stored;
@@ -32,33 +40,19 @@ const getInitialTheme = (): Theme => {
   return 'auto';
 };
 
-const applyThemeClass = (theme: Theme) => {
-  if (typeof document === 'undefined') {
-    return;
-  }
-  const root = document.documentElement;
-  // For 'auto', follow the system preference
-  const effectiveTheme = theme === 'auto' ? (prefersDarkMode() ? 'dark' : 'light') : theme;
-  if (effectiveTheme === 'dark') {
-    root.classList.add('dark');
-  } else {
-    root.classList.remove('dark');
-  }
-};
-
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
+  // Re-renders when the system switches between light and dark, for the 'auto' theme
+  const prefersDark = useSyncExternalStore(subscribeToColorScheme, prefersDarkMode);
+  const isDark = theme === 'dark' || (theme === 'auto' && prefersDark);
 
-  // Apply theme class whenever theme changes
+  // Apply theme class whenever the effective theme changes
   useEffect(() => {
-    applyThemeClass(theme);
-  }, [theme]);
+    document.documentElement.classList.toggle('dark', isDark);
+  }, [isDark]);
 
   // Listen for storage changes from other tabs/windows
   useEffect(() => {
-    if (typeof window === 'undefined') {
-      return;
-    }
     const handleStorage = (event: StorageEvent) => {
       if (event.key === 'theme' && (event.newValue === 'light' || event.newValue === 'dark' || event.newValue === 'auto')) {
         setTheme(event.newValue);
@@ -70,22 +64,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
-
-  // Listen for system preference changes and apply them when in 'auto' mode
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) {
-      return;
-    }
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = () => {
-      // Re-apply theme to pick up system preference changes when in auto mode
-      if (theme === 'auto') {
-        applyThemeClass('auto');
-      }
-    };
-    media.addEventListener('change', handler);
-    return () => media.removeEventListener('change', handler);
-  }, [theme]);
 
   const toggleTheme = useCallback(() => {
     setTheme(prev => {
@@ -100,14 +78,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       }
       
       // Save to localStorage, or clear it for auto mode
-      if (typeof window !== 'undefined') {
-        writeStorage('theme', newTheme === 'auto' ? null : newTheme);
-      }
+      writeStorage('theme', newTheme === 'auto' ? null : newTheme);
       return newTheme;
     });
   }, []);
 
-  const value = useMemo(() => ({ theme, toggleTheme }), [theme, toggleTheme]);
+  const value = useMemo(() => ({ theme, isDark, toggleTheme }), [theme, isDark, toggleTheme]);
 
   return (
     <ThemeContext.Provider value={value}>
