@@ -24,6 +24,36 @@ export interface FederationActivity {
   amount_transferred: number;
 }
 
+/** Activity per calendar day, keyed by date (e.g. "2024-05-31"), oldest first */
+export type FederationHistogram = Record<string, FederationActivity>;
+
+export interface GuardianHealth {
+  avg_uptime: number;
+  avg_latency: number;
+  software_version: string | null;
+  latest: GuardianHealthLatest | null;
+}
+
+export interface GuardianHealthLatest {
+  block_height: number;
+  block_outdated: boolean;
+  session_count: number;
+  session_outdated: boolean;
+}
+
+/**
+ * Fedimint's JsonClientConfig, which is not part of fmo_api_types. Only the
+ * fields the pages read are listed; the rest is still there and shown as is.
+ */
+export interface ClientConfig {
+  global?: {
+    api_endpoints?: Record<string, { url?: string }>;
+    meta?: Record<string, unknown>;
+  };
+  /** Keyed by module instance id */
+  modules?: Record<string, { kind?: string; network?: string; finality_delay?: number }>;
+}
+
 export interface FederationUtxosResponse {
   /** Guardians that must agree before an output counts as held or not held */
   threshold: number;

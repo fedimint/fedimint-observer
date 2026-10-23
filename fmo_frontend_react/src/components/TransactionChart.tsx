@@ -8,6 +8,7 @@ import {
   DataZoomComponent,
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
+import { useTheme } from '../hooks/useTheme';
 
 // Register only the components we need
 echarts.use([
@@ -18,13 +19,21 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-interface HistogramEntry {
+// One day of a federation's activity, with volume in BTC for the axis
+export interface HistogramEntry {
   date: string;
+  timestamp: number;
   volume: number;
   count: number;
   avgVolume?: number;
   avgCount?: number;
 }
+
+// Dark is what the chart always used; light matches the app's other charts
+const CHART_COLORS = {
+  dark: { label: '#9ca3af', axis: '#374151', grid: '#374151', tooltip: '#1f2937', tooltipBorder: '#374151', tooltipText: '#fff' },
+  light: { label: '#6b7280', axis: '#d1d5db', grid: '#e5e7eb', tooltip: '#ffffff', tooltipBorder: '#e5e7eb', tooltipText: '#111827' },
+};
 
 interface TransactionChartProps {
   data: HistogramEntry[];
@@ -45,6 +54,9 @@ export function TransactionChart({
   zoomEnd,
   onZoomChange,
 }: TransactionChartProps) {
+  const { isDark } = useTheme();
+  const colors = isDark ? CHART_COLORS.dark : CHART_COLORS.light;
+
   // Separate the base chart option from zoom state
   const baseChartOption = useMemo(() => {
     const dates = data.map(d => d.date);
@@ -59,7 +71,10 @@ export function TransactionChart({
         right: '4%',
         bottom: '15%',
         top: '10%',
-        containLabel: true
+        // ECharts 6 form of `containLabel: true`, which it lays out the same
+        // way but warns about unless the legacy layout is registered
+        outerBoundsMode: 'same',
+        outerBoundsContain: 'axisLabel'
       },
       xAxis: {
         type: 'category',
@@ -67,17 +82,17 @@ export function TransactionChart({
         axisLabel: {
           rotate: 45,
           fontSize: 10,
-          color: '#9ca3af'
+          color: colors.label
         },
         axisLine: {
-          lineStyle: { color: '#374151' }
+          lineStyle: { color: colors.axis }
         }
       },
       yAxis: {
         type: useLogScale && chartMetric === 'count' ? 'log' : 'value',
         axisLabel: {
           fontSize: 10,
-          color: '#9ca3af',
+          color: colors.label,
           formatter: (value: number) => {
             if (chartMetric === 'volume') {
               return value < 0.001 ? value.toExponential(1) : value.toFixed(3);
@@ -86,17 +101,17 @@ export function TransactionChart({
           }
         },
         axisLine: {
-          lineStyle: { color: '#374151' }
+          lineStyle: { color: colors.axis }
         },
         splitLine: {
-          lineStyle: { color: '#374151', type: 'dashed' }
+          lineStyle: { color: colors.grid, type: 'dashed' }
         }
       },
       tooltip: {
         trigger: 'axis',
-        backgroundColor: '#1f2937',
-        borderColor: '#374151',
-        textStyle: { color: '#fff', fontSize: 12 },
+        backgroundColor: colors.tooltip,
+        borderColor: colors.tooltipBorder,
+        textStyle: { color: colors.tooltipText, fontSize: 12 },
         formatter: (params: { axisValue: string; marker: string; seriesName: string; value: number }[]) => {
           const date = params[0].axisValue;
           let result = `${date}<br/>`;
@@ -159,7 +174,7 @@ export function TransactionChart({
           : [])
       ]
     };
-  }, [data, chartMetric, movingAverageWindow, useLogScale]);
+  }, [data, chartMetric, movingAverageWindow, useLogScale, colors]);
 
   // Create the final chart option with zoom state
   const chartOption = useMemo(() => ({
@@ -177,10 +192,10 @@ export function TransactionChart({
           color: '#3b82f6'
         },
         moveHandleSize: 10,
-        textStyle: { color: '#9ca3af', fontSize: 10 }
+        textStyle: { color: colors.label, fontSize: 10 }
       }
     ]
-  }), [baseChartOption, zoomStart, zoomEnd]);
+  }), [baseChartOption, zoomStart, zoomEnd, colors]);
 
   return (
     <ReactEChartsCore

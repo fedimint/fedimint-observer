@@ -6,14 +6,15 @@ clear to users what is and isn't visible I hope to make Fedimint more transparen
 Furthermore, I hope that it can inform developer decisions around improving privacy by having access to easily queryable
 federation data to quantify possible privacy improvements.
 
-Currently, Fedimint Observer consists of two sub-APIs:
+Currently, Fedimint Observer consists of three sub-APIs: the Federation Observer, the Federation Inspector and a
+small Nostr API (`/nostr/*`) for federation announcements and ratings.
 
 ## Federation Observer
 This is likely the component that most people are actively exposed to. It is a server application that scans a list of
 federations for their publicly available data (session log, announcements, …) and writes the data to a postgres
 database. The data is then exposed via a REST API.
 
-These APIs live under the `/federations` path, you can find all the endpoints in [`fmo_server/src/federation/mod.rs`](https://github.com/elsirion/fedimint-observer/blob/a7a540a9af9b6383b3f3a85b561241ca057baff5/fmo_server/src/federation/mod.rs#L27-L52).
+These APIs live under the `/federations` path, you can find all the endpoints in [`fmo_core/src/federation/mod.rs`](fmo_core/src/federation/mod.rs).
 One example is the [`/federations`](https://observer.fedimint.org/api/federations) endpoint itself that returns a list
 of all federations that are being observed.
 
@@ -27,8 +28,8 @@ changes in Fedimint Observer if building against it.
 ## Federation Inspector
 The lesser-known component is an API under the `/config` path it can be used to get a JSON-encoded version of the
 federation config if you have an invite code. The first time it fetches the config from the federation using the invite
-code, after that it will return a version cached in memory (till the service is restarted). The endpoints can be found
-in [`fmo_server/src/config/mod.rs`](https://github.com/elsirion/fedimint-observer/blob/a7a540a9af9b6383b3f3a85b561241ca057baff5/fmo_server/src/config/mod.rs#L28-L46).
+code, after that it will return a version cached in memory. The endpoints can be found
+in [`fmo_core/src/config/mod.rs`](fmo_core/src/config/mod.rs).
 
 This service is already used by [bitcoinmints.com](https://bitcoinmints.com/?tab=mints&showFedimint=true) and can thus
 be considered kinda stable.
@@ -46,7 +47,7 @@ I currently run the public instance at https://observer.fedimint.org using the f
 
 ```nix
 { lib, pkgs, fedimint-observer, system, ... }: let
-   fmo = fedimint-observer.packages."${system}";
+   fmo = fedimint-observer.legacyPackages."${system}";
  in {
   systemd.services.fedimint-observer = {
     enable = true;
@@ -54,11 +55,12 @@ I currently run the public instance at https://observer.fedimint.org using the f
     environment = {
       FO_BIND = "127.0.0.1:5000";
       FO_DATABASE = "postgresql:///fmo?user=fmo";
-      # Set to your admin password, used to add federations to be observed via curl
-      FO_ADMIN_AUTH = ;
-      ALLOW_CONFIG_CORS = "true";
     };
     serviceConfig = {
+      # Holds `FO_ADMIN_AUTH=<long random secret>`, the admin password used to
+      # add federations via curl. Values in `environment` end up world-readable
+      # in the Nix store.
+      EnvironmentFile = "/var/lib/secrets/fedimint-observer.env";
       ExecStart = ''
         ${fmo.fmo_server}/bin/fmo_server
       '';
@@ -87,7 +89,9 @@ I currently run the public instance at https://observer.fedimint.org using the f
     virtualHosts."observer.fedimint.org" = {
       enableACME = true;
       forceSSL = true;
-      root = fmo.fmo_frontend_react_default;
+      # Built for the API under /api on the same host (fmo_frontend_react_default
+      # calls http://localhost:3000/api from the visitor's browser)
+      root = fmo.fmo_frontend_react "/api";
       locations."/" = {
         extraConfig = ''
           try_files $uri $uri/ /index.html;

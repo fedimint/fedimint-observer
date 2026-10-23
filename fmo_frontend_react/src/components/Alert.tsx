@@ -1,13 +1,11 @@
 export type AlertLevel = 'info' | 'warning' | 'error' | 'success';
 
 interface AlertProps {
-  title?: string;
   message: string;
   level: AlertLevel;
-  className?: string;
 }
 
-export function Alert({ title, message, level, className = '' }: AlertProps) {
+export function Alert({ message, level }: AlertProps) {
   const styles = {
     info: 'p-4 mb-4 text-sm text-blue-800 rounded-lg bg-blue-50 dark:bg-gray-800 dark:text-blue-400',
     warning: 'p-4 mb-4 text-sm text-yellow-800 rounded-lg bg-yellow-50 dark:bg-gray-800 dark:text-yellow-300',
@@ -15,18 +13,16 @@ export function Alert({ title, message, level, className = '' }: AlertProps) {
     success: 'p-4 mb-4 text-sm text-green-800 rounded-lg bg-green-50 dark:bg-gray-800 dark:text-green-400',
   };
 
-  const defaultTitles = {
+  const titles = {
     info: 'Info: ',
     warning: 'Warning: ',
     error: 'Error: ',
     success: 'Success: ',
   };
 
-  const displayTitle = title || defaultTitles[level];
-
   return (
-    <div className={`${styles[level]} ${className}`} role="alert">
-      <span className="font-bold">{displayTitle}</span>
+    <div className={styles[level]} role="alert">
+      <span className="font-bold">{titles[level]}</span>
       {message}
     </div>
   );
