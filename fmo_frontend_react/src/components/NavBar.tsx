@@ -13,7 +13,7 @@ export function NavBar({ theme, onToggleTheme }: NavBarProps) {
 
   return (
     <nav className="bg-white border-gray-200 dark:bg-gray-900">
-      <div className="max-w-screen-xl flex flex-wrap items-center justify-between mx-auto p-4">
+      <div className="max-w-(--breakpoint-xl) flex flex-wrap items-center justify-between mx-auto p-4">
         <Link to="/" className="flex items-center space-x-2 sm:space-x-3 rtl:space-x-reverse">
           <img src="/fedimint.png" className="h-6 sm:h-8" alt="Fedimint Logo" />
           <span className="self-center text-sm sm:text-lg md:text-2xl font-semibold whitespace-nowrap dark:text-white">
@@ -26,7 +26,7 @@ export function NavBar({ theme, onToggleTheme }: NavBarProps) {
           <button
             type="button"
             onClick={onToggleTheme}
-            className="inline-flex items-center justify-center p-2 w-9 h-9 text-gray-500 rounded-lg hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:focus:ring-gray-600"
+            className="inline-flex items-center justify-center p-2 w-9 h-9 text-gray-500 rounded-lg hover:bg-gray-200 focus:outline-hidden focus:ring-2 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:focus:ring-gray-600"
             aria-label="Toggle theme"
           >
             {theme === 'dark' ? (
@@ -44,7 +44,7 @@ export function NavBar({ theme, onToggleTheme }: NavBarProps) {
           
           <a
             href="https://github.com/elsirion/fedimint-observer/"
-            className="inline-flex items-center justify-center h-9 px-3 text-xs font-medium text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:outline-none hover:bg-gray-200 hover:text-blue-700 focus:z-10 focus:ring-2 focus:ring-gray-300 dark:focus:ring-gray-500 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600 dark:hover:text-white dark:hover:bg-gray-700"
+            className="inline-flex items-center justify-center h-9 px-3 text-xs font-medium text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:outline-hidden hover:bg-gray-200 hover:text-blue-700 focus:z-10 focus:ring-2 focus:ring-gray-300 dark:focus:ring-gray-500 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600 dark:hover:text-white dark:hover:bg-gray-700"
           >
             <svg
               className="w-3.5 h-3.5 sm:mr-2"
@@ -65,7 +65,7 @@ export function NavBar({ theme, onToggleTheme }: NavBarProps) {
           {/* Hamburger button */}
           <button
             type="button"
-            className="inline-flex items-center p-2 w-10 h-10 justify-center text-sm text-gray-500 rounded-lg md:hidden hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:focus:ring-gray-600"
+            className="inline-flex items-center p-2 w-10 h-10 justify-center text-sm text-gray-500 rounded-lg md:hidden hover:bg-gray-200 focus:outline-hidden focus:ring-2 focus:ring-gray-300 dark:text-gray-400 dark:hover:bg-gray-700 dark:focus:ring-gray-600"
             aria-controls="navbar-default"
             aria-expanded={isMenuOpen}
             onClick={() => setIsMenuOpen(!isMenuOpen)}
@@ -102,8 +102,8 @@ export function NavBar({ theme, onToggleTheme }: NavBarProps) {
                 onClick={() => setIsMenuOpen(false)}
                 className={
                   location.pathname === '/'
-                    ? 'block py-2 px-3 text-white bg-blue-700 rounded md:bg-transparent md:text-blue-700 md:p-0 md:dark:text-blue-500'
-                    : 'block py-2 px-3 text-gray-900 rounded hover:bg-gray-200 md:hover:bg-transparent md:hover:text-blue-700 md:p-0 md:dark:hover:text-blue-500 dark:text-white dark:hover:bg-gray-700 dark:hover:text-white md:dark:hover:bg-transparent dark:border-gray-700'
+                    ? 'block py-2 px-3 text-white bg-blue-700 rounded-sm md:bg-transparent md:text-blue-700 md:p-0 md:dark:text-blue-500'
+                    : 'block py-2 px-3 text-gray-900 rounded-sm hover:bg-gray-200 md:hover:bg-transparent md:hover:text-blue-700 md:p-0 md:dark:hover:text-blue-500 dark:text-white dark:hover:bg-gray-700 dark:hover:text-white md:dark:hover:bg-transparent dark:border-gray-700'
                 }
               >
                 Home
@@ -115,8 +115,8 @@ export function NavBar({ theme, onToggleTheme }: NavBarProps) {
                 onClick={() => setIsMenuOpen(false)}
                 className={
                   location.pathname === '/nostr'
-                    ? 'block py-2 px-3 text-white bg-blue-700 rounded md:bg-transparent md:text-blue-700 md:p-0 md:dark:text-blue-500'
-                    : 'block py-2 px-3 text-gray-900 rounded hover:bg-gray-200 md:hover:bg-transparent md:hover:text-blue-700 md:p-0 md:dark:hover:text-blue-500 dark:text-white dark:hover:bg-gray-700 dark:hover:text-white md:dark:hover:bg-transparent dark:border-gray-700'
+                    ? 'block py-2 px-3 text-white bg-blue-700 rounded-sm md:bg-transparent md:text-blue-700 md:p-0 md:dark:text-blue-500'
+                    : 'block py-2 px-3 text-gray-900 rounded-sm hover:bg-gray-200 md:hover:bg-transparent md:hover:text-blue-700 md:p-0 md:dark:hover:text-blue-500 dark:text-white dark:hover:bg-gray-700 dark:hover:text-white md:dark:hover:bg-transparent dark:border-gray-700'
                 }
               >
                 Nostr
