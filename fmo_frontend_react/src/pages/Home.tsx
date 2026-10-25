@@ -1,27 +1,35 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../services/api';
 import type { FederationSummary } from '../types/api';
 import { Totals } from '../components/Totals';
 import { FederationRow } from '../components/FederationRow';
+import { Alert } from '../components/Alert';
 
 export function Home() {
   const [federations, setFederations] = useState<FederationSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
   const [collapseOffline, setCollapseOffline] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
     api
-      .getFederations()
+      .getFederations(signal)
       .then((data) => {
+        if (signal.aborted) return;
         // Order by assets under management, largest first
         setFederations([...data].sort((a, b) => b.deposits - a.deposits));
         setLoading(false);
       })
       .catch((err) => {
+        if (signal.aborted) return;
         console.error('Failed to fetch federations:', err);
+        setFailed(true);
         setLoading(false);
       });
+    return () => controller.abort();
   }, []);
 
   const activeFederations = federations.filter((fed) => fed.health !== 'offline');
@@ -43,15 +51,24 @@ export function Home() {
   const filteredOfflineFederations = filterFederations(offlineFederations);
 
   // Compute global maxes across all federations for consistent chart scale
-  const globalMaxTransaction = federations.reduce((max, fed) => {
-    const fedMax = Math.max(...fed.last_7d_activity.map(d => d.num_transactions));
-    return Math.max(max, fedMax);
-  }, 0);
+  const { globalMaxTransaction, globalMaxVolume } = useMemo(() => {
+    let maxTransaction = 0;
+    let maxVolume = 0; // msats
+    for (const fed of federations) {
+      for (const day of fed.last_7d_activity) {
+        maxTransaction = Math.max(maxTransaction, day.num_transactions);
+        maxVolume = Math.max(maxVolume, day.amount_transferred);
+      }
+    }
+    return { globalMaxTransaction: maxTransaction, globalMaxVolume: maxVolume };
+  }, [federations]);
 
-  const globalMaxVolume = federations.reduce((max, fed) => {
-    const fedMax = Math.max(...fed.last_7d_activity.map(d => d.amount_transferred / 100000000000)); // convert to BTC
-    return Math.max(max, fedMax);
-  }, 0);
+  // Without this, a failed request would read as an empty list
+  const loadError = (
+    <div className="px-3 sm:px-6 pt-4 bg-white dark:bg-gray-800">
+      <Alert level="error" message="Could not load the federations. Please try again later." />
+    </div>
+  );
 
   return (
     <div className="pb-4">
@@ -126,6 +143,8 @@ export function Home() {
             <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
               Loading...
             </div>
+          ) : failed ? (
+            loadError
           ) : filteredActiveFederations.length === 0 ? (
             <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
               {searchQuery ? 'No federations match your search' : 'No active federations found'}
@@ -183,6 +202,8 @@ export function Home() {
                 <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
                   Loading...
                 </div>
+              ) : failed ? (
+                loadError
               ) : filteredOfflineFederations.length === 0 ? (
                 <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
                   {searchQuery ? 'No offline federations match your search' : 'No offline federations'}

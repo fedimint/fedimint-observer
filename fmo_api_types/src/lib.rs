@@ -13,6 +13,16 @@ pub struct FedimintTotals {
     pub tx_count: u64,
 }
 
+/// `GET /federations/:federation_id`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationOverview {
+    pub session_count: u64,
+    pub total_assets_msat: Amount,
+    /// Sessions each module has processed, by module kind: behind
+    /// `session_count` while the module catches up with the stored sessions
+    pub module_sessions: BTreeMap<String, u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationSummary {
     pub id: FederationId,

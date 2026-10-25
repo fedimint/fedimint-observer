@@ -2,17 +2,23 @@ import { useEffect, useState, useMemo, lazy, Suspense } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import { api } from '../services/api';
+import { publishNostrEvent } from '../services/nostr';
 import type {
+  FederationHistogram,
+  FederationOverview,
   FederationSummary,
   GuardianClaimedUtxoState,
+  GuardianHealth,
   GuardianUtxoReport,
   UtxoComparisonRow,
 } from '../types/api';
+import type { HistogramEntry } from '../components/TransactionChart';
 import { Badge } from '../components/Badge';
 import { Alert } from '../components/Alert';
 import { Copyable } from '../components/Copyable';
+import { guardianThreshold, parseConfig, type FederationConfig } from '../utils/config';
+import { asBitcoin, MSATS_PER_BTC, shortMiddle } from '../utils/format';
 
-const MSATS_PER_BTC = 100_000_000_000;
 const UTXOS_PER_PAGE = 25;
 
 type UtxoView = 'all' | 'verified' | 'pending' | 'mismatch';
@@ -58,47 +64,6 @@ function utxoPageItems(current: number, total: number): (number | 'gap')[] {
 // Lazy load the chart component for code splitting
 const TransactionChart = lazy(() => import('../components/TransactionChart').then(module => ({ default: module.TransactionChart })));
 
-interface Guardian {
-  id: number;
-  name: string;
-  url: string;
-  online: boolean;
-  session: number;
-  block: number;
-  sessionOutdated: boolean;
-  blockOutdated: boolean;
-}
-
-interface GuardianHealth {
-  avg_uptime: number;
-  avg_latency: number;
-  software_version: string | null;
-  latest: {
-    block_height: number;
-    block_outdated: boolean;
-    session_count: number;
-    session_outdated: boolean;
-  } | null;
-}
-
-interface FederationConfig {
-  guardians: Guardian[];
-  modules: string[];
-  network: string;
-  confirmations_required: number;
-  rawConfig: Record<string, unknown>; // Store raw config for display
-}
-
-interface HistogramEntry {
-  date: string;
-  volume: number;
-  count: number;
-  avgVolume?: number;
-  avgCount?: number;
-  isoDate?: string;
-  timestamp?: number;
-}
-
 export function FederationDetail() {
   const { id } = useParams<{ id: string }>();
   const [federation, setFederation] = useState<FederationSummary | null>(null);
@@ -109,7 +74,10 @@ export function FederationDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'activity' | 'utxos' | 'config'>('activity');
-  const [utxosLoading, setUtxosLoading] = useState(false);
+  // UTXOs load the first time their tab opens, and are only ever shown there
+  const [utxosRequested, setUtxosRequested] = useState(false);
+  const [utxosLoading, setUtxosLoading] = useState(true);
+  const [overview, setOverview] = useState<FederationOverview | null>(null);
   const [utxoView, setUtxoView] = useState<UtxoView>('all');
   const [utxoPage, setUtxoPage] = useState(1);
   const [utxoSearch, setUtxoSearch] = useState('');
@@ -118,7 +86,7 @@ export function FederationDetail() {
   const [ratingError, setRatingError] = useState<string | null>(null);
   const [ratingSuccess, setRatingSuccess] = useState(false);
   const [histogram, setHistogram] = useState<HistogramEntry[]>([]);
-  const [histogramLoading, setHistogramLoading] = useState(false);
+  const [histogramLoading, setHistogramLoading] = useState(true);
   const [chartMetric, setChartMetric] = useState<'volume' | 'count'>('volume');
   const [filterOutliers, setFilterOutliers] = useState(true);
   const [movingAverageWindow, setMovingAverageWindow] = useState<number>(0); // 0 = off, 7 = 7-day, 30 = 30-day
@@ -170,7 +138,7 @@ export function FederationDetail() {
       && (!query
         || utxo.outPoint.toLowerCase().includes(query)
         || (utxo.address?.toLowerCase().includes(query) ?? false)
-        || formatMsatsAsBtc(utxo.amount).includes(query))
+        || asBitcoin(utxo.amount, 8).includes(query))
     );
   }, [utxoInventory, utxoView, utxoSearch]);
 
@@ -203,11 +171,11 @@ export function FederationDetail() {
     
     // Use timestamps to compute last 90 days (3 months ~ 90 days)
     const THREE_MONTHS_MS = 90 * 24 * 60 * 60 * 1000;
-    const lastTs = histogram[histogram.length - 1].timestamp || 0;
+    const lastTs = histogram[histogram.length - 1].timestamp;
     const cutoffTs = lastTs - THREE_MONTHS_MS;
     
     // Find first index with timestamp >= cutoff
-    let startIndex = histogram.findIndex((h) => (h.timestamp ?? 0) >= cutoffTs);
+    let startIndex = histogram.findIndex((h) => h.timestamp >= cutoffTs);
     if (startIndex === -1) {
       // If no entry is within the last 90 days, show all
       startIndex = 0;
@@ -222,32 +190,95 @@ export function FederationDetail() {
 
   useEffect(() => {
     if (!id) return;
+    const controller = new AbortController();
+    const { signal } = controller;
 
+    // Every request below needs only the id, so none waits for another; only the
+    // invite fallback waits for the federation list.
     // Fetch all federations and find the one matching the ID
-    api.getFederations()
-      .then((federations) => {
-        const fed = federations.find((f) => f.id === id);
-        if (!fed) {
-          throw new Error('Federation not found');
-        }
+    const federationRequest = api.getFederations(signal).then((federations) => {
+      const fed = federations.find((f) => f.id === id);
+      if (!fed) {
+        throw new Error('Federation not found');
+      }
+      return fed;
+    });
+    // Fetch config using federation ID first (works for actively observed federations),
+    // falling back to the invite code, which works for any federation with a valid invite
+    const configRequest = api.getFederationConfig(id, signal)
+      .catch(async () => api.getFederationConfigByInvite((await federationRequest).invite, signal))
+      .then(parseConfig);
+
+    Promise.all([federationRequest, configRequest])
+      .then(([fed, configData]) => {
+        if (signal.aborted) return;
         setFederation(fed);
-        // Fetch config using federation ID first, fallback to invite if needed
-        return fetchFederationConfig(id, fed.invite);
-      })
-      .then((configData) => {
         setConfig(configData);
         setLoading(false);
-        // Fetch UTXOs, histogram, and guardian health in background
-        fetchUTXOs(id);
-        fetchHistogram(id);
-        fetchGuardianHealth(id);
       })
       .catch((err) => {
+        if (signal.aborted) return;
         console.error('Failed to fetch federation details:', err);
         setError(err.message);
         setLoading(false);
       });
+
+    api.getFederationHistogram(id, signal)
+      .then((data) => {
+        if (!signal.aborted) setHistogram(toHistogramEntries(data));
+      })
+      .catch((err) => {
+        if (!signal.aborted) console.error('Failed to fetch histogram:', err);
+      })
+      .finally(() => {
+        if (!signal.aborted) setHistogramLoading(false);
+      });
+
+    api.getFederationHealth(id, signal)
+      .then((data) => {
+        if (!signal.aborted) setGuardianHealth(data);
+      })
+      .catch((err) => {
+        if (!signal.aborted) console.error('Failed to fetch guardian health:', err);
+      });
+
+    return () => controller.abort();
   }, [id]);
+
+  // The server asks every guardian and mempool.space for these, so only when the tab is opened
+  useEffect(() => {
+    if (!id || !utxosRequested) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+
+    api.getFederationUtxos(id, signal)
+      .then((data) => {
+        if (signal.aborted) return;
+        setUtxoRows(data.utxos);
+        setUtxoGuardians(data.guardians);
+        setUtxoThreshold(data.threshold);
+      })
+      .catch((err) => {
+        if (!signal.aborted) console.error('Failed to fetch UTXOs:', err);
+      })
+      .finally(() => {
+        if (!signal.aborted) setUtxosLoading(false);
+      });
+
+    // How far the wallet module has indexed the stored sessions
+    api.getFederationOverview(id, signal)
+      .then((data) => {
+        if (!signal.aborted) setOverview(data);
+      })
+      .catch((err) => {
+        if (!signal.aborted) console.error('Failed to fetch federation overview:', err);
+      });
+
+    return () => controller.abort();
+  }, [id, utxosRequested]);
+
+  const walletSessions = overview?.module_sessions.wallet;
+  const walletBehind = overview != null && walletSessions != null && walletSessions < overview.session_count;
 
   // Update zoom state when histogram data loads
   useEffect(() => {
@@ -311,62 +342,11 @@ export function FederationDetail() {
     return data;
   }, [histogram, chartMetric, filterOutliers, movingAverageWindow]);
 
-  const fetchGuardianHealth = async (federationId: string) => {
-    try {
-  const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
-      const response = await fetch(`${BASE_URL}/federations/${federationId}/health`);
-      if (response.ok) {
-        const data = await response.json();
-        setGuardianHealth(data);
-      }
-    } catch (err) {
-      console.error('Failed to fetch guardian health:', err);
-    }
-  };
-
-  const fetchHistogram = async (federationId: string) => {
-    setHistogramLoading(true);
-    try {
-  const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
-      const response = await fetch(`${BASE_URL}/federations/${federationId}/transactions/histogram`);
-      if (response.ok) {
-        const data = await response.json() as Record<string, { num_transactions: number; amount_transferred: number }>;
-        // Data comes as: { "2024-05-31": { "num_transactions": 1, "amount_transferred": 2000000000 }, ... }
-        const chartData = Object.entries(data).map(([dateStr, stats]) => {
-          const date = new Date(dateStr);
-          return {
-            date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-            isoDate: dateStr,
-            timestamp: date.getTime(),
-            volume: stats.amount_transferred / 100000000000, // millisats to BTC
-            count: stats.num_transactions,
-          };
-        });
-        setHistogram(chartData);
-      }
-    } catch (error) {
-      console.error('Failed to fetch histogram:', error);
-    } finally {
-      setHistogramLoading(false);
-    }
-  };
-
-  const fetchUTXOs = async (federationId: string) => {
-    setUtxosLoading(true);
-    try {
-      const data = await api.getFederationUtxos(federationId);
-      setUtxoRows(data.utxos);
-      setUtxoGuardians(data.guardians);
-      setUtxoThreshold(data.threshold);
-    } catch (err) {
-      console.error('Failed to fetch UTXOs:', err);
-      setUtxoRows([]);
-      setUtxoGuardians([]);
-      setUtxoThreshold(0);
-    } finally {
-      setUtxosLoading(false);
-    }
-  };
+  // Totals of the whole history, shown above the chart
+  const histogramTotals = useMemo(() => ({
+    volume: histogram.reduce((sum, entry) => sum + entry.volume, 0),
+    count: histogram.reduce((sum, entry) => sum + entry.count, 0),
+  }), [histogram]);
 
   const handleRateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -374,45 +354,20 @@ export function FederationDetail() {
     setRatingSuccess(false);
 
     try {
-      // Check for Nostr extension
-      if (!window.nostr) {
-        throw new Error('Nostr extension not found. Please install a Nostr browser extension like nos2x or Alby.');
-      }
+      await publishNostrEvent(() => {
+        if (!id) throw new Error('Federation ID missing');
 
-      const nostr = window.nostr;
-      const pubkey = await nostr.getPublicKey();
-
-      if (!id) throw new Error('Federation ID missing');
-
-      // Create unsigned event (Kind 38000 for rating)
-      const unsignedEvent = {
-        kind: 38000,
-        created_at: Math.floor(Date.now() / 1000),
-        tags: [
-          ['d', id],
-          ['n', 'mainnet'],
-          ['k', '38173'],
-        ],
-        content: `[${rating}/5] ${comment}`,
-        pubkey,
-      };
-
-      // Sign event
-      const signedEvent = await nostr.signEvent(unsignedEvent);
-
-      // Publish to backend
-  const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
-      const response = await fetch(`${BASE_URL}/federations/nostr/rating`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(signedEvent),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to publish rating: ${response.status}`);
-      }
+        // Kind 38000 for rating
+        return {
+          kind: 38000,
+          tags: [
+            ['d', id],
+            ['n', 'mainnet'],
+            ['k', '38173'],
+          ],
+          content: `[${rating}/5] ${comment}`,
+        };
+      }, (event) => api.publishNostrRating(event));
 
       setRatingSuccess(true);
       setComment('');
@@ -448,7 +403,7 @@ export function FederationDetail() {
         </Link>
       </div>
 
-      <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-6 sm:mb-8 break-words">
+      <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-6 sm:mb-8 wrap-break-word">
         {federation.name || 'Unnamed Federation'}
       </h1>
 
@@ -459,7 +414,7 @@ export function FederationDetail() {
             Guardians
             {config && (
               <span className="ml-2 text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
-                {config.guardians.length} of {config.guardians.length} Federation
+                {guardianThreshold(config.guardians.length)} of {config.guardians.length} Federation
               </span>
             )}
           </h2>
@@ -553,14 +508,14 @@ export function FederationDetail() {
                   Confirmations Required
                 </div>
                 <div className="text-sm sm:text-base text-gray-900 dark:text-white">
-                  {config?.confirmations_required || 'N/A'}
+                  {config?.confirmationsRequired || 'N/A'}
                 </div>
               </div>
               {id && (
                 <div>
                   <Link
                     to={`/federations/${id}/gateways`}
-                    className="inline-flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg focus:ring-4 focus:outline-none focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                    className="inline-flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg focus:ring-4 focus:outline-hidden focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
                   >
                     Gateway Details
                   </Link>
@@ -658,7 +613,10 @@ export function FederationDetail() {
               Activity
             </button>
             <button
-              onClick={() => setActiveTab('utxos')}
+              onClick={() => {
+                setActiveTab('utxos');
+                setUtxosRequested(true);
+              }}
               className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
                 activeTab === 'utxos'
                   ? 'border-blue-500 text-blue-600 dark:text-blue-400'
@@ -692,10 +650,10 @@ export function FederationDetail() {
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
                 <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4 sm:mb-6">
                   <div className="flex-1 min-w-0">
-                    <h3 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white break-words">
+                    <h3 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white wrap-break-word">
                       {chartMetric === 'volume'
-                        ? histogram.reduce((sum, entry) => sum + entry.volume, 0).toFixed(6) + ' BTC'
-                        : histogram.reduce((sum, entry) => sum + entry.count, 0).toString()}
+                        ? histogramTotals.volume.toFixed(6) + ' BTC'
+                        : histogramTotals.count.toString()}
                     </h3>
                     <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
                       {chartMetric === 'volume' ? 'Total Volume' : 'Total Transactions'}
@@ -721,7 +679,7 @@ export function FederationDetail() {
                       >
                         <input
                           type="checkbox"
-                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 shrink-0"
+                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded-sm focus:ring-blue-500 shrink-0"
                           checked={useLogScale}
                           onChange={(e) => setUseLogScale(e.target.checked)}
                         />
@@ -736,7 +694,7 @@ export function FederationDetail() {
                       >
                         <input
                           type="checkbox"
-                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 shrink-0"
+                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded-sm focus:ring-blue-500 shrink-0"
                           checked={filterOutliers}
                           onChange={(e) => setFilterOutliers(e.target.checked)}
                         />
@@ -833,6 +791,12 @@ export function FederationDetail() {
                   </div>
                 )}
 
+                {walletBehind && (
+                  <div className="border-b border-gray-200 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300 sm:px-6">
+                    The observer's wallet history is indexed to session {walletSessions} of {overview.session_count}, so outputs from later sessions are not listed yet.
+                  </div>
+                )}
+
                 {laggingGuardians.length > 0 && (
                   <div className="border-b border-gray-200 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300 sm:px-6">
                     Left out of the comparison because they are behind the federation:{' '}
@@ -871,7 +835,7 @@ export function FederationDetail() {
                       onChange={(event) => setUtxoSearch(event.target.value)}
                       aria-label="Search UTXOs"
                       placeholder="Search outpoint, txid, address or amount"
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white sm:w-80"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 outline-hidden focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white sm:w-80"
                     />
                     <div className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
                       {filteredUtxos.length === 0
@@ -968,7 +932,7 @@ export function FederationDetail() {
                             </td>
                             <td className="px-4 py-2.5 text-right sm:px-6">
                               <div className="whitespace-nowrap font-mono text-xs tabular-nums text-gray-900 dark:text-white">
-                                {formatMsatsAsBtc(utxo.amount)}
+                                {asBitcoin(utxo.amount, 8)}
                               </div>
                               <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium sm:hidden ${style.pill}`}>{style.label}</span>
                             </td>
@@ -1025,8 +989,8 @@ export function FederationDetail() {
 
           {activeTab === 'config' && (
             <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-3 sm:p-6 overflow-hidden">
-              <pre className="text-[10px] sm:text-xs lg:text-sm text-gray-900 dark:text-white overflow-x-auto whitespace-pre break-words">
-                {config?.rawConfig ? JSON.stringify(config.rawConfig, null, 2) : 'Loading config...'}
+              <pre className="text-[10px] sm:text-xs lg:text-sm text-gray-900 dark:text-white overflow-x-auto whitespace-pre wrap-break-word">
+                {config?.raw ? JSON.stringify(config.raw, null, 2) : 'Loading config...'}
               </pre>
             </div>
           )}
@@ -1040,18 +1004,23 @@ function pluralOutputs(count: number): string {
   return `${count} ${count === 1 ? 'output' : 'outputs'}`;
 }
 
-function formatMsatsAsBtc(msats: number): string {
-  return `${(msats / MSATS_PER_BTC).toFixed(8)} BTC`;
+// Data comes as: { "2024-05-31": { "num_transactions": 1, "amount_transferred": 2000000000 }, ... }
+function toHistogramEntries(histogram: FederationHistogram): HistogramEntry[] {
+  return Object.entries(histogram).map(([dateStr, stats]) => {
+    const date = new Date(dateStr);
+    return {
+      date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      timestamp: date.getTime(),
+      volume: stats.amount_transferred / MSATS_PER_BTC, // millisats to BTC
+      count: stats.num_transactions,
+    };
+  });
 }
 
 // `txid:vout` with the txid shortened in the middle; the full value is in the title
 function shortOutpoint(outPoint: string): string {
   const [txid, vout] = outPoint.split(':');
   return vout === undefined ? shortMiddle(outPoint, 12, 12) : `${shortMiddle(txid, 12, 12)}:${vout}`;
-}
-
-function shortMiddle(value: string, head: number, tail: number): string {
-  return value.length <= head + tail + 1 ? value : `${value.slice(0, head)}…${value.slice(-tail)}`;
 }
 
 // Shortens transaction ids in backend descriptions and links them to mempool
@@ -1081,67 +1050,4 @@ function mempoolTxUrl(outPoint: string): string {
 
 function mempoolAddressUrl(address: string): string {
   return `https://mempool.space/address/${address}`;
-}
-
-async function fetchFederationConfig(federationId: string, inviteCode: string): Promise<FederationConfig> {
-  const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
-
-  // Try fetching config using federation ID first (works for actively observed federations)
-  try {
-    const configResponse = await fetch(`${BASE_URL}/federations/${federationId}/config`);
-    if (configResponse.ok) {
-      const config = await configResponse.json();
-      return parseConfig(config);
-    }
-  } catch {
-    // Fallback below handles federations that are not actively observed.
-  }
-
-  // Fallback: fetch config using invite code (works for any federation with valid invite)
-  const configResponse = await fetch(`${BASE_URL}/config/${inviteCode}`);
-  if (!configResponse.ok) {
-    throw new Error(`Failed to fetch federation config: ${configResponse.status}`);
-  }
-  const config = await configResponse.json() as Record<string, unknown>;
-  return parseConfig(config);
-}
-
-function parseConfig(config: Record<string, unknown>): FederationConfig {
-  // Parse guardians
-  const guardians: Guardian[] = (config.global as { api_endpoints?: Record<string, { url?: string }> })?.api_endpoints
-    ? Object.entries((config.global as { api_endpoints: Record<string, { url?: string }> }).api_endpoints).map(([id, endpoint]) => ({
-        id: parseInt(id),
-        name: `Guardian ${id}`,
-        url: endpoint.url || 'Unknown',
-        online: false, // Will be determined by health endpoint
-        session: 0, // Will be updated by health endpoint
-        block: 0, // Will be updated by health endpoint
-        sessionOutdated: false,
-        blockOutdated: false,
-      }))
-    : [];
-
-  // Parse modules
-  const modules: string[] = config.modules
-    ? Object.values(config.modules as Record<string, { kind?: string }>).map((mod) => mod.kind || 'unknown')
-    : [];
-
-  // Get network from wallet module
-  const walletModule = config.modules
-    ? Object.values(config.modules as Record<string, { kind?: string; network?: string; finality_delay?: number }>).find((mod) => mod.kind === 'wallet')
-    : null;
-  const network = walletModule ? (walletModule.network || 'unknown') : 'unknown';
-
-  // Get confirmations required from wallet module (finality_delay + 1)
-  const confirmations_required = walletModule
-    ? ((walletModule.finality_delay || 0) + 1)
-    : 0;
-
-  return {
-    guardians,
-    modules,
-    network,
-    confirmations_required,
-    rawConfig: config, // Store raw config for display in Config tab
-  };
 }

@@ -4,6 +4,13 @@ export interface FedimintTotals {
   tx_count: number;
 }
 
+export interface FederationOverview {
+  session_count: number;
+  total_assets_msat: number;
+  /** Sessions each module has processed, by module kind; behind session_count while it catches up */
+  module_sessions: Record<string, number>;
+}
+
 export interface FederationSummary {
   id: string;
   name: string | null;
@@ -22,6 +29,36 @@ export interface FederationRating {
 export interface FederationActivity {
   num_transactions: number;
   amount_transferred: number;
+}
+
+/** Activity per calendar day, keyed by date (e.g. "2024-05-31"), oldest first */
+export type FederationHistogram = Record<string, FederationActivity>;
+
+export interface GuardianHealth {
+  avg_uptime: number;
+  avg_latency: number;
+  software_version: string | null;
+  latest: GuardianHealthLatest | null;
+}
+
+export interface GuardianHealthLatest {
+  block_height: number;
+  block_outdated: boolean;
+  session_count: number;
+  session_outdated: boolean;
+}
+
+/**
+ * Fedimint's JsonClientConfig, which is not part of fmo_api_types. Only the
+ * fields the pages read are listed; the rest is still there and shown as is.
+ */
+export interface ClientConfig {
+  global?: {
+    api_endpoints?: Record<string, { url?: string }>;
+    meta?: Record<string, unknown>;
+  };
+  /** Keyed by module instance id */
+  modules?: Record<string, { kind?: string; network?: string; finality_delay?: number }>;
 }
 
 export interface FederationUtxosResponse {

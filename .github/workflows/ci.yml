@@ -1,4 +1,7 @@
-name: CI
+name: Nix build
+
+permissions:
+  contents: read
 
 on:
   push:
