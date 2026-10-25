@@ -1,22 +1,23 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import type {
   FederationSummary,
   GatewayInfo,
   GatewayUptimeTrendPoint,
+  GatewayWindow,
 } from '../types/api';
 import { GatewayWarningPage, type GatewayWarningState } from '../components/GatewayWarningPage';
 import { ErrorBoundary, ReloadMessage } from '../components/ErrorBoundary';
 import { readStorage, writeStorage } from '../utils/storage';
 import { useTheme } from '../hooks/useTheme';
+import { shortMiddle } from '../utils/format';
 import type { EChartsOption } from 'echarts';
 
 type GatewayStatus = 'online' | 'degraded' | 'offline' | 'unknown' | 'retired';
 type UptimeStripStatus = 'online' | 'degraded' | 'offline' | 'unknown';
 
-const GATEWAY_WINDOWS = ['24h', '7d', '30d', '90d'] as const;
-type SelectableWindow = (typeof GATEWAY_WINDOWS)[number];
+const GATEWAY_WINDOWS: readonly GatewayWindow[] = ['24h', '7d', '30d', '90d'];
 // 'all' means every active gateway; retired ones have their own filter
 const GATEWAY_FILTERS = ['all', 'online', 'degraded', 'offline', 'unknown', 'retired'] as const;
 const GATEWAY_SORTS = ['freshness', 'status', 'uptime', 'activity'] as const;
@@ -26,9 +27,9 @@ type SortDirection = (typeof SORT_DIRECTIONS)[number];
 
 const UptimeTrendChart = lazy(() => import('../components/UptimeTrendChart').then((module) => ({ default: module.UptimeTrendChart })));
 const INITIAL_RENDER_COUNT = 50;
-const DEFAULT_WINDOW: SelectableWindow = '7d';
+const DEFAULT_WINDOW: GatewayWindow = '7d';
 const WINDOW_STORAGE_KEY = 'gatewayWindow';
-const WINDOW_MINUTES: Record<SelectableWindow, number> = {
+const WINDOW_MINUTES: Record<GatewayWindow, number> = {
   '24h': 24 * 60,
   '7d': 7 * 24 * 60,
   '30d': 30 * 24 * 60,
@@ -106,11 +107,6 @@ function formatRelative(date: Date | null, now: number): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
-}
-
-function shortId(value: string): string {
-  if (value.length <= 16) return value;
-  return `${value.slice(0, 8)}...${value.slice(-8)}`;
 }
 
 function formatCompactDuration(minutes: number): string {
@@ -285,7 +281,7 @@ type LiveLookup =
   | { status: 'done'; gateways: GatewayInfo[]; error: string | null };
 
 interface LoadError {
-  window: SelectableWindow;
+  window: GatewayWindow;
   message: string;
   network: boolean; // fetch itself failed, as opposed to an error answer from the API
 }
@@ -296,7 +292,7 @@ interface GatewaySources {
   live: LiveLookup; // the federation's own registry, which only adds details
   federationFailed: boolean;
   federationOffline: boolean;
-  dataWindow: SelectableWindow;
+  dataWindow: GatewayWindow;
 }
 
 // Banners are only for problems or empty states; normal pages show none
@@ -419,18 +415,6 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
-const DARK_QUERY = '(prefers-color-scheme: dark)';
-function subscribeToColorScheme(onChange: () => void) {
-  const media = window.matchMedia(DARK_QUERY);
-  media.addEventListener('change', onChange);
-  return () => media.removeEventListener('change', onChange);
-}
-
-// Re-renders when the system switches between light and dark, for the 'auto' theme
-function usePrefersDark(): boolean {
-  return useSyncExternalStore(subscribeToColorScheme, () => window.matchMedia(DARK_QUERY).matches);
-}
-
 export function FederationGateways() {
   // The router remounts this page per federation (App.tsx), so id never changes here
   const { id = '' } = useParams<{ id: string }>();
@@ -449,12 +433,12 @@ export function FederationGateways() {
   const [federationKey, setFederationKey] = useState(0);
   // Each response is stored with the window it belongs to, so a window switch never
   // recomputes the previous window's numbers against the new window's length
-  const [observed, setObserved] = useState<{ window: SelectableWindow; gateways: GatewayInfo[] } | null>(null);
+  const [observed, setObserved] = useState<{ window: GatewayWindow; gateways: GatewayInfo[] } | null>(null);
   const [observedError, setObservedError] = useState<LoadError | null>(null);
   const [observedLoading, setObservedLoading] = useState(true);
   const [live, setLive] = useState<LiveLookup>({ status: 'pending' });
   const [liveKey, setLiveKey] = useState(0);
-  const [trend, setTrend] = useState<{ window: SelectableWindow; points: GatewayUptimeTrendPoint[] } | null>(null);
+  const [trend, setTrend] = useState<{ window: GatewayWindow; points: GatewayUptimeTrendPoint[] } | null>(null);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [reloadKey, setReloadKey] = useState(0); // Try again
@@ -479,7 +463,7 @@ export function FederationGateways() {
     setSearchParams(next, { replace: true });
   }, [setSearchParams]);
 
-  const selectWindow = (nextWindow: SelectableWindow) => {
+  const selectWindow = (nextWindow: GatewayWindow) => {
     writeStorage(WINDOW_STORAGE_KEY, nextWindow);
     updateView({ window: nextWindow });
   };
@@ -796,12 +780,10 @@ export function FederationGateways() {
     [filteredRows, visibleGatewayCount],
   );
 
-  const { theme } = useTheme();
-  const prefersDark = usePrefersDark();
-  const darkMode = theme === 'dark' || (theme === 'auto' && prefersDark);
-  const chartColors = useMemo(() => (darkMode
+  const { isDark } = useTheme();
+  const chartColors = useMemo(() => (isDark
     ? { label: '#9ca3af', axis: '#4b5563', grid: '#374151', line: '#60a5fa', area: 'rgba(96, 165, 250, 0.15)' }
-    : { label: '#6b7280', axis: '#d1d5db', grid: '#e5e7eb', line: '#2563eb', area: 'rgba(37, 99, 235, 0.12)' }), [darkMode]);
+    : { label: '#6b7280', axis: '#d1d5db', grid: '#e5e7eb', line: '#2563eb', area: 'rgba(37, 99, 235, 0.12)' }), [isDark]);
 
   // A window switch shows the loading state rather than the previous window's trend
   const uptimeTrend = trend?.window === timeWindow ? trend.points : EMPTY_TREND;
@@ -850,11 +832,11 @@ export function FederationGateways() {
   return (
     <div className="py-5 sm:py-8">
       <Link to={`/federations/${id}`} className="text-sm text-blue-700 hover:underline dark:text-blue-300">← Federation details</Link>
-      <header className="mt-4 mb-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-white to-blue-50 p-5 shadow-sm dark:border-gray-700 dark:from-gray-800 dark:to-blue-950/30 sm:p-6">
+      <header className="mt-4 mb-4 rounded-2xl border border-slate-200 bg-linear-to-br from-white to-blue-50 p-5 shadow-xs dark:border-gray-700 dark:from-gray-800 dark:to-blue-950/30 sm:p-6">
         <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
           <div>
             <div className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700 dark:text-blue-300">Lightning gateway observatory</div>
-            <h1 ref={headingRef} tabIndex={-1} className="mt-2 break-words text-3xl font-bold tracking-tight text-gray-950 outline-none dark:text-white">
+            <h1 ref={headingRef} tabIndex={-1} className="mt-2 wrap-break-word text-3xl font-bold tracking-tight text-gray-950 outline-hidden dark:text-white">
               {federation?.name || (federation === undefined && !federationFailed
                 ? <span aria-hidden="true" className="inline-block h-8 w-56 max-w-full animate-pulse rounded-lg bg-slate-200 align-middle dark:bg-gray-700" />
                 : 'Federation')}
@@ -868,7 +850,7 @@ export function FederationGateways() {
                   type="button"
                   aria-pressed={timeWindow === option}
                   onClick={() => selectWindow(option)}
-                  className={`rounded-lg px-3 py-2 text-sm font-semibold ${timeWindow === option ? 'bg-white text-blue-700 shadow-sm dark:bg-gray-700 dark:text-blue-300' : 'text-gray-600 dark:text-gray-400'}`}
+                  className={`rounded-lg px-3 py-2 text-sm font-semibold ${timeWindow === option ? 'bg-white text-blue-700 shadow-xs dark:bg-gray-700 dark:text-blue-300' : 'text-gray-600 dark:text-gray-400'}`}
                 >
                   {option.toUpperCase()}
                 </button>
@@ -895,7 +877,7 @@ export function FederationGateways() {
       )}
 
       {hasData && (<>
-      <section className="mb-4 rounded-xl border border-gray-200 bg-white px-4 pt-4 shadow-sm dark:border-gray-700 dark:bg-gray-800 sm:px-5" aria-labelledby="uptime-trend-heading">
+      <section className="mb-4 rounded-xl border border-gray-200 bg-white px-4 pt-4 shadow-xs dark:border-gray-700 dark:bg-gray-800 sm:px-5" aria-labelledby="uptime-trend-heading">
         <div className="flex flex-wrap items-baseline justify-between gap-2"><div><h2 id="uptime-trend-heading" className="text-base font-semibold text-gray-950 dark:text-white">Gateway availability trend ({timeWindow.toUpperCase()})</h2><p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Each point combines every gateway poll snapshot recorded on that calendar day.</p></div>{uptimeTrend.length > 0 && <span className="text-xs text-gray-500 dark:text-gray-400">{uptimeTrend.length} calendar day{uptimeTrend.length === 1 ? '' : 's'} with data</span>}</div>
         {uptimeTrend.length > 0 ? (
           <ErrorBoundary fallback={<div className="flex h-[210px] items-center justify-center"><ReloadMessage message="The availability chart could not be loaded." /></div>}>
@@ -910,9 +892,9 @@ export function FederationGateways() {
 
       <section aria-busy={switchingWindow} className={`mb-4 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-md transition-opacity dark:border-gray-700 dark:bg-gray-800 ${switchingWindow ? 'opacity-60' : ''}`}>
         <div className="border-b border-gray-200 p-4 dark:border-gray-700 sm:p-5">
-          <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-end"><div><h2 className="text-lg font-semibold text-gray-950 dark:text-white">Gateway directory</h2><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{filteredRows.length} of {rows.length} gateways · every row includes its 30-bucket availability strip, ordered oldest to newest.</p></div><div className="flex flex-col gap-2 sm:flex-row"><input value={gatewaySearch} onChange={(event) => setGatewaySearch(event.target.value)} aria-label="Search gateways" placeholder="Search gateway, node, endpoint" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white" /><select value={gatewaySort} onChange={(event) => { const nextSort = event.target.value as GatewaySort; updateView({ sort: nextSort === 'freshness' ? null : nextSort, dir: null }); }} aria-label="Sort gateways" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200"><option value="freshness">Last seen</option><option value="status">Status</option><option value="uptime">Uptime</option><option value="activity">Activity</option></select><button type="button" onClick={() => { const nextDirection = sortDirection === 'asc' ? 'desc' : 'asc'; updateView({ dir: nextDirection === defaultDirection(gatewaySort) ? null : nextDirection }); }} className="rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 dark:border-blue-800 dark:bg-blue-950/50 dark:text-blue-200" title={`Sort ${sortDirection === 'asc' ? 'ascending' : 'descending'}`}>{sortDirection === 'asc' ? '↑ Asc' : '↓ Desc'}</button></div></div>
+          <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-end"><div><h2 className="text-lg font-semibold text-gray-950 dark:text-white">Gateway directory</h2><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{filteredRows.length} of {rows.length} gateways · every row includes its 30-bucket availability strip, ordered oldest to newest.</p></div><div className="flex flex-col gap-2 sm:flex-row"><input value={gatewaySearch} onChange={(event) => setGatewaySearch(event.target.value)} aria-label="Search gateways" placeholder="Search gateway, node, endpoint" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-hidden focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white" /><select value={gatewaySort} onChange={(event) => { const nextSort = event.target.value as GatewaySort; updateView({ sort: nextSort === 'freshness' ? null : nextSort, dir: null }); }} aria-label="Sort gateways" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200"><option value="freshness">Last seen</option><option value="status">Status</option><option value="uptime">Uptime</option><option value="activity">Activity</option></select><button type="button" onClick={() => { const nextDirection = sortDirection === 'asc' ? 'desc' : 'asc'; updateView({ dir: nextDirection === defaultDirection(gatewaySort) ? null : nextDirection }); }} className="rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 dark:border-blue-800 dark:bg-blue-950/50 dark:text-blue-200" title={`Sort ${sortDirection === 'asc' ? 'ascending' : 'descending'}`}>{sortDirection === 'asc' ? '↑ Asc' : '↓ Desc'}</button></div></div>
           <div className="mt-3 flex flex-wrap gap-2 pb-1" role="group" aria-label="Filter by status">{GATEWAY_FILTERS.map((filter) => <button key={filter} type="button" aria-pressed={gatewayFilter === filter} onClick={() => updateView({ status: filter === 'all' ? null : filter })} className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium capitalize ${gatewayFilter === filter ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300'}`}>{filter === 'all' ? 'All active' : filter} ({filter === 'all' ? totals.total : totals[filter]})</button>)}</div>
-          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400"><span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-green-500" />Online</span><span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-yellow-500" />Degraded</span><span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-red-500" />Offline</span><span><i className="mr-1 inline-block h-2 w-2 rounded-sm bg-gray-300 dark:bg-gray-600" />Unknown</span></div>
+          <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400"><span><i className="mr-1 inline-block h-2 w-2 rounded-xs bg-green-500" />Online</span><span><i className="mr-1 inline-block h-2 w-2 rounded-xs bg-yellow-500" />Degraded</span><span><i className="mr-1 inline-block h-2 w-2 rounded-xs bg-red-500" />Offline</span><span><i className="mr-1 inline-block h-2 w-2 rounded-xs bg-gray-300 dark:bg-gray-600" />Unknown</span></div>
         </div>
         {/* Phones get one stacked card per gateway instead of a 960px table behind a sideways scroll */}
         <div className="sm:overflow-x-auto">
@@ -959,13 +941,13 @@ export function FederationGateways() {
                     className="text-xs font-mono text-gray-600 dark:text-gray-400 mt-1"
                     title={gateway.gateway_id}
                   >
-                    {shortId(gateway.gateway_id)}
+                    {shortMiddle(gateway.gateway_id, 8, 8, '...')}
                   </div>
                   <div
                     className="text-xs font-mono text-gray-500 dark:text-gray-500 mt-1"
                     title={gateway.node_pub_key}
                   >
-                    Node: {shortId(gateway.node_pub_key)}
+                    Node: {shortMiddle(gateway.node_pub_key, 8, 8, '...')}
                   </div>
                 </td>
                 <td className="block px-4 py-2 sm:table-cell sm:px-5 sm:py-4">
@@ -1053,7 +1035,7 @@ export function FederationGateways() {
                     <button
                       type="button"
                       onClick={() => setRawAnnouncement({
-                        gatewayName: gateway.lightning_alias || shortId(gateway.gateway_id),
+                        gatewayName: gateway.lightning_alias || shortMiddle(gateway.gateway_id, 8, 8, '...'),
                         raw: gateway.raw!,
                       })}
                       className="mt-2 text-xs text-gray-600 hover:text-blue-700 hover:underline dark:text-gray-400 dark:hover:text-blue-300"
@@ -1083,7 +1065,7 @@ export function FederationGateways() {
       {rawAnnouncement && (
         <div
           role="presentation"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/60 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/60 p-4 backdrop-blur-xs"
           onMouseDown={() => setRawAnnouncement(null)}
         >
           <section

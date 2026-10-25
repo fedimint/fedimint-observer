@@ -4,6 +4,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: fmo
+      # Only reachable from the fmo_server container: no port is published
       POSTGRES_PASSWORD: fmo
       POSTGRES_DB: fmo
     volumes:
@@ -15,17 +16,19 @@ services:
       retries: 5
 
   fmo_server:
-    image: ghcr.io/elsirion/fedimint-observer:latest
+    image: ghcr.io/fedimint/fedimint-observer:latest
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      # Localhost only: put a reverse proxy in front to serve it publicly
+      - "127.0.0.1:3000:3000"
     environment:
       FO_BIND: "0.0.0.0:3000"
       FO_DATABASE: "postgres://fmo:fmo@db:5432/fmo"
-      FO_ADMIN_AUTH: "changeme"
+      # Required, e.g. `FO_ADMIN_AUTH=$(openssl rand -hex 32) docker compose up`
+      FO_ADMIN_AUTH: "${FO_ADMIN_AUTH:?set FO_ADMIN_AUTH to a random secret}"
       FO_MEMPOOL_URL: "https://mempool.space/api"
       RUST_LOG: "info"
 

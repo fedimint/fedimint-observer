@@ -1,0 +1,45 @@
+[package]
+name = "fmo_core"
+version = "0.2.0"
+edition = "2021"
+description = "Module-agnostic core of Fedimint Observer: fetching, storage, API and shared services"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+fedimint-api-client = { workspace = true }
+fedimint-connectors = { workspace = true }
+fedimint-core = { workspace = true }
+fedimint-ln-common = { workspace = true }
+fedimint-meta-client = { workspace = true }
+fedimint-wallet-common = { workspace = true }
+
+anyhow = "1.0.81"
+async-trait = "0.1.92"
+axum = { version = "0.7.5", features = ["json"] }
+axum-auth = "0.7.0"
+bitcoin = "0.32.5"
+esplora-client = { version = "0.10.0", default-features = false, features = [
+    "async-https-rustls",
+] }
+fmo_api_types = { path = "../fmo_api_types" }
+futures = "0.3.30"
+hex = "0.4.3"
+nostr-sdk = "0.34.0"
+postgres-from-row = "0.5.2"
+reqwest = { version = "0.12.2", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.115"
+subtle = "2.6.1"
+tokio = { version = "1.37.0", features = ["full"] }
+tokio-postgres = { version = "0.7.11", features = [
+    "with-chrono-0_4",
+    "with-serde_json-1",
+] }
+deadpool-postgres = "0.14.0"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tower-http = { version = "0.5.2", features = ["cors"] }
+chrono = { version = "0.4.38", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+regex = "1.10.4"

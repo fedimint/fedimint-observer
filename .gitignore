@@ -1,7 +1,5 @@
 /target
 .env
-test_db.sqlite
-fedimint_observer.db
 .direnv
 .pg_dev
 /db_backups

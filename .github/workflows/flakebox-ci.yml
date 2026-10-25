@@ -11,25 +11,23 @@ jobs:
     - name: Magic Nix Cache
       uses: DeterminateSystems/magic-nix-cache-action@v2
     - name: Build on ${{ matrix.host }}
-      run: 'nix flake check -L .#
-
-        '
+      run: ${{ matrix.build }}
     strategy:
       matrix:
         host:
-        - macos-x86_64
         - macos-aarch64
         - linux
         include:
         - host: linux
           runs-on: ubuntu-latest
           timeout: 60
-        # - host: macos-x86_64
-        #   runs-on: macos-12
-        #   timeout: 60
-        # - host: macos-aarch64
-        #   runs-on: macos-14
-        #   timeout: 60
+          build: nix flake check -L .#
+        # The flake's cross-compilation dev shell can't build its Android SDK
+        # on macOS, so macOS builds the packages instead of every flake output
+        - host: macos-aarch64
+          runs-on: macos-15
+          timeout: 60
+          build: nix build -L .#fmo_server .#fmo_frontend_react_default
     timeout-minutes: ${{ matrix.timeout }}
   flake:
     name: Flake self-check
@@ -78,7 +76,26 @@ jobs:
       - name: Clippy
         run: nix develop .# --command just clippy
 
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v4
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v2
+      - name: Cargo Cache
+        uses: actions/cache@v3
+        with:
+          key: ${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          path: ~/.cargo
+      - name: Test
+        run: nix develop .# --command just test
+
 name: CI
+permissions:
+  contents: read
 'on':
   merge_group:
     branches:

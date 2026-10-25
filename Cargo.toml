@@ -1,8 +1,14 @@
 [workspace]
 members = [
     "fmo_api_types",
+    "fmo_core",
+    "fmo_modules/fmo_module_ln",
+    "fmo_modules/fmo_module_mint",
+    "fmo_modules/fmo_module_wallet",
     "fmo_server",
 ]
+# Builds only with --features stability_pool_v1, see its Cargo.toml
+exclude = ["fmo_modules/fmo_module_stability_pool"]
 
 resolver = "2"
 
