@@ -135,6 +135,10 @@ export function FederationDetail() {
   const [guardianHealth, setGuardianHealth] = useState<Record<string, GuardianHealth>>({});
   
   const shutdown = useMemo(() => shutdownOf(federation?.expiry_timestamp ?? null), [federation]);
+  // The UTXO view and the gateway registry only cover the v1 wallet and
+  // Lightning modules: v2 federations have neither
+  const hasWalletV1 = config?.modules.includes('wallet') ?? false;
+  const hasLightningV1 = config?.modules.includes('ln') ?? false;
 
   // Check if at least one guardian is online
   const hasOnlineGuardian = useMemo(() => {
@@ -251,7 +255,7 @@ export function FederationDetail() {
         setConfig(configData);
         setLoading(false);
         // Fetch UTXOs, histogram, and guardian health in background
-        fetchUTXOs(id);
+        if (configData.modules.includes('wallet')) fetchUTXOs(id);
         fetchHistogram(id);
         fetchGuardianHealth(id);
       })
@@ -575,7 +579,7 @@ export function FederationDetail() {
                   {config?.confirmations_required || 'N/A'}
                 </div>
               </div>
-              {id && (
+              {id && hasLightningV1 && (
                 <div>
                   <Link
                     to={`/federations/${id}/gateways`}
@@ -677,16 +681,18 @@ export function FederationDetail() {
             >
               Activity
             </button>
-            <button
-              onClick={() => setActiveTab('utxos')}
-              className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
-                activeTab === 'utxos'
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
-              }`}
-            >
-              UTXOs
-            </button>
+            {hasWalletV1 && (
+              <button
+                onClick={() => setActiveTab('utxos')}
+                className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
+                  activeTab === 'utxos'
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                }`}
+              >
+                UTXOs
+              </button>
+            )}
             <button
               onClick={() => setActiveTab('config')}
               className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
