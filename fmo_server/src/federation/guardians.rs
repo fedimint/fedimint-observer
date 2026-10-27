@@ -109,6 +109,9 @@ impl FederationObserver {
             for (peer_id, status, software_version, block_height, api_latency) in
                 peer_status_responses
             {
+                // A guardian that didn't answer has no ping, only the time its
+                // requests took to fail
+                let latency_ms = status.is_some().then_some(api_latency.as_millis() as i32);
                 dbtx.execute(
                     "INSERT INTO guardian_health (
                         federation_id,
@@ -125,7 +128,7 @@ impl FederationObserver {
                         &(peer_id.to_usize() as i32),
                         &status.map(|s| serde_json::to_value(s).expect("Can be serialized")),
                         &block_height.map(|bh| bh as i32),
-                        &(api_latency.as_millis() as i32),
+                        &latency_ms,
                         &software_version,
                     ],
                 )
@@ -191,11 +194,13 @@ impl FederationObserver {
                  ORDER BY h.time DESC
                  LIMIT 1
              ) latest
+             -- Ping averages the polls the guardian answered: earlier
+             -- versions also stored how long the requests took to fail
              INNER JOIN (
                  SELECT
                      guardian_id,
                      (COUNT(status)::decimal / COUNT(*)::decimal * 100)::real as uptime,
-                     AVG(latency_ms)::real as latency_ms
+                     (AVG(latency_ms) FILTER (WHERE status IS NOT NULL))::real as latency_ms
                  FROM guardian_health
                  WHERE federation_id = $1
                    AND time > NOW() - INTERVAL '30 days'
@@ -346,7 +351,7 @@ struct GuardianHealthRow {
     session_count: Option<i32>,
     software_version: Option<String>,
     uptime: f32,
-    latency_ms: f32,
+    latency_ms: Option<f32>,
 }
 
 pub(super) async fn get_federation_health(

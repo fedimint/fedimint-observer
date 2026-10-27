@@ -71,7 +71,8 @@ interface Guardian {
 
 interface GuardianHealth {
   avg_uptime: number;
-  avg_latency: number;
+  // null for a guardian that answered no poll in the last 30 days
+  avg_latency: number | null;
   software_version: string | null;
   latest: {
     // null for federations without a v1 wallet module

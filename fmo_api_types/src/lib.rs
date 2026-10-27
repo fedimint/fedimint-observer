@@ -154,7 +154,9 @@ pub enum GuardianUtxoDisagreementKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardianHealth {
     pub avg_uptime: f32,
-    pub avg_latency: f32,
+    /// Over the polls of the last 30 days the guardian answered, `None` if it
+    /// answered none
+    pub avg_latency: Option<f32>,
     pub software_version: Option<String>,
     pub latest: Option<GuardianHealthLatest>,
 }
