@@ -731,3 +731,407 @@ async fn get_nonces_spend_info(
         .await?
         .into())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use bitcoin::address::NetworkUnchecked;
+    use bitcoin::{Address, OutPoint, Txid};
+    use fedimint_core::Amount;
+    use fmo_api_types::{
+        FederationUtxo, GuardianClaimedUtxo, GuardianClaimedUtxoState, GuardianUtxoClaim,
+        GuardianUtxoClaimStatus, GuardianUtxoDisagreementKind, UtxoComparisonStatus,
+    };
+    use GuardianClaimedUtxoState::{Spendable, UnconfirmedChange, UnsignedPegOut};
+
+    use super::{compare_utxos, UtxoComparison};
+    use crate::federation::observer::OnChainOutput;
+
+    fn txid(n: u8) -> Txid {
+        format!("{n:064x}").parse().unwrap()
+    }
+
+    fn out(n: u8) -> OutPoint {
+        OutPoint {
+            txid: txid(n),
+            vout: 0,
+        }
+    }
+
+    fn observed(n: u8, sats: u64) -> FederationUtxo {
+        FederationUtxo {
+            address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+                .parse::<Address<NetworkUnchecked>>()
+                .unwrap(),
+            out_point: out(n),
+            amount: Amount::from_sats(sats),
+        }
+    }
+
+    fn listed(n: u8, sats: u64, state: GuardianClaimedUtxoState) -> GuardianClaimedUtxo {
+        GuardianClaimedUtxo {
+            out_point: out(n),
+            amount: Amount::from_sats(sats),
+            state,
+        }
+    }
+
+    fn claim(guardian_id: u16, utxos: Vec<GuardianClaimedUtxo>) -> GuardianUtxoClaim {
+        GuardianUtxoClaim {
+            guardian_id,
+            status: GuardianUtxoClaimStatus::Ok,
+            session_count: Some(100),
+            utxos,
+            error: None,
+        }
+    }
+
+    fn unanswered(guardian_id: u16, status: GuardianUtxoClaimStatus) -> GuardianUtxoClaim {
+        GuardianUtxoClaim {
+            guardian_id,
+            status,
+            session_count: None,
+            utxos: vec![],
+            error: None,
+        }
+    }
+
+    /// Four guardians (threshold 3) listing the given outputs each
+    fn four_guardians(lists: [Vec<GuardianClaimedUtxo>; 4]) -> Vec<GuardianUtxoClaim> {
+        lists
+            .into_iter()
+            .enumerate()
+            .map(|(id, utxos)| claim(id as u16, utxos))
+            .collect()
+    }
+
+    fn only_row(comparison: &UtxoComparison) -> &fmo_api_types::UtxoComparisonRow {
+        assert_eq!(comparison.rows.len(), 1);
+        &comparison.rows[0]
+    }
+
+    fn findings(comparison: &UtxoComparison, guardian_id: u16) -> (u32, u32, u32) {
+        let report = &comparison.guardians[usize::from(guardian_id)];
+        (
+            report.missing_outputs,
+            report.extra_outputs,
+            report.wrong_amounts,
+        )
+    }
+
+    #[test]
+    fn threshold_is_n_minus_f() {
+        for (n, threshold) in [(1, 1), (2, 2), (3, 3), (4, 3), (5, 4), (7, 5), (10, 7)] {
+            let claims = (0..n).map(|id| claim(id, vec![])).collect::<Vec<_>>();
+            assert_eq!(compare_utxos(&[], &claims).threshold, threshold, "n = {n}");
+        }
+    }
+
+    #[test]
+    fn verified_when_observer_and_guardians_agree() {
+        let utxo = || vec![listed(1, 50_000, Spendable)];
+        let comparison = compare_utxos(
+            &[observed(1, 50_000)],
+            &four_guardians([utxo(), utxo(), utxo(), utxo()]),
+        );
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Verified);
+        assert_eq!(row.disagreement, None);
+        assert_eq!(row.detail, None);
+        for id in 0..4 {
+            assert_eq!(findings(&comparison, id), (0, 0, 0));
+        }
+        assert!(comparison.onchain_check_requests().is_empty());
+    }
+
+    #[test]
+    fn guardian_missing_an_agreed_output_is_reported() {
+        let utxo = || vec![listed(1, 50_000, Spendable)];
+        let comparison = compare_utxos(
+            &[observed(1, 50_000)],
+            &four_guardians([utxo(), utxo(), utxo(), vec![]]),
+        );
+        assert_eq!(only_row(&comparison).status, UtxoComparisonStatus::Verified);
+        assert_eq!(findings(&comparison, 3), (1, 0, 0));
+        assert_eq!(findings(&comparison, 0), (0, 0, 0));
+    }
+
+    #[test]
+    fn guardian_with_a_wrong_amount_is_outvoted() {
+        let utxo = || vec![listed(1, 50_000, Spendable)];
+        let comparison = compare_utxos(
+            &[observed(1, 50_000)],
+            &four_guardians([utxo(), utxo(), utxo(), vec![listed(1, 49_000, Spendable)]]),
+        );
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Verified);
+        assert_eq!(
+            row.detail.as_deref(),
+            Some("Guardian 3 reports a different amount.")
+        );
+        assert_eq!(findings(&comparison, 3), (0, 0, 1));
+    }
+
+    #[test]
+    fn observer_amount_differing_from_guardians_is_a_mismatch() {
+        let utxo = || vec![listed(1, 50_000, Spendable)];
+        let comparison = compare_utxos(
+            &[observed(1, 60_000)],
+            &four_guardians([utxo(), utxo(), utxo(), utxo()]),
+        );
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Mismatch);
+        assert_eq!(
+            row.disagreement,
+            Some(GuardianUtxoDisagreementKind::EvidenceMismatch)
+        );
+    }
+
+    #[test]
+    fn guardians_without_an_agreed_amount_are_a_mismatch() {
+        let comparison = compare_utxos(
+            &[],
+            &four_guardians([
+                vec![listed(1, 1_000, Spendable)],
+                vec![listed(1, 2_000, Spendable)],
+                vec![listed(1, 3_000, Spendable)],
+                vec![listed(1, 4_000, Spendable)],
+            ]),
+        );
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Mismatch);
+        assert_eq!(
+            row.disagreement,
+            Some(GuardianUtxoDisagreementKind::EvidenceMismatch)
+        );
+    }
+
+    #[test]
+    fn output_the_observer_lacks_is_pending_and_checked_on_chain() {
+        let utxo = || vec![listed(1, 50_000, Spendable)];
+        let mut comparison = compare_utxos(&[], &four_guardians([utxo(), utxo(), utxo(), utxo()]));
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Pending);
+        assert_eq!(
+            row.disagreement,
+            Some(GuardianUtxoDisagreementKind::ObserverDifference)
+        );
+        assert_eq!(row.amount, Amount::from_sats(50_000));
+        // Every guardian considers it final, so it must exist on-chain with that amount
+        assert_eq!(comparison.onchain_check_requests(), vec![(out(1), true)]);
+
+        comparison.apply_onchain_evidence(&HashMap::from([(out(1), OnChainOutput::Missing)]));
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Mismatch);
+        assert_eq!(
+            row.disagreement,
+            Some(GuardianUtxoDisagreementKind::OnChainConflict)
+        );
+    }
+
+    #[test]
+    fn on_chain_amount_differing_from_guardians_is_a_conflict() {
+        let utxo = || vec![listed(1, 50_000, Spendable)];
+        let mut comparison = compare_utxos(&[], &four_guardians([utxo(), utxo(), utxo(), utxo()]));
+        comparison.apply_onchain_evidence(&HashMap::from([(
+            out(1),
+            OnChainOutput::Unspent {
+                amount: Some(bitcoin::Amount::from_sat(40_000)),
+            },
+        )]));
+        assert_eq!(
+            only_row(&comparison).disagreement,
+            Some(GuardianUtxoDisagreementKind::OnChainConflict)
+        );
+
+        let mut comparison = compare_utxos(&[], &four_guardians([utxo(), utxo(), utxo(), utxo()]));
+        comparison.apply_onchain_evidence(&HashMap::from([(
+            out(1),
+            OnChainOutput::Unspent {
+                amount: Some(bitcoin::Amount::from_sat(50_000)),
+            },
+        )]));
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Pending);
+        assert_eq!(
+            row.disagreement,
+            Some(GuardianUtxoDisagreementKind::ObserverDifference)
+        );
+    }
+
+    #[test]
+    fn output_only_one_guardian_lists_is_extra() {
+        let comparison = compare_utxos(
+            &[],
+            &four_guardians([vec![listed(1, 50_000, Spendable)], vec![], vec![], vec![]]),
+        );
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Mismatch);
+        assert_eq!(
+            row.disagreement,
+            Some(GuardianUtxoDisagreementKind::InventoryDifference)
+        );
+        assert_eq!(findings(&comparison, 0), (0, 1, 0));
+    }
+
+    #[test]
+    fn observed_output_guardians_dropped_is_pending_not_a_mismatch() {
+        // A peg-out input still collecting signatures: guardians stop listing it
+        // before the observer records the spend
+        let comparison = compare_utxos(
+            &[observed(1, 50_000)],
+            &four_guardians([vec![], vec![], vec![], vec![]]),
+        );
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Pending);
+        assert_eq!(
+            row.disagreement,
+            Some(GuardianUtxoDisagreementKind::ObserverDifference)
+        );
+        assert_eq!(comparison.onchain_check_requests(), vec![(out(1), false)]);
+    }
+
+    #[test]
+    fn split_guardians_are_a_mismatch() {
+        let utxo = || vec![listed(1, 50_000, Spendable)];
+        let comparison = compare_utxos(&[], &four_guardians([utxo(), utxo(), vec![], vec![]]));
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Mismatch);
+        assert_eq!(
+            row.disagreement,
+            Some(GuardianUtxoDisagreementKind::InventoryDifference)
+        );
+        assert_eq!(
+            row.detail.as_deref(),
+            Some("Guardians are split: guardians 0, 1 list it, guardians 2, 3 do not; 3 of 4 must agree")
+        );
+    }
+
+    #[test]
+    fn unconfirmed_change_counts_as_held_but_is_not_verified_yet() {
+        let utxo = || vec![listed(1, 50_000, UnconfirmedChange)];
+        let comparison = compare_utxos(
+            &[observed(1, 50_000)],
+            &four_guardians([utxo(), utxo(), utxo(), utxo()]),
+        );
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Pending);
+        assert_eq!(row.disagreement, None);
+        assert_eq!(
+            row.detail.as_deref(),
+            Some("This output is still pending: unconfirmed change.")
+        );
+        for id in 0..4 {
+            assert_eq!(findings(&comparison, id), (0, 0, 0));
+        }
+    }
+
+    #[test]
+    fn output_in_an_unsigned_peg_out_is_neither_held_nor_missing() {
+        let utxo = || vec![listed(1, 50_000, UnsignedPegOut)];
+        let comparison = compare_utxos(
+            &[observed(1, 50_000)],
+            &four_guardians([utxo(), utxo(), utxo(), utxo()]),
+        );
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Pending);
+        assert_eq!(row.disagreement, None);
+        for id in 0..4 {
+            assert_eq!(findings(&comparison, id), (0, 0, 0));
+        }
+    }
+
+    #[test]
+    fn lagging_and_unavailable_guardians_are_left_out() {
+        let utxo = || vec![listed(1, 50_000, Spendable)];
+        let claims = vec![
+            claim(0, utxo()),
+            claim(1, utxo()),
+            claim(2, utxo()),
+            unanswered(3, GuardianUtxoClaimStatus::Lagging),
+        ];
+        let comparison = compare_utxos(&[observed(1, 50_000)], &claims);
+        assert_eq!(only_row(&comparison).status, UtxoComparisonStatus::Verified);
+        assert_eq!(findings(&comparison, 3), (0, 0, 0));
+
+        // Two of four responding cannot reach the threshold of three
+        let claims = vec![
+            claim(0, utxo()),
+            claim(1, utxo()),
+            unanswered(2, GuardianUtxoClaimStatus::Unavailable),
+            unanswered(3, GuardianUtxoClaimStatus::Error),
+        ];
+        let comparison = compare_utxos(&[observed(1, 50_000)], &claims);
+        let row = only_row(&comparison);
+        assert_eq!(row.status, UtxoComparisonStatus::Pending);
+        assert_eq!(row.disagreement, None);
+    }
+
+    #[test]
+    fn without_responding_guardians_the_chain_is_the_only_check() {
+        let claims = (0..4)
+            .map(|id| unanswered(id, GuardianUtxoClaimStatus::Unavailable))
+            .collect::<Vec<_>>();
+        let mut comparison = compare_utxos(&[observed(1, 50_000), observed(2, 70_000)], &claims);
+        assert!(!comparison.any_responding);
+        assert!(comparison
+            .rows
+            .iter()
+            .all(|row| row.status == UtxoComparisonStatus::Pending));
+        assert_eq!(
+            comparison.onchain_check_requests(),
+            vec![(out(1), false), (out(2), false)]
+        );
+
+        comparison.apply_onchain_evidence(&HashMap::from([
+            (out(1), OnChainOutput::Spent { by: txid(9) }),
+            (out(2), OnChainOutput::Unspent { amount: None }),
+        ]));
+        let spent = comparison
+            .rows
+            .iter()
+            .find(|row| row.out_point == out(1))
+            .unwrap();
+        assert_eq!(spent.status, UtxoComparisonStatus::Mismatch);
+        assert_eq!(
+            spent.disagreement,
+            Some(GuardianUtxoDisagreementKind::OnChainConflict)
+        );
+        let unspent = comparison
+            .rows
+            .iter()
+            .find(|row| row.out_point == out(2))
+            .unwrap();
+        assert_eq!(unspent.status, UtxoComparisonStatus::Pending);
+    }
+
+    #[test]
+    fn response_lists_mismatches_first_then_largest_amount() {
+        let all = |utxos: Vec<GuardianClaimedUtxo>| {
+            four_guardians([utxos.clone(), utxos.clone(), utxos.clone(), utxos])
+        };
+        let comparison = compare_utxos(
+            &[observed(1, 10_000), observed(2, 90_000), observed(3, 5_000)],
+            &all(vec![
+                listed(1, 10_000, Spendable),
+                listed(2, 90_000, Spendable),
+                listed(3, 6_000, Spendable),
+            ]),
+        );
+        let response = comparison.into_response();
+        let order = response
+            .utxos
+            .iter()
+            .map(|row| (row.out_point, row.status))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec![
+                (out(3), UtxoComparisonStatus::Mismatch),
+                (out(2), UtxoComparisonStatus::Verified),
+                (out(1), UtxoComparisonStatus::Verified),
+            ]
+        );
+    }
+}
