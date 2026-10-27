@@ -50,7 +50,8 @@ use crate::config::meta::{ConsensusMetaCache, MetaFieldsExt};
 use crate::db::DbMigration;
 use crate::federation::db::Federation;
 use crate::federation::gateways::GatewayOverviewCache;
-use crate::federation::{db, decoders_from_config, instance_to_kind, v2_modules};
+use crate::federation::v2_modules::{self, FederationWallets};
+use crate::federation::{db, decoders_from_config, instance_to_kind};
 use crate::util::{execute, query, query_one, query_opt, query_value};
 use crate::{migration, migration_backfill, schema_setup};
 
@@ -92,6 +93,7 @@ pub struct FederationObserver {
     guardian_claims_cache: Arc<Mutex<HashMap<FederationId, GuardianClaimsSlot>>>,
     onchain_cache: Arc<Mutex<HashMap<OutPoint, (Instant, OnChainOutput)>>>,
     gateway_overviews: GatewayOverviewCache,
+    federation_wallets: FederationWallets,
 }
 
 impl FederationObserver {
@@ -120,6 +122,7 @@ impl FederationObserver {
             guardian_claims_cache: Default::default(),
             onchain_cache: Default::default(),
             gateway_overviews: Default::default(),
+            federation_wallets: Default::default(),
         };
 
         slf.setup_schema().await?;
@@ -148,6 +151,10 @@ impl FederationObserver {
 
     pub(crate) fn gateway_overviews(&self) -> &GatewayOverviewCache {
         &self.gateway_overviews
+    }
+
+    pub(crate) fn federation_wallets(&self) -> &FederationWallets {
+        &self.federation_wallets
     }
 
     async fn spawn_observer(&self, federation: Federation) {
@@ -187,6 +194,31 @@ impl FederationObserver {
             }
             .instrument(info_span!("health", fed = %federation_id.to_prefix())),
         );
+
+        if federation
+            .config
+            .modules
+            .values()
+            .any(|module| module.kind.as_str() == "walletv2")
+        {
+            let slf = self.clone();
+            let federation_id = federation.federation_id;
+            let config = federation.config.clone();
+            self.task_group.spawn_cancellable(
+                format!("Wallet Monitor for {}", federation_id),
+                async move {
+                    loop {
+                        let e = slf
+                            .monitor_federation_wallet(federation_id, config.clone())
+                            .await
+                            .expect_err("wallet monitor task exited unexpectedly");
+                        error!("Wallet Monitor errored, restarting in 30s: {e}");
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                    }
+                }
+                .instrument(info_span!("wallet", fed = %federation_id.to_prefix())),
+            );
+        }
 
         // Gateways are only announced through the v1 LN module
         if !federation
@@ -1536,7 +1568,13 @@ impl FederationObserver {
         )
         .await?;
 
-        Ok(Amount::from_msats(total_assets_msat as u64))
+        // walletv2's deposits don't carry their amount, so what its federations
+        // hold comes from their guardians
+        Ok(Amount::from_msats(total_assets_msat as u64)
+            + self
+                .federation_wallets
+                .get(federation_id)
+                .unwrap_or(Amount::ZERO))
     }
 
     pub async fn federation_utxos(

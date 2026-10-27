@@ -1,24 +1,33 @@
 //! Fedimint's v2 modules, which federations use from now on: mintv2, walletv2
-//! and lnv2. What their items add to the tables all modules share, and the
-//! repair of what the observer stored of them before it knew them.
+//! and lnv2. What their items add to the tables all modules share, the repair
+//! of what the observer stored of them before it knew them, and what walletv2
+//! federations hold on chain.
 //!
 //! Two kinds of item don't carry their amount:
 //! - A walletv2 deposit names the bitcoin output it claims only by its index
-//!   among the outputs the guardians track. It is stored without an amount.
+//!   among the outputs the guardians track. It is stored without an amount, and
+//!   walletv2 federations' assets are read from their guardians instead.
 //! - An LNv2 input claims or refunds a contract by the out point of the output
 //!   that funded it, and is stored with that output's amount.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use anyhow::Context;
+use fedimint_api_client::api::{DynGlobalApi, FederationApiExt};
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::{DynInput, DynModuleConsensusItem, DynOutput};
 use fedimint_core::encoding::{Decodable, Encodable};
 use fedimint_core::epoch::ConsensusItem;
+use fedimint_core::module::ApiRequestErased;
 use fedimint_core::{Amount, OutPoint};
 use fedimint_lnv2_common::{
     LightningConsensusItem, LightningInput, LightningInputV0, LightningOutput, LightningOutputV0,
 };
 use fedimint_mintv2_common::{MintConsensusItem, MintInput, MintOutput};
-use fedimint_walletv2_common::{WalletConsensusItem, WalletInput, WalletOutput};
+use fedimint_walletv2_common::endpoint_constants::FEDERATION_WALLET_ENDPOINT;
+use fedimint_walletv2_common::{FederationWallet, WalletConsensusItem, WalletInput, WalletOutput};
 use serde::Serialize;
 use tracing::{info, warn};
 
@@ -26,6 +35,14 @@ use crate::federation::observer::{insert_block_height_vote, FederationObserver};
 use crate::federation::{db, decoders_from_config, instance_to_kind};
 
 pub(super) const KINDS: [&str; 3] = ["mintv2", "walletv2", "lnv2"];
+
+/// How often walletv2's on-chain output is read. Every deposit and withdrawal
+/// replaces it, but it only shows as the federation's assets, for which a few
+/// minutes behind is fine.
+const FEDERATION_WALLET_INTERVAL: Duration = Duration::from_secs(10 * 60);
+/// Guardians that disagree, as when a session ends in between, are asked
+/// again until a threshold agrees. Give up on a read that takes longer.
+const FEDERATION_WALLET_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What a v2 module's input or output adds to the shared tables
 pub(super) struct ItemSummary {
@@ -179,7 +196,81 @@ fn details(item: &impl Serialize) -> Option<serde_json::Value> {
         .ok()
 }
 
+/// What each walletv2 federation holds on chain, as a threshold of its
+/// guardians last reported it. walletv2 keeps all of a federation's bitcoin in
+/// one output, which every deposit and withdrawal spends and replaces.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FederationWallets(Arc<Mutex<HashMap<FederationId, Amount>>>);
+
+impl FederationWallets {
+    pub(crate) fn get(&self, federation_id: FederationId) -> Option<Amount> {
+        self.0
+            .lock()
+            .expect("federation wallets lock poisoned")
+            .get(&federation_id)
+            .copied()
+    }
+
+    fn set(&self, federation_id: FederationId, amount: Amount) {
+        self.0
+            .lock()
+            .expect("federation wallets lock poisoned")
+            .insert(federation_id, amount);
+    }
+}
+
 impl FederationObserver {
+    /// Keeps what the federation's walletv2 output holds current
+    pub(super) async fn monitor_federation_wallet(
+        &self,
+        federation_id: FederationId,
+        config: ClientConfig,
+    ) -> anyhow::Result<()> {
+        let instance_id = config
+            .modules
+            .iter()
+            .find_map(|(&instance_id, module)| {
+                (module.kind.as_str() == "walletv2").then_some(instance_id)
+            })
+            .context("Federation has no walletv2 module")?;
+        let peers = config
+            .global
+            .api_endpoints
+            .iter()
+            .map(|(&peer_id, peer_url)| (peer_id, peer_url.url.clone()))
+            .collect();
+        let api =
+            DynGlobalApi::new(self.connectors().clone(), peers, None)?.with_module(instance_id);
+
+        let mut interval = tokio::time::interval(FEDERATION_WALLET_INTERVAL);
+        loop {
+            interval.tick().await;
+            let wallet = tokio::time::timeout(
+                FEDERATION_WALLET_TIMEOUT,
+                api.request_current_consensus::<Option<FederationWallet>>(
+                    FEDERATION_WALLET_ENDPOINT.to_owned(),
+                    ApiRequestErased::default(),
+                ),
+            )
+            .await;
+            match wallet {
+                // No output until the federation's first deposit creates it
+                Ok(Ok(wallet)) => self.federation_wallets().set(
+                    federation_id,
+                    wallet.map_or(Amount::ZERO, |wallet| {
+                        Amount::from_sats(wallet.value.to_sat())
+                    }),
+                ),
+                Ok(Err(error)) => {
+                    warn!("Failed to read the on-chain wallet of federation {federation_id}: {error}")
+                }
+                Err(_) => warn!(
+                    "Failed to read the on-chain wallet of federation {federation_id}: no threshold of guardians agreed in time"
+                ),
+            }
+        }
+    }
+
     /// Completes what the observer stored of the federation's v2 module items
     /// before it knew these modules: just their kind, without amounts and
     /// details, and none of walletv2's block count votes, so a walletv2

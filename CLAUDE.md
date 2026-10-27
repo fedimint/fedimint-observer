@@ -69,7 +69,7 @@ just test_package fmo_server
   - `/config/*` endpoints - Federation configuration API (stable)
   - `/federations/*` endpoints - Federation monitoring API (unstable)
   - Background tasks for monitoring federations and syncing data
-  - `federation/v2_modules.rs` - Fedimint's v2 modules (mintv2, walletv2, lnv2), which new federations use: their amounts and details, and walletv2's block count votes, which date sessions as the v1 wallet's do. Items that don't carry their amount: walletv2 deposits are stored without one, LNv2 claims with the amount of the output they claim. What the observer stored of these modules before it knew them is completed when the federation's observer starts
+  - `federation/v2_modules.rs` - Fedimint's v2 modules (mintv2, walletv2, lnv2), which new federations use: their amounts and details, and walletv2's block count votes, which date sessions as the v1 wallet's do. Items that don't carry their amount: walletv2 deposits are stored without one, LNv2 claims with the amount of the output they claim. What the observer stored of these modules before it knew them is completed when the federation's observer starts. walletv2 keeps a federation's bitcoin in one output, which a wallet monitor reads from the guardians every 10 minutes (`federation_wallet`) and keeps in memory as the federation's assets
 - `fmo_frontend_react/` - Frontend (React + TypeScript)
 
 ### Key Patterns
