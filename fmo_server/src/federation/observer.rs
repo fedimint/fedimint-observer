@@ -50,7 +50,7 @@ use crate::config::meta::{ConsensusMetaCache, MetaFieldsExt};
 use crate::db::DbMigration;
 use crate::federation::db::Federation;
 use crate::federation::gateways::GatewayOverviewCache;
-use crate::federation::{db, decoders_from_config, instance_to_kind};
+use crate::federation::{db, decoders_from_config, instance_to_kind, v2_modules};
 use crate::util::{execute, query, query_one, query_opt, query_value};
 use crate::{migration, migration_backfill, schema_setup};
 
@@ -735,6 +735,7 @@ impl FederationObserver {
         let decoders = decoders_from_config(&config);
 
         info!("Starting background job for {federation_id}");
+        self.complete_v2_items(federation_id, &config).await?;
         let next_session = self.federation_session_count(federation_id).await?;
         debug!("Next session {next_session}");
         let api_fetch = api.clone();
@@ -850,7 +851,7 @@ impl FederationObserver {
         session_index: u64,
         item_index: u64,
         transaction: fedimint_core::transaction::Transaction,
-    ) -> Result<(), tokio_postgres::Error> {
+    ) -> anyhow::Result<()> {
         let fedimint_txid = transaction.tx_hash();
 
         dbtx.execute(
@@ -867,6 +868,7 @@ impl FederationObserver {
 
         for (in_idx, input) in transaction.inputs.into_iter().enumerate() {
             let kind = instance_to_kind(config, input.module_instance_id());
+            let v2_input = v2_modules::summarize_input(&kind, &input)?;
             let (maybe_amount_msat, maybe_ln_contract_id) = match kind.as_str() {
                 "ln" => {
                     let input = input
@@ -907,11 +909,17 @@ impl FederationObserver {
 
                     (Some(amount_msat), None)
                 }
-                _ => (None, None),
+                _ => (v2_input.as_ref().and_then(|input| input.amount_msat), None),
             };
+            let claimed_output = v2_input.as_ref().and_then(|input| input.claimed_output);
 
+            // An input that is worth an earlier output, an LNv2 claim, gets
+            // the amount stored for the output
             dbtx.execute(
-                "INSERT INTO transaction_inputs VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+                "INSERT INTO transaction_inputs VALUES ($1, $2, $3, $4, $5, COALESCE($6, (
+                     SELECT amount_msat FROM transaction_outputs
+                     WHERE federation_id = $1 AND txid = $7 AND out_index = $8
+                 ))) ON CONFLICT DO NOTHING",
                 &[
                     &federation_id.consensus_encode_to_vec(),
                     &fedimint_txid.consensus_encode_to_vec(),
@@ -919,6 +927,8 @@ impl FederationObserver {
                     &kind,
                     &maybe_ln_contract_id.map(|cid| cid.consensus_encode_to_vec()),
                     &maybe_amount_msat.map(|amt| amt as i64),
+                    &claimed_output.map(|output| output.txid.consensus_encode_to_vec()),
+                    &claimed_output.map(|output| output.out_idx as i32),
                 ],
             )
             .await?;
@@ -1007,10 +1017,13 @@ impl FederationObserver {
                         None
                     }
                 },
-                other => {
-                    warn!("Transaction Input of kind {other}. Not implemented.");
-                    None
-                }
+                other => match v2_input {
+                    Some(input) => input.details,
+                    None => {
+                        warn!("Transaction Input of kind {other}. Not implemented.");
+                        None
+                    }
+                },
             };
 
             if let Some(json_value) = json_txi {
@@ -1030,6 +1043,7 @@ impl FederationObserver {
 
         for (out_idx, output) in transaction.outputs.into_iter().enumerate() {
             let kind = instance_to_kind(config, output.module_instance_id());
+            let v2_output = v2_modules::summarize_output(&kind, &output)?;
             let (maybe_amount_msat, maybe_ln_contract) = match kind.as_str() {
                 "ln" => {
                     let ln_output = output
@@ -1097,7 +1111,10 @@ impl FederationObserver {
                         * 1000;
                     (Some(amount_msat), None)
                 }
-                _ => (None, None),
+                _ => (
+                    v2_output.as_ref().and_then(|output| output.amount_msat),
+                    None,
+                ),
             };
 
             dbtx.execute(
@@ -1198,10 +1215,13 @@ impl FederationObserver {
                     }
                 },
 
-                other => {
-                    warn!("Transaction Output of kind {other}. Not implemented.");
-                    None
-                }
+                other => match v2_output {
+                    Some(output) => output.details,
+                    None => {
+                        warn!("Transaction Output of kind {other}. Not implemented.");
+                        None
+                    }
+                },
             };
 
             if let Some(json_value) = json_txo {
@@ -1232,7 +1252,7 @@ impl FederationObserver {
         peer_id: PeerId,
         ci: DynModuleConsensusItem,
         mempool_url: &str,
-    ) -> Result<(), tokio_postgres::Error> {
+    ) -> anyhow::Result<()> {
         let kind = instance_to_kind(config, ci.module_instance_id());
 
         let json_ci: Option<serde_json::Value> = match kind.as_str() {
@@ -1285,6 +1305,7 @@ impl FederationObserver {
                     None
                 }
             },
+            other if v2_modules::KINDS.contains(&other) => v2_modules::ci_details(other, &ci),
             other => {
                 warn!("Consensus Item of kind {other}. Not implemented.");
                 None
@@ -1306,6 +1327,18 @@ impl FederationObserver {
             .await?;
         }
 
+        if let Some(height_vote) = v2_modules::block_height_vote(&kind, &ci) {
+            insert_block_height_vote(
+                dbtx,
+                federation_id,
+                session_index,
+                item_index,
+                peer_id,
+                height_vote,
+            )
+            .await?;
+        }
+
         if kind != "wallet" {
             return Ok(());
         }
@@ -1316,15 +1349,13 @@ impl FederationObserver {
             .expect("config says this should be a wallet CI");
         match wallet_ci {
             WalletConsensusItem::BlockCount(height_vote) => {
-                dbtx.execute(
-                    "INSERT INTO block_height_votes VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                    &[
-                        &federation_id.consensus_encode_to_vec(),
-                        &(session_index as i32),
-                        &(item_index as i32),
-                        &(peer_id.to_usize() as i32),
-                        &(*height_vote as i32),
-                    ],
+                insert_block_height_vote(
+                    dbtx,
+                    federation_id,
+                    session_index,
+                    item_index,
+                    peer_id,
+                    *height_vote,
                 )
                 .await?;
             }
@@ -1923,6 +1954,29 @@ impl FederationObserver {
 
         Ok(())
     }
+}
+
+/// Votes that date the session; see the `session_times` view
+pub(super) async fn insert_block_height_vote(
+    dbtx: &Transaction<'_>,
+    federation_id: FederationId,
+    session_index: u64,
+    item_index: u64,
+    peer_id: PeerId,
+    height_vote: u32,
+) -> Result<(), tokio_postgres::Error> {
+    dbtx.execute(
+        "INSERT INTO block_height_votes VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        &[
+            &federation_id.consensus_encode_to_vec(),
+            &(session_index as i32),
+            &(item_index as i32),
+            &(peer_id.to_usize() as i32),
+            &(height_vote as i32),
+        ],
+    )
+    .await?;
+    Ok(())
 }
 
 fn last_n_day_iter(now: NaiveDate, days: u32) -> impl Iterator<Item = NaiveDate> {

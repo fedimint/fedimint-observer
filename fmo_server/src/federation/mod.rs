@@ -6,6 +6,7 @@ pub(crate) mod nostr;
 pub mod observer;
 mod session;
 mod transaction;
+mod v2_modules;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

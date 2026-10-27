@@ -10,9 +10,12 @@ fedimint-api-client = { workspace = true }
 fedimint-connectors = { workspace = true }
 fedimint-core = { workspace = true }
 fedimint-ln-common = { workspace = true }
+fedimint-lnv2-common = { workspace = true }
 fedimint-meta-client = { workspace = true }
 fedimint-mint-common = { workspace = true }
+fedimint-mintv2-common = { workspace = true }
 fedimint-wallet-common = { workspace = true }
+fedimint-walletv2-common = { workspace = true }
 
 anyhow = "1.0.81"
 async-stream = "0.3.5"
@@ -49,6 +52,9 @@ clap = { version = "4.5", features = ["derive", "env"] }
 regex = "1.10.4"
 
 stability-pool-common = { git = "https://github.com/tacio/fedi", branch = "fmo-compatible", optional = true }
+
+[dev-dependencies]
+fedimint-tbs = { workspace = true }
 
 [features]
 stability_pool_v1 = ["dep:stability-pool-common"]

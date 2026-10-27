@@ -5,8 +5,11 @@ use fedimint_core::encoding::DynRawFallback;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::module::CommonModuleInit;
 use fedimint_ln_common::LightningCommonInit;
+use fedimint_lnv2_common::LightningCommonInit as LightningV2CommonInit;
 use fedimint_mint_common::MintCommonInit;
+use fedimint_mintv2_common::MintCommonInit as MintV2CommonInit;
 use fedimint_wallet_common::WalletCommonInit;
+use fedimint_walletv2_common::WalletCommonInit as WalletV2CommonInit;
 use hex::ToHex;
 use postgres_from_row::FromRow;
 use serde_json::json;
@@ -65,8 +68,11 @@ pub fn get_decoders(
         |(module_instance_id, module_kind)| {
             let decoder = match module_kind.as_str() {
                 "ln" => LightningCommonInit::decoder(),
+                "lnv2" => LightningV2CommonInit::decoder(),
                 "wallet" => WalletCommonInit::decoder(),
+                "walletv2" => WalletV2CommonInit::decoder(),
                 "mint" => MintCommonInit::decoder(),
+                "mintv2" => MintV2CommonInit::decoder(),
                 #[cfg(feature = "stability_pool_v1")]
                 "stability_pool" => StabilityPoolCommonGen::decoder(),
                 _ => {
