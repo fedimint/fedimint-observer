@@ -14,6 +14,9 @@ import { Copyable } from '../components/Copyable';
 
 const MSATS_PER_BTC = 100_000_000_000;
 const UTXOS_PER_PAGE = 25;
+// walletv2's finality delay isn't in its config: it is fixed, as
+// CONFIRMATION_FINALITY_DELAY in fedimint-walletv2-server
+const WALLETV2_FINALITY_DELAY = 6;
 
 type UtxoView = 'all' | 'verified' | 'pending' | 'mismatch';
 
@@ -1130,16 +1133,20 @@ function parseConfig(config: Record<string, unknown>): FederationConfig {
     ? Object.values(config.modules as Record<string, { kind?: string }>).map((mod) => mod.kind || 'unknown')
     : [];
 
-  // Get network from wallet module
-  const walletModule = config.modules
-    ? Object.values(config.modules as Record<string, { kind?: string; network?: string; finality_delay?: number }>).find((mod) => mod.kind === 'wallet')
-    : null;
-  const network = walletModule ? (walletModule.network || 'unknown') : 'unknown';
+  // Get network from the wallet module, v1 or v2
+  const moduleConfigs = config.modules
+    ? Object.values(config.modules as Record<string, { kind?: string; network?: string; finality_delay?: number }>)
+    : [];
+  const walletModule = moduleConfigs.find((mod) => mod.kind === 'wallet');
+  const walletV2Module = moduleConfigs.find((mod) => mod.kind === 'walletv2');
+  const network = (walletModule ?? walletV2Module)?.network || 'unknown';
 
-  // Get confirmations required from wallet module (finality_delay + 1)
+  // Get confirmations required from the wallet module (finality_delay + 1)
   const confirmations_required = walletModule
     ? ((walletModule.finality_delay || 0) + 1)
-    : 0;
+    : walletV2Module
+      ? WALLETV2_FINALITY_DELAY + 1
+      : 0;
 
   return {
     guardians,
