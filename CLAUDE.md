@@ -85,6 +85,7 @@ Required environment variables (see `sample.env`):
 - `FO_DATABASE`: PostgreSQL connection string
 - `FO_ADMIN_AUTH`: Admin authentication password
 - `FO_MEMPOOL_URL`: Mempool API URL (default: "https://mempool.space/api")
+- `FO_FEDERATION_EXPIRY` (optional): shutdown dates for federations whose guardians can't announce one, such as those without a meta module, as comma-separated `<federation id>=<unix seconds>`; they take precedence over the `federation_expiry_timestamp` meta field. Federations with a shutdown date show it in the list and on their page, which no longer shows their invite code
 - `ALLOW_CONFIG_CORS`: Enable CORS for config endpoints
 
 ### API Endpoints

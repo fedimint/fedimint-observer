@@ -3,8 +3,10 @@ import React, { Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import type { FederationHealth } from '../types/api';
 import { Badge } from './Badge';
+import { ShutdownBadge } from './ShutdownBadge';
 const CombinedMiniChart = React.lazy(() => import('./MiniChart').then((m) => ({ default: m.CombinedMiniChart })));
 import { asBitcoin } from '../utils/format';
+import { shutdownOf } from '../utils/shutdown';
 
 interface ActivityData {
   num_transactions: number;
@@ -16,6 +18,8 @@ interface FederationRowProps {
   name: string;
   totalAssets: number;
   health: FederationHealth;
+  /** When its guardians announced it shuts down, in unix seconds */
+  expiryTimestamp: number | null;
   activityData: ActivityData[];
   maxTransaction?: number;  // global max for consistent chart scale
   maxVolume?: number;        // global max for consistent chart scale
@@ -26,6 +30,7 @@ export function FederationRow({
   name,
   totalAssets,
   health,
+  expiryTimestamp,
   activityData,
   maxTransaction,
   maxVolume,
@@ -51,6 +56,7 @@ export function FederationRow({
   const showWarning = health === 'degraded' || health === 'offline';
   const badgeLevel = health === 'degraded' ? 'warning' : 'error';
   const healthMessage = showWarning ? HEALTH_MESSAGES[health] : '';
+  const shutdown = shutdownOf(expiryTimestamp);
 
   return (
     <Link 
@@ -64,11 +70,12 @@ export function FederationRow({
           {/* Name */}
           <div className="font-medium text-gray-900 dark:text-white min-w-0">
             <span className="text-[10px] uppercase text-gray-600 dark:text-gray-400 block mb-1">Name</span>
-            <div className="flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-medium text-gray-900 dark:text-white break-words">
                 {name}
               </span>
               {showWarning && <Badge level={badgeLevel} tooltip={healthMessage} showIcon>{''}</Badge>}
+              {shutdown && <ShutdownBadge shutdown={shutdown} />}
             </div>
           </div>
 
@@ -101,11 +108,12 @@ export function FederationRow({
       <div className="hidden md:grid md:grid-cols-3 md:gap-3">
         {/* Name */}
         <div className="font-medium text-gray-900 dark:text-white">
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-medium text-gray-900 dark:text-white break-words">
               {name}
             </span>
             {showWarning && <Badge level={badgeLevel} tooltip={healthMessage} showIcon>{''}</Badge>}
+            {shutdown && <ShutdownBadge shutdown={shutdown} />}
           </div>
         </div>
 

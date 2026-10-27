@@ -52,7 +52,8 @@ use crate::federation::db::Federation;
 use crate::federation::gateways::GatewayOverviewCache;
 use crate::federation::v2_modules::{self, FederationWallets};
 use crate::federation::{db, decoders_from_config, instance_to_kind};
-use crate::util::{execute, query, query_one, query_opt, query_value};
+use crate::meta::{config_meta, expiry_timestamp, successor, FederationExpiries};
+use crate::util::{execute, merge_metas, query, query_one, query_opt, query_value};
 use crate::{migration, migration_backfill, schema_setup};
 
 /// Guardian wallet summaries younger than this are reused, so page views don't
@@ -94,6 +95,7 @@ pub struct FederationObserver {
     onchain_cache: Arc<Mutex<HashMap<OutPoint, (Instant, OnChainOutput)>>>,
     gateway_overviews: GatewayOverviewCache,
     federation_wallets: FederationWallets,
+    expiries: FederationExpiries,
 }
 
 impl FederationObserver {
@@ -101,6 +103,7 @@ impl FederationObserver {
         database: &str,
         admin_auth: &str,
         mempool_url: &str,
+        expiries: FederationExpiries,
     ) -> anyhow::Result<FederationObserver> {
         let connection_pool = {
             let pool_config = deadpool_postgres::Config {
@@ -123,6 +126,7 @@ impl FederationObserver {
             onchain_cache: Default::default(),
             gateway_overviews: Default::default(),
             federation_wallets: Default::default(),
+            expiries,
         };
 
         slf.setup_schema().await?;
@@ -155,6 +159,11 @@ impl FederationObserver {
 
     pub(crate) fn federation_wallets(&self) -> &FederationWallets {
         &self.federation_wallets
+    }
+
+    /// The shutdown dates the operator set
+    pub(crate) fn expiries(&self) -> &FederationExpiries {
+        &self.expiries
     }
 
     async fn spawn_observer(&self, federation: Federation) {
@@ -531,10 +540,12 @@ impl FederationObserver {
             async move {
                 let deposits = self.get_federation_assets(federation.federation_id).await?;
 
-                let name = self
+                let consensus_meta = self
                     .consensus_meta_cache
                     .fetch_meta_cached(&federation.config.to_json())
-                    .await
+                    .await;
+                let name = consensus_meta
+                    .as_ref()
                     .and_then(|meta| meta.get_as::<String>("federation_name"))
                     .or_else(|| {
                         federation
@@ -544,6 +555,14 @@ impl FederationObserver {
                             .get("federation_name")
                             .cloned()
                     });
+
+                // Override files are left out: fetching them would hold up
+                // the list, and they are deprecated
+                let meta = merge_metas(&[
+                    self.expiries.meta(federation.federation_id),
+                    consensus_meta.unwrap_or_default(),
+                    config_meta(&federation.config.global.meta),
+                ]);
 
                 let health = federation_health_ref
                     .get(&federation.federation_id)
@@ -576,6 +595,8 @@ impl FederationObserver {
                     invite,
                     nostr_votes: self.federation_rating(federation.federation_id).await?,
                     health,
+                    expiry_timestamp: expiry_timestamp(&meta),
+                    successor: successor(&meta),
                 })
             }
         }))

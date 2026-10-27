@@ -13,6 +13,7 @@ use crate::config::{get_config_routes, FederationConfigCache};
 use crate::federation::get_federations_routes;
 use crate::federation::nostr::{get_nostr_federations, publish_federation_event};
 use crate::federation::observer::FederationObserver;
+use crate::meta::FederationExpiries;
 
 /// Fedimint config fetching service implementation
 mod config;
@@ -41,6 +42,12 @@ struct Args {
         default_value = "https://mempool.space/api"
     )]
     mempool_url: String,
+
+    /// Shutdown dates for federations whose guardians can't announce one,
+    /// such as those without a meta module: comma-separated
+    /// `<federation id>=<unix seconds>`
+    #[arg(long, env = "FO_FEDERATION_EXPIRY", default_value = "")]
+    federation_expiry: FederationExpiries,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +90,7 @@ async fn main() -> anyhow::Result<()> {
                 &args.database,
                 &args.admin_auth,
                 &args.mempool_url,
+                args.federation_expiry,
             )
             .await?,
         });

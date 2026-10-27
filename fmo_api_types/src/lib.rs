@@ -22,6 +22,19 @@ pub struct FederationSummary {
     pub invite: String,
     pub nostr_votes: FederationRating,
     pub health: FederationHealth,
+    /// When its guardians announced the federation shuts down, in unix
+    /// seconds: the `federation_expiry_timestamp` meta field, or the
+    /// observer's `FO_FEDERATION_EXPIRY`
+    pub expiry_timestamp: Option<u64>,
+    /// The federation its guardians ask users to move to: the
+    /// `federation_successor` meta field
+    pub successor: Option<FederationSuccessor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationSuccessor {
+    pub id: FederationId,
+    pub invite: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

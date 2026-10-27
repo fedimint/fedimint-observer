@@ -3,6 +3,7 @@ import { api } from '../services/api';
 import type { FederationSummary } from '../types/api';
 import { Totals } from '../components/Totals';
 import { FederationRow } from '../components/FederationRow';
+import { isShutDown } from '../utils/shutdown';
 
 export function Home() {
   const [federations, setFederations] = useState<FederationSummary[]>([]);
@@ -24,8 +25,11 @@ export function Home() {
       });
   }, []);
 
-  const activeFederations = federations.filter((fed) => fed.health !== 'offline');
-  const offlineFederations = federations.filter((fed) => fed.health === 'offline');
+  // Federations past the shutdown their guardians announced count as shut
+  // down even while they answer
+  const isActive = (fed: FederationSummary) => fed.health !== 'offline' && !isShutDown(fed.expiry_timestamp);
+  const activeFederations = federations.filter(isActive);
+  const offlineFederations = federations.filter((fed) => !isActive(fed));
 
   // Filter federations based on search query
   const filterFederations = (feds: FederationSummary[]) => {
@@ -138,6 +142,7 @@ export function Home() {
                 name={fed.name || 'Unnamed'}
                 totalAssets={fed.deposits}
                 health={fed.health}
+                expiryTimestamp={fed.expiry_timestamp}
                 activityData={fed.last_7d_activity}
                 maxTransaction={globalMaxTransaction}
                 maxVolume={globalMaxVolume}
@@ -195,6 +200,7 @@ export function Home() {
                     name={fed.name || 'Unnamed'}
                     totalAssets={fed.deposits}
                     health={fed.health}
+                    expiryTimestamp={fed.expiry_timestamp}
                     activityData={fed.last_7d_activity}
                     maxTransaction={globalMaxTransaction}
                     maxVolume={globalMaxVolume}

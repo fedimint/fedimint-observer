@@ -11,6 +11,8 @@ import type {
 import { Badge } from '../components/Badge';
 import { Alert } from '../components/Alert';
 import { Copyable } from '../components/Copyable';
+import { ShutdownNotice } from '../components/ShutdownNotice';
+import { shutdownOf } from '../utils/shutdown';
 
 const MSATS_PER_BTC = 100_000_000_000;
 const UTXOS_PER_PAGE = 25;
@@ -107,6 +109,8 @@ interface HistogramEntry {
 export function FederationDetail() {
   const { id } = useParams<{ id: string }>();
   const [federation, setFederation] = useState<FederationSummary | null>(null);
+  // Null unless the federation its guardians ask users to move to is observed
+  const [successorName, setSuccessorName] = useState<string | null>(null);
   const [config, setConfig] = useState<FederationConfig | null>(null);
   const [utxoRows, setUtxoRows] = useState<UtxoComparisonRow[]>([]);
   const [utxoGuardians, setUtxoGuardians] = useState<GuardianUtxoReport[]>([]);
@@ -130,6 +134,8 @@ export function FederationDetail() {
   const [useLogScale, setUseLogScale] = useState(false);
   const [guardianHealth, setGuardianHealth] = useState<Record<string, GuardianHealth>>({});
   
+  const shutdown = useMemo(() => shutdownOf(federation?.expiry_timestamp ?? null), [federation]);
+
   // Check if at least one guardian is online
   const hasOnlineGuardian = useMemo(() => {
     return Object.values(guardianHealth).some(
@@ -236,6 +242,8 @@ export function FederationDetail() {
           throw new Error('Federation not found');
         }
         setFederation(fed);
+        const successor = federations.find((f) => f.id === fed.successor?.id);
+        setSuccessorName(successor ? successor.name || 'Unnamed Federation' : null);
         // Fetch config using federation ID first, fallback to invite if needed
         return fetchFederationConfig(id, fed.invite);
       })
@@ -457,6 +465,10 @@ export function FederationDetail() {
         {federation.name || 'Unnamed Federation'}
       </h1>
 
+      {shutdown && (
+        <ShutdownNotice shutdown={shutdown} successor={federation.successor} successorName={successorName} />
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Guardians Panel */}
         <div className="lg:col-span-2 bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
@@ -573,7 +585,8 @@ export function FederationDetail() {
                   </Link>
                 </div>
               )}
-              {federation?.invite && hasOnlineGuardian && (
+              {/* No new users for a federation that shuts down */}
+              {federation?.invite && hasOnlineGuardian && !shutdown && (
                 <div>
                   <div className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mb-2">Invite Link</div>
                   <div className="flex flex-col items-center bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-600">

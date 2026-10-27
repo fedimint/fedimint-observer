@@ -12,6 +12,15 @@ export interface FederationSummary {
   invite: string;
   nostr_votes: FederationRating;
   health: FederationHealth;
+  /** When its guardians announced it shuts down, in unix seconds */
+  expiry_timestamp: number | null;
+  /** The federation its guardians ask users to move to */
+  successor: FederationSuccessor | null;
+}
+
+export interface FederationSuccessor {
+  id: string;
+  invite: string;
 }
 
 export interface FederationRating {
