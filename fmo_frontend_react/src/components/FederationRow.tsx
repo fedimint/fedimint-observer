@@ -11,6 +11,7 @@ interface FederationRowProps {
   name: string;
   totalAssets: number;
   health: FederationHealth;
+  expiryTimestamp?: number | null;
   activityData: FederationActivity[];
   maxTransaction?: number;  // global max for consistent chart scale
   maxVolume?: number;        // global max for consistent chart scale, in msats
@@ -31,6 +32,7 @@ export const FederationRow = memo(function FederationRow({
   name,
   totalAssets,
   health,
+  expiryTimestamp,
   activityData,
   maxTransaction,
   maxVolume,
@@ -50,6 +52,7 @@ export const FederationRow = memo(function FederationRow({
   const showWarning = health === 'degraded' || health === 'offline';
   const badgeLevel = health === 'degraded' ? 'warning' : 'error';
   const healthMessage = showWarning ? HEALTH_MESSAGES[health] : '';
+  const expiryDate = expiryTimestamp ? new Date(expiryTimestamp * 1000).toLocaleDateString() : null;
 
   return (
     <Link
@@ -66,6 +69,11 @@ export const FederationRow = memo(function FederationRow({
               {name}
             </span>
             {showWarning && <Badge level={badgeLevel} tooltip={healthMessage} showIcon />}
+            {expiryDate && (
+              <Badge level={expiryTimestamp! * 1000 <= Date.now() ? 'error' : 'warning'}>
+                {expiryTimestamp! * 1000 <= Date.now() ? 'Shut down' : `Shutting down ${expiryDate}`}
+              </Badge>
+            )}
           </div>
         </div>
 

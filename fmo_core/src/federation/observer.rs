@@ -597,10 +597,12 @@ impl FederationObserver {
 
         futures::stream::iter(federations)
             .map(|federation| async {
-                let name = self
+                let meta = self
                     .consensus_meta_cache
                     .fetch_meta_cached(&federation.config.to_json(), &self.connectors)
-                    .await
+                    .await;
+                let name = meta
+                    .as_ref()
                     .and_then(|meta| meta.get_as::<String>("federation_name"))
                     .or_else(|| {
                         federation
@@ -610,13 +612,35 @@ impl FederationObserver {
                             .get("federation_name")
                             .cloned()
                     });
-                (federation, name)
+                let expiry_timestamp = meta
+                    .as_ref()
+                    .and_then(|meta| meta.get_as::<u64>("federation_expiry_timestamp"))
+                    .or_else(|| {
+                        federation
+                            .config
+                            .global
+                            .meta
+                            .get("federation_expiry_timestamp")
+                            .and_then(|value| value.parse().ok())
+                    });
+                let successor = meta
+                    .as_ref()
+                    .and_then(|meta| meta.get_as::<String>("federation_successor"))
+                    .or_else(|| {
+                        federation
+                            .config
+                            .global
+                            .meta
+                            .get("federation_successor")
+                            .cloned()
+                    });
+                (federation, name, expiry_timestamp, successor)
             })
             .buffered(SUMMARY_META_CONCURRENCY)
             .collect::<Vec<_>>()
             .await
             .into_iter()
-            .map(|(federation, name)| {
+            .map(|(federation, name, expiry_timestamp, successor)| {
                 let federation_id = federation.federation_id;
                 let (first_peer_id, first_peer_url) = federation
                     .config
@@ -648,6 +672,8 @@ impl FederationObserver {
                         .get(&federation_id)
                         .copied()
                         .unwrap_or(FederationHealth::Offline),
+                    expiry_timestamp,
+                    successor,
                 })
             })
             .collect()

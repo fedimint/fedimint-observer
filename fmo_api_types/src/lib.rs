@@ -32,6 +32,8 @@ pub struct FederationSummary {
     pub invite: String,
     pub nostr_votes: FederationRating,
     pub health: FederationHealth,
+    pub expiry_timestamp: Option<u64>,
+    pub successor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

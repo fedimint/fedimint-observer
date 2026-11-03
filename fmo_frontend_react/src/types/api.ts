@@ -19,6 +19,8 @@ export interface FederationSummary {
   invite: string;
   nostr_votes: FederationRating;
   health: FederationHealth;
+  expiry_timestamp: number | null;
+  successor: string | null;
 }
 
 export interface FederationRating {

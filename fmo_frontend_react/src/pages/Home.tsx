@@ -157,6 +157,7 @@ export function Home() {
                 name={fed.name || 'Unnamed'}
                 totalAssets={fed.deposits}
                 health={fed.health}
+                expiryTimestamp={fed.expiry_timestamp}
                 activityData={fed.last_7d_activity}
                 maxTransaction={globalMaxTransaction}
                 maxVolume={globalMaxVolume}

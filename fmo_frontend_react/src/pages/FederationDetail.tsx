@@ -95,6 +95,10 @@ export function FederationDetail() {
   const hasWalletV1 = config?.modules.includes('wallet') ?? false;
   const hasWalletV2 = config?.modules.includes('walletv2') ?? false;
   const hasLightningV1 = config?.modules.includes('ln') ?? false;
+  const expiryDate = federation?.expiry_timestamp
+    ? new Date(federation.expiry_timestamp * 1000)
+    : null;
+  const shuttingDown = expiryDate !== null;
   
   // Check if at least one guardian is online
   const hasOnlineGuardian = useMemo(() => {
@@ -409,6 +413,25 @@ export function FederationDetail() {
       <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-6 sm:mb-8 wrap-break-word">
         {federation.name || 'Unnamed Federation'}
       </h1>
+      {expiryDate && (
+        <div className={`mb-4 rounded-lg border p-3 text-sm ${
+          expiryDate.getTime() <= Date.now()
+            ? 'border-red-500/60 bg-red-900/20 text-red-300'
+            : 'border-yellow-500/60 bg-yellow-900/20 text-yellow-300'
+        }`}>
+          <strong>{expiryDate.getTime() <= Date.now() ? 'Shut down' : 'Shutting down'}</strong>
+          {' '}on {expiryDate.toLocaleDateString()}.
+          {federation.successor && (
+            <>
+              {' '}Successor: {/^https?:\/\//.test(federation.successor) ? (
+                <a className="underline" href={federation.successor}>{federation.successor}</a>
+              ) : (
+                <span className="font-mono break-all">{federation.successor}</span>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Guardians Panel */}
@@ -524,7 +547,7 @@ export function FederationDetail() {
                   </Link>
                 </div>
               )}
-              {federation?.invite && hasOnlineGuardian && (
+              {federation?.invite && hasOnlineGuardian && !shuttingDown && (
                 <div>
                   <div className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mb-2">Invite Link</div>
                   <div className="flex flex-col items-center bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-600">
