@@ -73,7 +73,7 @@ export function FederationDetail() {
   const [utxoThreshold, setUtxoThreshold] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'activity' | 'utxos' | 'config'>('activity');
+  const [activeTab, setActiveTab] = useState<'activity' | 'utxos' | 'assets' | 'config'>('activity');
   // UTXOs load the first time their tab opens, and are only ever shown there
   const [utxosRequested, setUtxosRequested] = useState(false);
   const [utxosLoading, setUtxosLoading] = useState(true);
@@ -246,6 +246,14 @@ export function FederationDetail() {
         if (!signal.aborted) console.error('Failed to fetch guardian health:', err);
       });
 
+    api.getFederationOverview(id, signal)
+      .then((data) => {
+        if (!signal.aborted) setOverview(data);
+      })
+      .catch((err) => {
+        if (!signal.aborted) console.error('Failed to fetch federation overview:', err);
+      });
+
     return () => controller.abort();
   }, [id]);
 
@@ -267,15 +275,6 @@ export function FederationDetail() {
       })
       .finally(() => {
         if (!signal.aborted) setUtxosLoading(false);
-      });
-
-    // How far the wallet module has indexed the stored sessions
-    api.getFederationOverview(id, signal)
-      .then((data) => {
-        if (!signal.aborted) setOverview(data);
-      })
-      .catch((err) => {
-        if (!signal.aborted) console.error('Failed to fetch federation overview:', err);
       });
 
     return () => controller.abort();
@@ -631,6 +630,18 @@ export function FederationDetail() {
                 UTXOs
               </button>
             )}
+            {hasWalletV2 && (
+              <button
+                onClick={() => setActiveTab('assets')}
+                className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
+                  activeTab === 'assets'
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                }`}
+              >
+                Wallet Assets
+              </button>
+            )}
             <button
               onClick={() => setActiveTab('config')}
               className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
@@ -764,7 +775,20 @@ export function FederationDetail() {
               </div>
             </>
           )}
-
+          {activeTab === 'assets' && hasWalletV2 && (
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
+              <h3 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white">
+                {overview ? asBitcoin(overview.total_assets_msat, 8) : 'Loading...'}
+              </h3>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Federation wallet assets
+              </p>
+              <p className="mt-4 text-sm text-gray-600 dark:text-gray-300">
+                This Wallet v2 federation reports aggregate wallet state. Individual
+                guardian UTXO comparisons are not available for this module version.
+              </p>
+            </div>
+          )}
           {activeTab === 'utxos' && (
             <>
               <Alert
