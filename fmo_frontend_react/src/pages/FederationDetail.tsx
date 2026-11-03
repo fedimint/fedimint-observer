@@ -276,7 +276,7 @@ export function FederationDetail() {
     }
 
     return () => controller.abort();
-  }, [id]);
+  }, [id, hasWalletV2]);
 
   // The server asks every guardian and mempool.space for these, so only when the tab is opened
   useEffect(() => {
