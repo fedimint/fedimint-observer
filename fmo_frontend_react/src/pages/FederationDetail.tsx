@@ -93,6 +93,7 @@ export function FederationDetail() {
   const [useLogScale, setUseLogScale] = useState(false);
   const [guardianHealth, setGuardianHealth] = useState<Record<string, GuardianHealth>>({});
   const hasWalletV1 = config?.modules.includes('wallet') ?? false;
+  const hasWalletV2 = config?.modules.includes('walletv2') ?? false;
   const hasLightningV1 = config?.modules.includes('ln') ?? false;
   
   // Check if at least one guardian is online
@@ -642,6 +643,12 @@ export function FederationDetail() {
             </button>
           </nav>
         </div>
+        {hasWalletV2 && (
+          <div className="mt-4 rounded-lg border border-blue-500/50 bg-blue-900/20 p-3 text-xs text-blue-300 sm:text-sm">
+            This federation uses Wallet v2. Bitcoin holdings are tracked through the
+            federation wallet state; the v1 guardian UTXO comparison is not available.
+          </div>
+        )}
         <div className="mt-4 sm:mt-6">
           {activeTab === 'activity' && (
             <>
