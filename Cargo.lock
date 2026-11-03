@@ -2722,11 +2722,13 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum 0.7.9",
  "fedimint-api-client",
  "fedimint-core 0.12.0",
  "fedimint-lnv2-common",
  "fedimint-mintv2-common",
  "fedimint-walletv2-common",
+ "fmo_api_types",
  "fmo_core",
  "serde_json",
  "tracing",

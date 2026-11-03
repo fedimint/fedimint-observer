@@ -24,6 +24,17 @@ pub struct FederationOverview {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletV2OnChainTransaction {
+    pub index: u64,
+    pub txid: String,
+    pub input_msat: u64,
+    pub output_msat: u64,
+    pub fee_msat: u64,
+    pub vbytes: u64,
+    pub created: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationSummary {
     pub id: FederationId,
     pub name: Option<String>,

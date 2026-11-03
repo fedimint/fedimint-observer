@@ -11,6 +11,7 @@ import type {
   GuardianHealth,
   GuardianUtxoReport,
   UtxoComparisonRow,
+  WalletV2OnChainTransaction,
 } from '../types/api';
 import type { HistogramEntry } from '../components/TransactionChart';
 import { Badge } from '../components/Badge';
@@ -78,6 +79,8 @@ export function FederationDetail() {
   const [utxosRequested, setUtxosRequested] = useState(false);
   const [utxosLoading, setUtxosLoading] = useState(true);
   const [overview, setOverview] = useState<FederationOverview | null>(null);
+  const [walletV2Transactions, setWalletV2Transactions] = useState<WalletV2OnChainTransaction[]>([]);
+  const [walletV2TransactionsLoading, setWalletV2TransactionsLoading] = useState(false);
   const [utxoView, setUtxoView] = useState<UtxoView>('all');
   const [utxoPage, setUtxoPage] = useState(1);
   const [utxoSearch, setUtxoSearch] = useState('');
@@ -258,6 +261,20 @@ export function FederationDetail() {
         if (!signal.aborted) console.error('Failed to fetch federation overview:', err);
       });
 
+    if (hasWalletV2) {
+      setWalletV2TransactionsLoading(true);
+      api.getWalletV2OnChain(id, signal)
+        .then((data) => {
+          if (!signal.aborted) setWalletV2Transactions(data);
+        })
+        .catch((err) => {
+          if (!signal.aborted) console.error('Failed to fetch Wallet v2 on-chain transactions:', err);
+        })
+        .finally(() => {
+          if (!signal.aborted) setWalletV2TransactionsLoading(false);
+        });
+    }
+
     return () => controller.abort();
   }, [id]);
 
@@ -282,7 +299,7 @@ export function FederationDetail() {
       });
 
     return () => controller.abort();
-  }, [id, utxosRequested, hasWalletV1]);
+  }, [id, utxosRequested, hasWalletV1, hasWalletV2]);
 
   const walletSessions = overview?.module_sessions.wallet;
   const walletBehind = overview != null && walletSessions != null && walletSessions < overview.session_count;
@@ -807,9 +824,71 @@ export function FederationDetail() {
                 Federation wallet assets
               </p>
               <p className="mt-4 text-sm text-gray-600 dark:text-gray-300">
-                This Wallet v2 federation reports aggregate wallet state. Individual
-                guardian UTXO comparisons are not available for this module version.
+                Wallet v2 keeps one federation UTXO. This view shows the latest on-chain
+                operations that merged deposits into it or peeled funds off as withdrawals.
               </p>
+              <h4 className="mt-6 text-base font-semibold text-gray-900 dark:text-white">
+                Recent on-chain operations
+              </h4>
+              {walletV2TransactionsLoading ? (
+                <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">Loading on-chain history...</p>
+              ) : walletV2Transactions.length === 0 ? (
+                <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">No on-chain operations recorded.</p>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {(() => {
+                    const maxBalance = Math.max(
+                      ...walletV2Transactions.flatMap((transaction) => [
+                        transaction.input_msat,
+                        transaction.output_msat,
+                      ]),
+                    );
+                    return walletV2Transactions.map((transaction) => {
+                    const deposit = transaction.output_msat > transaction.input_msat;
+                    const amount = Math.abs(transaction.output_msat - transaction.input_msat);
+                    const inputWidth = `${(transaction.input_msat / maxBalance) * 100}%`;
+                    const outputWidth = `${(transaction.output_msat / maxBalance) * 100}%`;
+                    return (
+                      <div key={`${transaction.index}-${transaction.txid}`} className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className={`font-medium ${deposit ? 'text-emerald-600 dark:text-emerald-400' : 'text-orange-600 dark:text-orange-400'}`}>
+                            {deposit ? 'Deposit merged' : 'Withdrawal peeled'}
+                          </span>
+                          <span className="font-semibold text-gray-900 dark:text-white">
+                            {deposit ? '+' : '-'}{asBitcoin(amount, 8)}
+                          </span>
+                        </div>
+                        <div className="mt-3 space-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+                          <div className="flex items-center gap-2">
+                            <span className="w-12 shrink-0">Before</span>
+                            <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700" style={{ width: inputWidth }} />
+                            <span>{asBitcoin(transaction.input_msat, 4)}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="w-12 shrink-0">After</span>
+                            <div className={`h-2 rounded-full ${deposit ? 'bg-emerald-500' : 'bg-orange-500'}`} style={{ width: outputWidth }} />
+                            <span>{asBitcoin(transaction.output_msat, 4)}</span>
+                          </div>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                          <span>Chain operation #{transaction.index}</span>
+                          <span>{transaction.vbytes} vbytes</span>
+                          <span>fee {asBitcoin(transaction.fee_msat, 8)}</span>
+                        </div>
+                        <a
+                          className="mt-1 block truncate text-xs text-blue-600 hover:underline dark:text-blue-400"
+                          href={`https://mempool.space/tx/${transaction.txid}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {transaction.txid}
+                        </a>
+                      </div>
+                    );
+                  });
+                  })()}
+                </div>
+              )}
             </div>
           )}
           {activeTab === 'utxos' && (

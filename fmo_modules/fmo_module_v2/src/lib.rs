@@ -4,6 +4,9 @@ use std::collections::HashMap;
 
 use anyhow::Context;
 use async_trait::async_trait;
+use axum::extract::{Path, State};
+use axum::routing::get;
+use axum::{Json, Router};
 use fedimint_api_client::api::FederationApiExt;
 use fedimint_core::config::FederationId;
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
@@ -14,11 +17,17 @@ use fedimint_lnv2_common::{
     LightningOutputV0,
 };
 use fedimint_mintv2_common::{MintCommonInit, MintConsensusItem, MintInput, MintOutput};
-use fedimint_walletv2_common::endpoint_constants::FEDERATION_WALLET_ENDPOINT;
-use fedimint_walletv2_common::{
-    FederationWallet, WalletCommonInit, WalletConsensusItem, WalletInput, WalletOutput,
+use fedimint_walletv2_common::endpoint_constants::{
+    FEDERATION_WALLET_ENDPOINT, TRANSACTION_CHAIN_ENDPOINT,
 };
-use fmo_core::module::{details_json, InputSummary, ObserverModule, OutputSummary, Services};
+use fedimint_walletv2_common::{
+    FederationWallet, TxInfo, WalletCommonInit, WalletConsensusItem, WalletInput, WalletOutput,
+};
+use fmo_api_types::WalletV2OnChainTransaction;
+use fmo_core::module::{
+    details_json, federation_api, module_instance_id, ApiResult, InputSummary, ObserverModule,
+    OutputSummary, Services,
+};
 
 fn v2_input(
     module_kind: &str,
@@ -149,6 +158,41 @@ impl V2Module {
     fn new(kind: ModuleKind, decoder: Decoder) -> Self {
         Self { kind, decoder }
     }
+
+    async fn wallet_v2_on_chain(
+        Path(federation_id): Path<FederationId>,
+        State(services): State<Services>,
+    ) -> ApiResult<Json<Vec<WalletV2OnChainTransaction>>> {
+        let federation = services
+            .federation(federation_id)
+            .await?
+            .context("Federation not observed")?;
+        let Some(instance_id) = module_instance_id(&federation.config, "walletv2") else {
+            return Err(anyhow::anyhow!("Federation does not have a walletv2 module").into());
+        };
+        let api = federation_api(services.connectors(), &federation.config.global)?
+            .with_module(instance_id);
+        let mut transactions = api
+            .request_current_consensus::<Vec<TxInfo>>(
+                TRANSACTION_CHAIN_ENDPOINT.to_owned(),
+                ApiRequestErased::default(),
+            )
+            .await?
+            .into_iter()
+            .map(|tx| WalletV2OnChainTransaction {
+                index: tx.index,
+                txid: tx.txid.to_string(),
+                input_msat: tx.input.to_sat() * 1000,
+                output_msat: tx.output.to_sat() * 1000,
+                fee_msat: tx.fee.to_sat() * 1000,
+                vbytes: tx.vbytes,
+                created: tx.created,
+            })
+            .collect::<Vec<_>>();
+        transactions.sort_by_key(|tx| std::cmp::Reverse(tx.created));
+        transactions.truncate(20);
+        Ok(Json(transactions))
+    }
 }
 
 #[async_trait]
@@ -159,6 +203,11 @@ impl ObserverModule for V2Module {
 
     fn decoder(&self) -> Decoder {
         self.decoder.clone()
+    }
+
+    fn federation_routes(&self) -> Option<Router<Services>> {
+        (self.kind == WalletCommonInit::KIND)
+            .then(|| Router::new().route("/wallet-v2/on-chain", get(Self::wallet_v2_on_chain)))
     }
 
     fn summarize_input(&self, input: &DynInput) -> anyhow::Result<InputSummary> {

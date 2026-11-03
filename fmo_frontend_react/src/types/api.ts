@@ -11,6 +11,16 @@ export interface FederationOverview {
   module_sessions: Record<string, number>;
 }
 
+export interface WalletV2OnChainTransaction {
+  index: number;
+  txid: string;
+  input_msat: number;
+  output_msat: number;
+  fee_msat: number;
+  vbytes: number;
+  created: number;
+}
+
 export interface FederationSummary {
   id: string;
   name: string | null;

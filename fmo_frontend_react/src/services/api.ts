@@ -3,6 +3,7 @@ import type {
   FedimintTotals,
   FederationHistogram,
   FederationOverview,
+  WalletV2OnChainTransaction,
   FederationSummary,
   FederationUtxosResponse,
   GatewayInfo,
@@ -70,6 +71,14 @@ export const api = {
     const response = await fetch(`${BASE_URL}/federations/${id}`, { signal });
     if (!response.ok) {
       throw new Error(`Failed to fetch overview for federation ${id} (${response.status})`);
+    }
+    return response.json();
+  },
+
+  async getWalletV2OnChain(id: string, signal?: AbortSignal): Promise<WalletV2OnChainTransaction[]> {
+    const response = await fetch(`${BASE_URL}/federations/${id}/wallet-v2/on-chain`, { signal });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch Wallet v2 on-chain transactions (${response.status})`);
     }
     return response.json();
   },
