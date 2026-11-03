@@ -1,9 +1,13 @@
 //! Observes the wallet module: peg-ins, peg-outs and the guardians' block
 //! height votes that date every session
 
+use std::sync::Arc;
+
 use anyhow::{bail, Context};
 use async_trait::async_trait;
+use axum::Router;
 use bitcoin::hashes::Hash;
+use fedimint_core::config::FederationId;
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
 use fedimint_core::encoding::Encodable;
 use fedimint_core::module::CommonModuleInit;
@@ -15,10 +19,18 @@ use fedimint_wallet_common::{
 };
 use fmo_core::module::{
     details_json, CiMeta, InputSummary, ItemMeta, ObserverModule, OutputSummary, ProcessCtx,
+    Services,
 };
 use tracing::warn;
 
-pub struct WalletObserver;
+use crate::utxos::UtxoCaches;
+
+mod utxos;
+
+#[derive(Default)]
+pub struct WalletObserver {
+    utxo_caches: Arc<UtxoCaches>,
+}
 
 fn wallet_input(input: &DynInput) -> anyhow::Result<&WalletInput> {
     input
@@ -56,6 +68,7 @@ impl ObserverModule for WalletObserver {
         Ok(InputSummary {
             amount_msat: Some(amount.to_sat() * 1000),
             ln_contract_id: None,
+            claimed_output: None,
             details: details_json::<WalletInput>(input.as_any(), input, "Wallet Transaction Input"),
         })
     }
@@ -74,6 +87,37 @@ impl ObserverModule for WalletObserver {
 
     fn summarize_ci(&self, ci: &DynModuleConsensusItem) -> Option<serde_json::Value> {
         details_json::<WalletConsensusItem>(ci.as_any(), ci, "Wallet CI")
+    }
+
+    /// The guardians' block height votes date every session
+    fn block_height_vote(&self, ci: &DynModuleConsensusItem) -> Option<u32> {
+        match ci.as_any().downcast_ref::<WalletConsensusItem>()? {
+            WalletConsensusItem::BlockCount(height) => Some(*height),
+            _ => None,
+        }
+    }
+
+    /// Peg-ins and peg-outs come from sessions; the UTXO view is rebuilt from
+    /// them on its next refresh
+    async fn reset_federation(
+        &self,
+        ctx: &ProcessCtx<'_>,
+        federation_id: FederationId,
+    ) -> anyhow::Result<()> {
+        let federation_id = federation_id.consensus_encode_to_vec();
+        for sql in [
+            "DELETE FROM fmo_wallet.withdrawal_signatures WHERE on_chain_txid IN
+                 (SELECT on_chain_txid FROM fmo_wallet.withdrawal_transactions WHERE federation_id = $1)",
+            "DELETE FROM fmo_wallet.withdrawal_transaction_inputs WHERE on_chain_txid IN
+                 (SELECT on_chain_txid FROM fmo_wallet.withdrawal_transactions WHERE federation_id = $1)",
+            "DELETE FROM fmo_wallet.withdrawal_transaction_outputs WHERE on_chain_txid IN
+                 (SELECT on_chain_txid FROM fmo_wallet.withdrawal_transactions WHERE federation_id = $1)",
+            "DELETE FROM fmo_wallet.withdrawal_transactions WHERE federation_id = $1",
+            "DELETE FROM fmo_wallet.peg_ins WHERE federation_id = $1",
+        ] {
+            ctx.dbtx.execute(sql, &[&federation_id]).await?;
+        }
+        Ok(())
     }
 
     async fn process_input(
@@ -122,6 +166,10 @@ impl ObserverModule for WalletObserver {
         &["fmo_wallet.utxos"]
     }
 
+    fn federation_routes(&self) -> Option<Router<Services>> {
+        Some(utxos::federation_routes(self.utxo_caches.clone()))
+    }
+
     async fn process_output(
         &self,
         ctx: &ProcessCtx<'_>,
@@ -132,8 +180,9 @@ impl ObserverModule for WalletObserver {
         match v0_output(output)? {
             WalletOutputV0::PegOut(_) => {}
             WalletOutputV0::Rbf(_) => {
-                // Stop this federation's sync loudly: the benefits may outweigh
-                // the annoyance of removing and restarting
+                // Stop the wallet projector of this federation loudly (core
+                // keeps storing sessions): the benefits may outweigh the
+                // annoyance of removing and restarting
                 bail!(
                     r#"
                     You've discovered a terribly unfortunate situation: an RBF wallet output
@@ -170,9 +219,6 @@ impl ObserverModule for WalletObserver {
             .downcast_ref::<WalletConsensusItem>()
             .context("config says this should be a wallet CI")?;
         match wallet_ci {
-            WalletConsensusItem::BlockCount(height_vote) => {
-                ctx.record_block_height_vote(meta, *height_vote).await?;
-            }
             WalletConsensusItem::PegOutSignature(peg_out_sig) => {
                 let peg_out_txid = peg_out_sig.txid;
                 let peg_out_txid_encoded = peg_out_sig.txid.to_byte_array().to_vec();
@@ -280,7 +326,8 @@ impl ObserverModule for WalletObserver {
                 }
             }
             _ => {
-                // other WalletConsensusItems are not needed yet
+                // Block height votes are core's (block_height_vote); other
+                // WalletConsensusItems are not needed yet
             }
         }
 
@@ -290,11 +337,29 @@ impl ObserverModule for WalletObserver {
 
 #[cfg(test)]
 mod tests {
-    use fedimint_core::core::{DynInput, DynOutput};
-    use fedimint_wallet_common::{WalletInput, WalletOutput};
+    use fedimint_core::core::{DynInput, DynModuleConsensusItem, DynOutput};
+    use fedimint_wallet_common::{WalletConsensusItem, WalletInput, WalletOutput};
     use fmo_core::module::ObserverModule;
 
     use super::WalletObserver;
+
+    #[test]
+    fn only_block_count_items_are_height_votes() {
+        let vote = DynModuleConsensusItem::from_typed(0, WalletConsensusItem::BlockCount(840_000));
+        assert_eq!(
+            WalletObserver::default().block_height_vote(&vote),
+            Some(840_000)
+        );
+
+        let other = DynModuleConsensusItem::from_typed(
+            0,
+            WalletConsensusItem::Default {
+                variant: 99,
+                bytes: vec![],
+            },
+        );
+        assert_eq!(WalletObserver::default().block_height_vote(&other), None);
+    }
 
     #[test]
     fn unsupported_versions_are_errors() {
@@ -305,7 +370,7 @@ mod tests {
                 bytes: vec![],
             },
         );
-        assert!(WalletObserver.summarize_input(&input).is_err());
+        assert!(WalletObserver::default().summarize_input(&input).is_err());
 
         let output = DynOutput::from_typed(
             0,
@@ -314,6 +379,6 @@ mod tests {
                 bytes: vec![],
             },
         );
-        assert!(WalletObserver.summarize_output(&output).is_err());
+        assert!(WalletObserver::default().summarize_output(&output).is_err());
     }
 }

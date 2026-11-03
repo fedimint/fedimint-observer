@@ -3,9 +3,9 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-pub(crate) type Result<T> = std::result::Result<T, AppError>;
+pub type Result<T> = std::result::Result<T, AppError>;
 
-pub(crate) struct AppError(anyhow::Error);
+pub struct AppError(anyhow::Error);
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {

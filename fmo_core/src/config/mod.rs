@@ -8,14 +8,12 @@ use axum::routing::get;
 use axum::{Json, Router};
 use fedimint_core::config::{FederationId, JsonClientConfig};
 use fedimint_core::invite_code::InviteCode;
-use fmo_api_types::GatewayInfo;
 use tracing::warn;
 
 use crate::config::id::fetch_federation_id;
 use crate::config::meta::fetch_federation_meta;
 use crate::config::modules::fetch_federation_module_kinds;
 use crate::error::Result;
-use crate::federation::gateways::fetch_gateways_for_config;
 use crate::federation::observer::FederationObserver;
 use crate::util::{config_to_json, make_room};
 use crate::AppState;
@@ -28,11 +26,11 @@ pub mod meta;
 
 /// Helper API that exposes the federation modules
 pub mod modules;
-/// CORS for these routes comes from the permissive layer on the whole app
+/// CORS for these routes comes from the permissive layer on the whole app.
+/// `/:invite/gateways` is the Lightning module's.
 pub fn get_config_routes() -> Router<AppState> {
     Router::new()
         .route("/:invite", get(fetch_federation_config))
-        .route("/:invite/gateways", get(fetch_federation_gateways))
         .route("/:invite/meta", get(fetch_federation_meta))
         .route("/:invite/id", get(fetch_federation_id))
         .route("/:invite/module_kinds", get(fetch_federation_module_kinds))
@@ -47,23 +45,6 @@ pub async fn fetch_federation_config(
         .fetch_config_cached(&invite, &state.federation_observer)
         .await?
         .into())
-}
-
-pub async fn fetch_federation_gateways(
-    Path(invite): Path<InviteCode>,
-    State(state): State<AppState>,
-) -> Result<Json<Vec<GatewayInfo>>> {
-    let config = state
-        .federation_config_cache
-        .fetch_config_cached(&invite, &state.federation_observer)
-        .await?;
-    let gateways = tokio::time::timeout(
-        INVITE_FETCH_TIMEOUT,
-        fetch_gateways_for_config(state.federation_observer.connectors(), &config),
-    )
-    .await
-    .context("Timed out fetching the federation's gateways")??;
-    Ok(gateways.into())
 }
 
 #[derive(Default, Debug, Clone)]

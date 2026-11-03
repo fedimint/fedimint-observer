@@ -12,9 +12,9 @@ LOCK TABLE sessions, block_height_votes, transactions, transaction_inputs,
 -- Session times
 --
 -- The materialized view recomputed every session of every federation each
--- minute. A session's time only depends on its own block height votes and the
--- sessions before it, and sessions are committed in order, so it is final once
--- written. The view stays, no longer refreshed, until it is dropped separately.
+-- minute. A session's time only depends on its own votes and the sessions
+-- before it, and sessions are committed in order, so it is final once written.
+-- The view stays, no longer refreshed, until it is dropped separately.
 ALTER MATERIALIZED VIEW session_times RENAME TO session_times_v5;
 ALTER INDEX IF EXISTS session_times_federation_id_idx
     RENAME TO session_times_v5_federation_id_idx;
@@ -28,9 +28,24 @@ CREATE TABLE session_times (
     session_index INTEGER NOT NULL,
     -- The height most guardians voted for in the session, NULL without votes
     block_height INTEGER,
-    -- The latest block time voted for in this session or an earlier one
+    -- The latest time voted for in this session or an earlier one: the
+    -- median of the session's unix time votes, or without those the time of
+    -- the block its height votes agree on
     estimated_session_timestamp TIMESTAMP,
     PRIMARY KEY (federation_id, session_index)
+);
+
+-- Unix time votes, in seconds. Modules that agree on the time, such as
+-- Lightning v2 to the minute, date sessions more precisely than block heights
+-- can, and federations without a v1 wallet module have no height votes.
+CREATE TABLE unix_time_votes (
+    federation_id BYTEA   NOT NULL REFERENCES federations (federation_id),
+    session_index INTEGER NOT NULL,
+    item_index    INTEGER NOT NULL,
+    proposer      INTEGER NOT NULL,
+    time_vote     BIGINT  NOT NULL,
+    PRIMARY KEY (federation_id, session_index, item_index),
+    FOREIGN KEY (federation_id, session_index) REFERENCES sessions (federation_id, session_index)
 );
 
 -- Live sync and backfills of the same federation take this lock before
@@ -44,7 +59,8 @@ $$ LANGUAGE sql;
 -- must be rewritten too.
 --
 -- Same as the v5 view, except that a tie between heights now goes to the
--- higher one instead of an arbitrary one
+-- higher one instead of an arbitrary one, and that the median of a session's
+-- unix time votes, where it has some, dates it instead of the block time
 CREATE FUNCTION update_session_times(fed BYTEA, from_index INTEGER, to_index INTEGER)
 RETURNS VOID AS $$
 BEGIN
@@ -63,6 +79,18 @@ BEGIN
         GROUP BY session_index, height
         ORDER BY session_index, COUNT(*) DESC, height DESC
     ),
+    proposer_times AS (
+        SELECT session_index, proposer, MAX(time_vote) AS time_vote
+        FROM unix_time_votes
+        WHERE federation_id = fed AND session_index BETWEEN from_index AND to_index
+        GROUP BY session_index, proposer
+    ),
+    session_voted_times AS (
+        SELECT session_index,
+               to_timestamp(percentile_disc(0.5) WITHIN GROUP (ORDER BY time_vote))::timestamp AS time
+        FROM proposer_times
+        GROUP BY session_index
+    ),
     previous AS (
         SELECT st.estimated_session_timestamp
         FROM session_times st
@@ -74,12 +102,14 @@ BEGIN
            s.session_index,
            sh.height,
            GREATEST(
-               MAX(bt.timestamp) OVER (ORDER BY s.session_index ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
+               MAX(COALESCE(svt.time, bt.timestamp))
+                   OVER (ORDER BY s.session_index ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
                (SELECT estimated_session_timestamp FROM previous)
            )
     FROM sessions s
     LEFT JOIN session_heights sh ON sh.session_index = s.session_index
     LEFT JOIN block_times bt ON bt.block_height = sh.height
+    LEFT JOIN session_voted_times svt ON svt.session_index = s.session_index
     WHERE s.federation_id = fed AND s.session_index BETWEEN from_index AND to_index
     ON CONFLICT (federation_id, session_index) DO UPDATE
         SET block_height = EXCLUDED.block_height,
@@ -101,7 +131,7 @@ CREATE INDEX session_times_federation_estimated
 --
 -- Backs the transaction histogram and the federation list's last 7 days,
 -- which aggregated all of a federation's transactions on every page load.
--- Sessions without a time yet (before the first block height vote) are left
+-- Sessions without a time yet (before their federation's first vote) are left
 -- out, as both did.
 CREATE TABLE federation_daily_activity (
     federation_id BYTEA NOT NULL REFERENCES federations (federation_id),
@@ -317,9 +347,12 @@ ALTER MATERIALIZED VIEW utxos SET SCHEMA fmo_wallet;
 CREATE SCHEMA fmo_ln;
 ALTER TABLE ln_contracts SET SCHEMA fmo_ln;
 ALTER TABLE fmo_ln.ln_contracts RENAME TO contracts;
+-- The gateway registry and its polls, kept by the Lightning module's task
+ALTER TABLE gateways SET SCHEMA fmo_ln;
+ALTER TABLE gateway_poll_snapshots SET SCHEMA fmo_ln;
 
--- block_height_votes stays in public: the wallet module records the votes,
--- but session_times, a core read model, is built from them.
+-- block_height_votes and unix_time_votes stay in public: modules cast the
+-- votes, but session_times, a core read model, is built from them.
 
 -- How many of its own migrations each module has run. The tables moved above
 -- are the starting point every module's migrations build on.
@@ -327,3 +360,69 @@ CREATE TABLE module_schema_versions (
     module_kind TEXT PRIMARY KEY,
     migrations_applied INTEGER NOT NULL
 );
+
+-- Where each module's projector is for each federation: the next stored
+-- session it processes. Modules derive their tables from the stored sessions
+-- behind core's ingest, each on its own cursor and in its own transactions. A
+-- module without a row starts at session 0 when it is registered.
+CREATE TABLE module_cursors (
+    module_kind   TEXT        NOT NULL,
+    federation_id BYTEA       NOT NULL REFERENCES federations (federation_id),
+    next_session  INTEGER     NOT NULL,
+    -- The first session whose core rows the projector completed and whose
+    -- session times and daily activity wait for a rebuild, done once it has
+    -- caught up
+    repair_from   INTEGER,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (module_kind, federation_id)
+);
+
+-- Before v12 every session was processed by the mint, wallet and ln modules in
+-- the transaction that stored it, by a build that had to include the three, so
+-- they are caught up with every stored session.
+INSERT INTO module_cursors (module_kind, federation_id, next_session)
+SELECT k.kind, s.federation_id, MAX(s.session_index) + 1
+FROM sessions s
+         CROSS JOIN (VALUES ('mint'), ('wallet'), ('ln')) AS k(kind)
+GROUP BY k.kind, s.federation_id;
+
+-- A module added to a build later fills in the amounts of its items, which
+-- ingest stored without them. Keep the counters right for those updates too,
+-- as the insert triggers do for new rows.
+CREATE FUNCTION federation_totals_update_volume() RETURNS TRIGGER AS $$
+DECLARE
+    delta BIGINT := COALESCE(NEW.amount_msat, 0) - COALESCE(OLD.amount_msat, 0);
+    wallet_delta BIGINT := CASE WHEN NEW.kind = 'wallet' THEN delta ELSE 0 END;
+BEGIN
+    INSERT INTO federation_totals (federation_id, tx_volume_msat, wallet_in_msat)
+    VALUES (NEW.federation_id, delta, wallet_delta)
+    ON CONFLICT (federation_id) DO UPDATE
+        SET tx_volume_msat = federation_totals.tx_volume_msat + delta,
+            wallet_in_msat = federation_totals.wallet_in_msat + wallet_delta;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_inputs_update_totals
+    AFTER UPDATE OF amount_msat ON transaction_inputs
+    FOR EACH ROW
+    WHEN (OLD.amount_msat IS DISTINCT FROM NEW.amount_msat)
+    EXECUTE FUNCTION federation_totals_update_volume();
+
+CREATE FUNCTION federation_totals_update_wallet_out() RETURNS TRIGGER AS $$
+DECLARE
+    delta BIGINT := COALESCE(NEW.amount_msat, 0) - COALESCE(OLD.amount_msat, 0);
+BEGIN
+    INSERT INTO federation_totals (federation_id, wallet_out_msat)
+    VALUES (NEW.federation_id, delta)
+    ON CONFLICT (federation_id) DO UPDATE
+        SET wallet_out_msat = federation_totals.wallet_out_msat + delta;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER transaction_outputs_update_totals
+    AFTER UPDATE OF amount_msat ON transaction_outputs
+    FOR EACH ROW
+    WHEN (NEW.kind = 'wallet' AND OLD.amount_msat IS DISTINCT FROM NEW.amount_msat)
+    EXECUTE FUNCTION federation_totals_update_wallet_out();

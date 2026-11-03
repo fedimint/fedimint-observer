@@ -13,3 +13,12 @@ fedimint-wallet-common = { workspace = true }
 fmo_core = { path = "../../fmo_core" }
 serde_json = "1.0.115"
 tracing = "0.1.40"
+axum = { version = "0.7.5", features = ["json"] }
+esplora-client = { version = "0.10.0", default-features = false, features = [
+    "async-https-rustls",
+] }
+fedimint-api-client = { workspace = true }
+fmo_api_types = { path = "../../fmo_api_types" }
+futures = "0.3.30"
+postgres-from-row = "0.5.2"
+tokio = { version = "1.37.0", features = ["full"] }

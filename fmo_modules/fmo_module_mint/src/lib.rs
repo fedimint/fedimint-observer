@@ -2,10 +2,13 @@
 
 use anyhow::Context;
 use async_trait::async_trait;
+use axum::Router;
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
 use fedimint_core::module::CommonModuleInit;
 use fedimint_mint_common::{MintCommonInit, MintConsensusItem, MintInput, MintOutput};
-use fmo_core::module::{details_json, InputSummary, ObserverModule, OutputSummary};
+use fmo_core::module::{details_json, InputSummary, ObserverModule, OutputSummary, Services};
+
+mod nonces;
 
 pub struct MintObserver;
 
@@ -32,6 +35,7 @@ impl ObserverModule for MintObserver {
         Ok(InputSummary {
             amount_msat: Some(amount_msat),
             ln_contract_id: None,
+            claimed_output: None,
             details: details_json::<MintInput>(input.as_any(), input, "Mint Transaction Input"),
         })
     }
@@ -55,6 +59,10 @@ impl ObserverModule for MintObserver {
 
     fn summarize_ci(&self, ci: &DynModuleConsensusItem) -> Option<serde_json::Value> {
         details_json::<MintConsensusItem>(ci.as_any(), ci, "Mint CI")
+    }
+
+    fn federation_routes(&self) -> Option<Router<Services>> {
+        Some(nonces::federation_routes())
     }
 }
 

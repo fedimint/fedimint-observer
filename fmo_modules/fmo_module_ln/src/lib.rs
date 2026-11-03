@@ -2,6 +2,8 @@
 
 use anyhow::Context;
 use async_trait::async_trait;
+use axum::Router;
+use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
 use fedimint_core::encoding::Encodable;
 use fedimint_core::module::CommonModuleInit;
@@ -10,10 +12,20 @@ use fedimint_ln_common::{
     LightningCommonInit, LightningConsensusItem, LightningInput, LightningOutput, LightningOutputV0,
 };
 use fmo_core::module::{
-    details_json, InputSummary, ItemMeta, ObserverModule, OutputSummary, ProcessCtx,
+    details_json, module_instance_id, InputSummary, ItemMeta, ObserverModule, OutputSummary,
+    ProcessCtx, Services, Task,
 };
 
-pub struct LnObserver;
+use crate::gateways::{GatewayOverviewCache, Gateways};
+
+mod gateways;
+
+#[derive(Default)]
+pub struct LnObserver {
+    /// Gateway overviews for every federation and window, rebuilt in the
+    /// background so requests never wait for the queries
+    overviews: GatewayOverviewCache,
+}
 
 fn v0_output(output: &DynOutput) -> anyhow::Result<&LightningOutputV0> {
     output
@@ -45,6 +57,7 @@ impl ObserverModule for LnObserver {
         Ok(InputSummary {
             amount_msat: Some(v0.amount.msats),
             ln_contract_id: Some(v0.contract_id.consensus_encode_to_vec()),
+            claimed_output: None,
             details: details_json::<LightningInput>(
                 input.as_any(),
                 input,
@@ -78,6 +91,65 @@ impl ObserverModule for LnObserver {
 
     fn summarize_ci(&self, ci: &DynModuleConsensusItem) -> Option<serde_json::Value> {
         details_json::<LightningConsensusItem>(ci.as_any(), ci, "Lightning CI")
+    }
+
+    /// Contracts come from sessions; the gateway registry is the task's
+    async fn reset_federation(
+        &self,
+        ctx: &ProcessCtx<'_>,
+        federation_id: FederationId,
+    ) -> anyhow::Result<()> {
+        ctx.dbtx
+            .execute(
+                "DELETE FROM fmo_ln.contracts WHERE federation_id = $1",
+                &[&federation_id.consensus_encode_to_vec()],
+            )
+            .await?;
+        Ok(())
+    }
+
+    fn federation_routes(&self) -> Option<Router<Services>> {
+        Some(gateways::federation_routes(self.overviews.clone()))
+    }
+
+    fn config_routes(&self) -> Option<Router<Services>> {
+        Some(gateways::config_routes())
+    }
+
+    /// Polls the federation's guardians for the gateways they announce
+    fn federation_task(
+        &self,
+        services: &Services,
+        federation_id: FederationId,
+        config: ClientConfig,
+    ) -> Option<Task> {
+        // A federation without a Lightning module has no gateways to poll
+        module_instance_id(&config, "ln")?;
+        let services = services.clone();
+        let overviews = self.overviews.clone();
+        Some(Box::pin(async move {
+            Gateways {
+                services: &services,
+                overviews: &overviews,
+            }
+            .monitor_gateways(federation_id, config)
+            .await
+        }))
+    }
+
+    /// Rebuilds every federation's gateway overviews
+    fn task(&self, services: &Services) -> Option<Task> {
+        let services = services.clone();
+        let overviews = self.overviews.clone();
+        Some(Box::pin(async move {
+            Gateways {
+                services: &services,
+                overviews: &overviews,
+            }
+            .refresh_gateway_overviews()
+            .await;
+            Ok(())
+        }))
     }
 
     async fn process_output(
@@ -127,7 +199,7 @@ mod tests {
                 bytes: vec![],
             },
         );
-        assert!(LnObserver.summarize_input(&input).is_err());
+        assert!(LnObserver::default().summarize_input(&input).is_err());
 
         let output = DynOutput::from_typed(
             0,
@@ -136,6 +208,6 @@ mod tests {
                 bytes: vec![],
             },
         );
-        assert!(LnObserver.summarize_output(&output).is_err());
+        assert!(LnObserver::default().summarize_output(&output).is_err());
     }
 }

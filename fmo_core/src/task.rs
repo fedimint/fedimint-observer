@@ -15,11 +15,12 @@ const RESTART_DELAY: Duration = Duration::from_secs(30);
 /// A panic must never escape a task spawned on fedimint's `TaskGroup`: its
 /// panic guard shuts the whole group down, which stops every federation's
 /// observer and monitors at once while the API keeps serving stale data.
-pub(crate) async fn supervise<F, Fut>(name: &str, mut task: F)
+pub(crate) async fn supervise<F, Fut>(name: impl Into<String>, mut task: F)
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
+    let name = name.into();
     loop {
         let error = match AssertUnwindSafe(task()).catch_unwind().await {
             Ok(Ok(())) => anyhow::anyhow!("{name} exited unexpectedly"),

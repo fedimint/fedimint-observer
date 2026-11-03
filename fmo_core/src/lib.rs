@@ -5,8 +5,8 @@
 //! ```ignore
 //! FedimintObserver::builder()
 //!     .with_module(MintObserver)
-//!     .with_module(WalletObserver)
-//!     .with_module(LnObserver)
+//!     .with_module(WalletObserver::default())
+//!     .with_module(LnObserver::default())
 //!     .run()
 //!     .await
 //! ```
@@ -28,7 +28,7 @@ use crate::config::{get_config_routes, FederationConfigCache};
 use crate::federation::get_federations_routes;
 use crate::federation::nostr::{get_nostr_federations, publish_federation_event};
 use crate::federation::observer::FederationObserver;
-use crate::module::{ModuleRegistry, ObserverModule};
+use crate::module::{ModuleRegistry, ObserverModule, Services};
 
 /// Fedimint config fetching service implementation
 mod config;
@@ -84,9 +84,9 @@ pub struct FedimintObserverBuilder {
 }
 
 impl FedimintObserverBuilder {
-    /// Decode and process this module's items. Items of modules a build
-    /// doesn't include are stored without amounts or details, and adding the
-    /// module later doesn't fill those in yet.
+    /// Decode and process this module's items. A module added to a build
+    /// later fills its own tables from the stored sessions, and completes the
+    /// core rows of its items, which were stored without amounts or details.
     pub fn with_module(mut self, module: impl ObserverModule) -> Self {
         self.modules.push(Arc::new(module));
         self
@@ -121,29 +121,38 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
     }
     info!("Starting API server on {}", args.bind);
 
-    let app = Router::new()
+    let federation_observer = FederationObserver::new(
+        &args.database,
+        &args.admin_auth,
+        &args.mempool_url,
+        modules.clone(),
+    )
+    .await?;
+    let services = Services::new(federation_observer.clone());
+
+    let mut app = Router::new()
         .route("/health", get(|| async { "Server is up and running!" }))
         .nest("/config", get_config_routes())
         .nest("/federations", get_federations_routes())
         // TODO: move into nostr service/module
         .route("/nostr/federations", get(get_nostr_federations))
-        .route("/nostr/federations", put(publish_federation_event))
-        .layer(CorsLayer::permissive())
-        .with_state({
-            let federation_observer = FederationObserver::new(
-                &args.database,
-                &args.admin_auth,
-                &args.mempool_url,
-                modules,
-            )
-            .await?;
-            AppState {
-                federation_config_cache: Default::default(),
-                meta_override_cache: Default::default(),
-                consensus_meta_cache: federation_observer.consensus_meta_cache().clone(),
-                federation_observer,
-            }
-        });
+        .route("/nostr/federations", put(publish_federation_event));
+    // The modules' endpoints, at the same paths core served them from
+    if let Some(routes) = modules.federation_routes() {
+        app = app.nest(
+            "/federations/:federation_id",
+            routes.with_state(services.clone()),
+        );
+    }
+    if let Some(routes) = modules.config_routes() {
+        app = app.nest("/config/:invite", routes.with_state(services));
+    }
+    let app = app.layer(CorsLayer::permissive()).with_state(AppState {
+        federation_config_cache: federation_observer.federation_config_cache().clone(),
+        meta_override_cache: Default::default(),
+        consensus_meta_cache: federation_observer.consensus_meta_cache().clone(),
+        federation_observer,
+    });
 
     let listener = tokio::net::TcpListener::bind(&args.bind)
         .await

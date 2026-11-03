@@ -1,36 +1,27 @@
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context};
 use bitcoin::hashes::Hash;
-use bitcoin::{Address, OutPoint, Txid};
 use chrono::{DateTime, NaiveDate};
 use deadpool_postgres::{GenericClient, Runtime, Transaction};
-use fedimint_api_client::api::FederationApiExt;
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::DynModuleConsensusItem;
 use fedimint_core::encoding::{Decodable, Encodable};
-use fedimint_core::endpoint_constants::STATUS_ENDPOINT;
 use fedimint_core::epoch::ConsensusItem;
 use fedimint_core::invite_code::InviteCode;
-use fedimint_core::module::ApiRequestErased;
 use fedimint_core::session_outcome::SessionOutcome;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::util::backoff_util::background_backoff;
 use fedimint_core::util::retry;
-use fedimint_core::{Amount, PeerId};
-use fedimint_wallet_common::endpoint_constants::WALLET_SUMMARY_ENDPOINT;
-use fedimint_wallet_common::{TxOutputSummary, WalletInput, WalletSummary};
+use fedimint_core::{Amount, PeerId, TransactionId};
+use fedimint_wallet_common::WalletInput;
 use fmo_api_types::{
-    FederationActivity, FederationHealth, FederationRating, FederationSummary, FederationUtxo,
-    FedimintTotals, GuardianClaimedUtxo, GuardianClaimedUtxoState, GuardianUtxoClaim,
-    GuardianUtxoClaimStatus, NonceSpendInfo,
+    FederationActivity, FederationHealth, FederationRating, FederationSummary, FedimintTotals,
 };
-use futures::future::join_all;
 use futures::StreamExt;
 use postgres_from_row::FromRow;
 use subtle::ConstantTimeEq;
@@ -40,30 +31,15 @@ use tokio_postgres::NoTls;
 use tracing::{debug, info, info_span, warn, Instrument};
 
 use crate::config::meta::{ConsensusMetaCache, MetaFieldsExt};
+use crate::config::FederationConfigCache;
 use crate::db::{migration, migration_backfill, schema_setup, DbMigration};
 use crate::federation::db::Federation;
-use crate::federation::gateways::GatewayOverviewCache;
+use crate::federation::projector::ProjectorWakeups;
 use crate::federation::{db, instance_to_kind};
-use crate::module::{
-    schema_name, CiMeta, InputSummary, ItemMeta, ModuleRegistry, OutputSummary, ProcessCtx,
-};
+use crate::module::{schema_name, InputSummary, ModuleRegistry, OutputSummary, Services};
 use crate::task::supervise;
-use crate::util::{federation_api, module_instance_id, query, query_one, query_opt, query_value};
+use crate::util::{federation_api, query, query_one, query_opt, query_value};
 
-/// Guardian wallet summaries younger than this are reused, so page views don't
-/// each send a request to every guardian.
-const GUARDIAN_CLAIMS_TTL: Duration = Duration::from_secs(30);
-
-type GuardianClaimsSlot = Arc<tokio::sync::Mutex<Option<(Instant, Vec<GuardianUtxoClaim>)>>>;
-
-/// Unspent and missing results are rechecked after this; spends are final.
-const ONCHAIN_CHECK_TTL: Duration = Duration::from_secs(10 * 60);
-/// Upper bound on how long a page load waits for chain lookups. Results that
-/// arrive in time are cached, so a later load continues where this one stopped.
-const ONCHAIN_CHECK_DEADLINE: Duration = Duration::from_secs(8);
-const ONCHAIN_CHECK_CONCURRENCY: usize = 8;
-/// Each nonce is matched against the federation's mint inputs
-const MAX_NONCES_PER_REQUEST: usize = 1000;
 /// Per request to the mempool instance; callers bound their total time
 /// themselves
 const ESPLORA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -75,20 +51,6 @@ const NO_ACTIVITY: FederationActivity = FederationActivity {
     amount_transferred: Amount::ZERO,
 };
 
-/// State of a transaction output according to the blockchain
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnChainOutput {
-    /// `amount` is only looked up when the caller asked for it
-    Unspent {
-        amount: Option<bitcoin::Amount>,
-    },
-    Spent {
-        by: Txid,
-    },
-    /// The transaction or the output index does not exist
-    Missing,
-}
-
 #[derive(Debug, Clone)]
 pub struct FederationObserver {
     connection_pool: deadpool_postgres::Pool,
@@ -98,10 +60,12 @@ pub struct FederationObserver {
     task_group: TaskGroup,
     consensus_meta_cache: ConsensusMetaCache,
     connectors: ConnectorRegistry,
-    guardian_claims_cache: Arc<Mutex<HashMap<FederationId, GuardianClaimsSlot>>>,
-    onchain_cache: Arc<Mutex<HashMap<OutPoint, (Instant, OnChainOutput)>>>,
-    gateway_overviews: GatewayOverviewCache,
+    /// Configs fetched by invite code, shared with the config API
+    federation_config_cache: FederationConfigCache,
     modules: ModuleRegistry,
+    /// Tells a federation's module projectors about stored sessions and moved
+    /// cursors
+    projector_wakeups: ProjectorWakeups,
     nostr_pool: Arc<tokio::sync::OnceCell<nostr_sdk::RelayPool>>,
 }
 
@@ -142,10 +106,9 @@ impl FederationObserver {
             task_group: Default::default(),
             consensus_meta_cache: Default::default(),
             connectors,
-            guardian_claims_cache: Default::default(),
-            onchain_cache: Default::default(),
-            gateway_overviews: Default::default(),
+            federation_config_cache: Default::default(),
             modules,
+            projector_wakeups: Default::default(),
             nostr_pool: Default::default(),
         };
 
@@ -182,17 +145,7 @@ impl FederationObserver {
                 }
             }),
         );
-        let observer = slf.clone();
-        slf.task_group.spawn_cancellable(
-            "refresh gateway overviews",
-            supervise("Gateway overview refresher", move || {
-                let observer = observer.clone();
-                async move {
-                    observer.refresh_gateway_overviews().await;
-                    Ok(())
-                }
-            }),
-        );
+        slf.spawn_module_tasks();
 
         Ok(slf)
     }
@@ -215,8 +168,21 @@ impl FederationObserver {
         &self.nostr_pool
     }
 
-    pub(crate) fn gateway_overviews(&self) -> &GatewayOverviewCache {
-        &self.gateway_overviews
+    pub(crate) fn federation_config_cache(&self) -> &FederationConfigCache {
+        &self.federation_config_cache
+    }
+
+    /// Client of the configured mempool instance
+    pub(crate) fn esplora(&self) -> &esplora_client::AsyncClient {
+        &self.esplora
+    }
+
+    pub(super) fn task_group(&self) -> &TaskGroup {
+        &self.task_group
+    }
+
+    pub(super) fn projector_wakeups(&self) -> &ProjectorWakeups {
+        &self.projector_wakeups
     }
 
     fn spawn_observer(&self, federation: Federation) {
@@ -247,18 +213,54 @@ impl FederationObserver {
             .instrument(info_span!("health", fed = %federation_id.to_prefix())),
         );
 
-        let slf = self.clone();
+        self.spawn_projectors(&federation);
+        self.spawn_module_federation_tasks(federation);
+    }
+
+    /// Runs the background task each module has for the federation, if any,
+    /// supervised like core's own
+    fn spawn_module_federation_tasks(&self, federation: Federation) {
+        let services = Services::new(self.clone());
         let federation_id = federation.federation_id;
-        let config = federation.config;
-        self.task_group.spawn_cancellable(
-            format!("Gateway Monitor for {}", federation_id),
-            supervise("Gateway Monitor", move || {
-                let slf = slf.clone();
-                let config = config.clone();
-                async move { slf.monitor_gateways(federation_id, config).await }
-            })
-            .instrument(info_span!("gateways", fed = %federation_id.to_prefix())),
-        );
+        for module in self.modules.modules() {
+            if module
+                .federation_task(&services, federation_id, federation.config.clone())
+                .is_none()
+            {
+                continue;
+            }
+            let kind = module.kind().to_string();
+            let services = services.clone();
+            let config = federation.config.clone();
+            self.task_group.spawn_cancellable(
+                format!("{kind} module task for {federation_id}"),
+                supervise(format!("{kind} module task"), move || {
+                    module
+                        .federation_task(&services, federation_id, config.clone())
+                        .expect("the module had a task for this federation")
+                })
+                .instrument(info_span!("module", kind = %kind, fed = %federation_id.to_prefix())),
+            );
+        }
+    }
+
+    /// Runs the background task each module has for all federations, if any
+    fn spawn_module_tasks(&self) {
+        let services = Services::new(self.clone());
+        for module in self.modules.modules() {
+            if module.task(&services).is_none() {
+                continue;
+            }
+            let kind = module.kind().to_string();
+            let services = services.clone();
+            self.task_group.spawn_cancellable(
+                format!("{kind} module task"),
+                supervise(format!("{kind} module task"), move || {
+                    module.task(&services).expect("the module had a task")
+                })
+                .instrument(info_span!("module", kind = %kind)),
+            );
+        }
     }
 
     async fn setup_schema(&self) -> anyhow::Result<()> {
@@ -575,7 +577,7 @@ impl FederationObserver {
         Ok(())
     }
 
-    pub(super) async fn connection(&self) -> anyhow::Result<deadpool_postgres::Object> {
+    pub(crate) async fn connection(&self) -> anyhow::Result<deadpool_postgres::Object> {
         Ok(self.connection_pool.get().await?)
     }
 
@@ -917,6 +919,7 @@ impl FederationObserver {
                 .await?;
             }
             dbtx.commit().await?;
+            self.projector_wakeups.wake(federation_id);
             gate.stored(session_index);
             progress.record(session_index);
         }
@@ -990,11 +993,6 @@ impl FederationObserver {
         transaction: fedimint_core::transaction::Transaction,
     ) -> anyhow::Result<()> {
         let fedimint_txid = transaction.tx_hash();
-        let ctx = ProcessCtx {
-            dbtx,
-            config,
-            esplora: &self.esplora,
-        };
 
         dbtx.execute(
             "INSERT INTO transactions VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
@@ -1010,14 +1008,20 @@ impl FederationObserver {
 
         for (in_idx, input) in transaction.inputs.into_iter().enumerate() {
             let kind = instance_to_kind(config, input.module_instance_id());
-            let module = self.modules.get(&kind);
-            let summary = match module {
+            let summary = match self.modules.get(&kind) {
                 Some(module) => module.summarize_input(&input)?,
-                None => InputSummary::default(),
+                None => {
+                    warn!("Transaction Input of kind {kind}. Not implemented.");
+                    InputSummary::default()
+                }
             };
 
             dbtx.execute(
-                "INSERT INTO transaction_inputs VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+                "INSERT INTO transaction_inputs
+                 VALUES ($1, $2, $3, $4, $5, COALESCE($6, (
+                     SELECT amount_msat FROM transaction_outputs
+                     WHERE federation_id = $1 AND txid = $7 AND out_index = $8
+                 ))) ON CONFLICT DO NOTHING",
                 &[
                     &federation_id.consensus_encode_to_vec(),
                     &fedimint_txid.consensus_encode_to_vec(),
@@ -1025,44 +1029,28 @@ impl FederationObserver {
                     &kind,
                     &summary.ln_contract_id,
                     &summary.amount_msat.map(|amt| amt as i64),
+                    &summary
+                        .claimed_output
+                        .map(|output| output.txid.consensus_encode_to_vec()),
+                    &summary.claimed_output.map(|output| output.out_idx as i32),
                 ],
             )
             .await?;
 
-            let meta = ItemMeta {
-                federation_id,
-                module_instance_id: input.module_instance_id(),
-                txid: fedimint_txid,
-                session_index,
-                item_index,
-                index: in_idx as u64,
-            };
-            match module {
-                Some(module) => module.process_input(&ctx, &meta, &input, &summary).await?,
-                None => warn!("Transaction Input of kind {kind}. Not implemented."),
-            }
-
-            if let Some(json_value) = &summary.details {
-                dbtx.execute(
-                    "INSERT INTO transaction_input_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                    &[
-                        &federation_id.consensus_encode_to_vec(),
-                        &fedimint_txid.consensus_encode_to_vec(),
-                        &(in_idx as i32),
-                        &kind,
-                        json_value,
-                    ],
-                )
-                .await?;
+            if let Some(details) = &summary.details {
+                insert_input_details(dbtx, federation_id, fedimint_txid, in_idx, &kind, details)
+                    .await?;
             }
         }
 
         for (out_idx, output) in transaction.outputs.into_iter().enumerate() {
             let kind = instance_to_kind(config, output.module_instance_id());
-            let module = self.modules.get(&kind);
-            let summary = match module {
+            let summary = match self.modules.get(&kind) {
                 Some(module) => module.summarize_output(&output)?,
-                None => OutputSummary::default(),
+                None => {
+                    warn!("Transaction Output of kind {kind}. Not implemented.");
+                    OutputSummary::default()
+                }
             };
 
             dbtx.execute(
@@ -1079,35 +1067,9 @@ impl FederationObserver {
             )
             .await?;
 
-            let meta = ItemMeta {
-                federation_id,
-                module_instance_id: output.module_instance_id(),
-                txid: fedimint_txid,
-                session_index,
-                item_index,
-                index: out_idx as u64,
-            };
-            match module {
-                Some(module) => {
-                    module
-                        .process_output(&ctx, &meta, &output, &summary)
-                        .await?
-                }
-                None => warn!("Transaction Output of kind {kind}. Not implemented."),
-            }
-
-            if let Some(json_value) = &summary.details {
-                dbtx.execute(
-                    "INSERT INTO transaction_output_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-                    &[
-                        &federation_id.consensus_encode_to_vec(),
-                        &fedimint_txid.consensus_encode_to_vec(),
-                        &(out_idx as i32),
-                        &kind,
-                        json_value,
-                    ],
-                )
-                .await?;
+            if let Some(details) = &summary.details {
+                insert_output_details(dbtx, federation_id, fedimint_txid, out_idx, &kind, details)
+                    .await?;
             }
         }
 
@@ -1131,34 +1093,26 @@ impl FederationObserver {
             return Ok(());
         };
 
-        if let Some(json_value) = module.summarize_ci(&ci) {
-            dbtx.execute(
-                "INSERT INTO consensus_items VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
-                &[
-                    &federation_id.consensus_encode_to_vec(),
-                    &(session_index as i32),
-                    &(item_index as i32),
-                    &(peer_id.to_usize() as i32),
-                    &kind,
-                    &json_value,
-                ],
-            )
-            .await?;
-        }
-
-        let ctx = ProcessCtx {
-            dbtx,
-            config,
-            esplora: &self.esplora,
-        };
-        let meta = CiMeta {
+        let at = CiPosition {
             federation_id,
-            module_instance_id: ci.module_instance_id(),
             session_index,
             item_index,
             peer: peer_id,
         };
-        module.process_ci(&ctx, &meta, &ci).await
+        if let Some(data) = module.summarize_ci(&ci) {
+            insert_consensus_item(dbtx, &at, &kind, &data).await?;
+        }
+
+        // Votes date the session: session_times, a core read model, is built
+        // from them in this transaction (record_new_session)
+        if let Some(height) = module.block_height_vote(&ci) {
+            insert_block_height_vote(dbtx, &at, height).await?;
+        }
+        if let Some(time) = module.unix_time_vote(&ci) {
+            insert_unix_time_vote(dbtx, &at, time).await?;
+        }
+
+        Ok(())
     }
 
     async fn refresh_views(self) {
@@ -1194,6 +1148,24 @@ impl FederationObserver {
         &self,
         federation_id: FederationId,
     ) -> anyhow::Result<Amount> {
+        let services = Services::new(self.clone());
+        let mut module_assets = Amount::ZERO;
+        let mut has_module_assets = false;
+        for module in self.modules.modules() {
+            if let Some(amount) = module
+                .federation_assets(&services)
+                .await?
+                .get(&federation_id)
+            {
+                has_module_assets = true;
+                module_assets = module_assets
+                    .checked_add(*amount)
+                    .context("Federation asset total overflow")?;
+            }
+        }
+        if has_module_assets {
+            return Ok(module_assets);
+        }
         let total_assets_msat = query_value::<i64>(
             &self.connection().await?,
             "SELECT COALESCE(
@@ -1205,216 +1177,6 @@ impl FederationObserver {
         .await?;
 
         Ok(Amount::from_msats(total_assets_msat as u64))
-    }
-
-    pub async fn federation_utxos(
-        &self,
-        federation_id: FederationId,
-    ) -> anyhow::Result<Vec<FederationUtxo>> {
-        #[derive(Debug, FromRow)]
-        struct FederationUtxoRaw {
-            on_chain_txid: Vec<u8>,
-            on_chain_vout: i32,
-            address: String,
-            amount_msat: i64,
-        }
-
-        query::<FederationUtxoRaw>(
-            &self.connection().await?,
-            // The wallet module's view, read here until the UTXO endpoint
-            // moves into the module
-            // language=postgresql
-            "SELECT on_chain_txid, on_chain_vout, address, amount_msat FROM fmo_wallet.utxos WHERE federation_id = $1 ORDER BY amount_msat DESC",
-            &[&federation_id.consensus_encode_to_vec()],
-        ).await?.into_iter().map(|utxo| {
-            Result::<_, anyhow::Error>::Ok(FederationUtxo {
-                address: Address::from_str(&utxo.address)?,
-                out_point: OutPoint {
-                    txid: Txid::from_slice(&utxo.on_chain_txid)?,
-                    vout: utxo.on_chain_vout.try_into()?,
-                },
-                amount: Amount::from_msats(utxo.amount_msat.try_into()?),
-            })
-        }).collect()
-    }
-
-    pub async fn guardian_utxo_claims(
-        &self,
-        federation_id: FederationId,
-    ) -> anyhow::Result<Vec<GuardianUtxoClaim>> {
-        // Unknown ids from the request path must not get a cache slot each
-        self.ensure_observed(federation_id).await?;
-        let slot = self
-            .guardian_claims_cache
-            .lock()
-            .expect("guardian claims cache lock poisoned")
-            .entry(federation_id)
-            .or_default()
-            .clone();
-        // Held across the fetch so concurrent misses share one round of requests
-        let mut cached = slot.lock().await;
-        if let Some((fetched_at, claims)) = cached.as_ref() {
-            if fetched_at.elapsed() < GUARDIAN_CLAIMS_TTL {
-                return Ok(claims.clone());
-            }
-        }
-
-        let claims = self.fetch_guardian_utxo_claims(federation_id).await?;
-        *cached = Some((Instant::now(), claims.clone()));
-        Ok(claims)
-    }
-
-    async fn fetch_guardian_utxo_claims(
-        &self,
-        federation_id: FederationId,
-    ) -> anyhow::Result<Vec<GuardianUtxoClaim>> {
-        let federation = self
-            .get_federation(federation_id)
-            .await?
-            .context("Federation not observed")?;
-        let config = federation.config;
-
-        let Some(wallet_module_id) = module_instance_id(&config, "wallet") else {
-            return Ok(config
-                .global
-                .api_endpoints
-                .keys()
-                .map(|peer_id| GuardianUtxoClaim {
-                    guardian_id: peer_id.to_usize() as u16,
-                    status: GuardianUtxoClaimStatus::Unavailable,
-                    session_count: None,
-                    utxos: Vec::new(),
-                    error: Some("federation config has no wallet module".to_owned()),
-                })
-                .collect());
-        };
-
-        let api = federation_api(&self.connectors, &config.global)?;
-        let module_api = api.with_module(wallet_module_id);
-
-        let mut claims = join_all(config.global.api_endpoints.keys().map(|&peer_id| {
-            let api = api.clone();
-            let module_api = module_api.clone();
-            async move {
-                let summary = module_api.request_single_peer::<WalletSummary>(
-                    WALLET_SUMMARY_ENDPOINT.to_owned(),
-                    ApiRequestErased::default(),
-                    peer_id,
-                );
-                let status = api.request_single_peer::<serde_json::Value>(
-                    STATUS_ENDPOINT.to_owned(),
-                    ApiRequestErased::default(),
-                    peer_id,
-                );
-                // Timed out separately so a slow status call can't discard a
-                // wallet summary that did arrive
-                let (summary, status) = futures::future::join(
-                    tokio::time::timeout(Duration::from_secs(10), summary),
-                    tokio::time::timeout(Duration::from_secs(10), status),
-                )
-                .await;
-
-                let guardian_id = peer_id.to_usize() as u16;
-                let (status, session_count, utxos, error) = match summary {
-                    Ok(Ok(summary)) => {
-                        let session_count = status.ok().and_then(Result::ok).and_then(|status| {
-                            status.get("federation")?.get("session_count")?.as_u64()
-                        });
-                        (
-                            GuardianUtxoClaimStatus::Ok,
-                            session_count,
-                            wallet_summary_claimed_utxos(summary),
-                            None,
-                        )
-                    }
-                    Ok(Err(error)) => (
-                        GuardianUtxoClaimStatus::Error,
-                        None,
-                        Vec::new(),
-                        Some(error.to_string()),
-                    ),
-                    Err(_) => (
-                        GuardianUtxoClaimStatus::Error,
-                        None,
-                        Vec::new(),
-                        Some("Guardian wallet summary timed out".to_owned()),
-                    ),
-                };
-                GuardianUtxoClaim {
-                    guardian_id,
-                    status,
-                    session_count,
-                    utxos,
-                    error,
-                }
-            }
-        }))
-        .await;
-        mark_lagging_guardians(&mut claims, config.global.api_endpoints.len());
-
-        Ok(claims)
-    }
-
-    /// Looks up outputs on-chain. Each request says whether the output's amount
-    /// is needed too, which costs an extra request. Outputs whose lookup fails
-    /// or does not finish within [`ONCHAIN_CHECK_DEADLINE`] are left out.
-    pub async fn onchain_outputs(
-        &self,
-        requests: Vec<(OutPoint, bool)>,
-    ) -> HashMap<OutPoint, OnChainOutput> {
-        let mut results = HashMap::new();
-        let mut to_fetch = Vec::new();
-        {
-            let cache = self
-                .onchain_cache
-                .lock()
-                .expect("onchain cache lock poisoned");
-            for (out_point, with_amount) in requests {
-                let cached = cache.get(&out_point).filter(|(checked_at, output)| {
-                    let fresh = matches!(output, OnChainOutput::Spent { .. })
-                        || checked_at.elapsed() < ONCHAIN_CHECK_TTL;
-                    let complete =
-                        !with_amount || !matches!(output, OnChainOutput::Unspent { amount: None });
-                    fresh && complete
-                });
-                match cached {
-                    Some((_, output)) => {
-                        results.insert(out_point, *output);
-                    }
-                    None => to_fetch.push((out_point, with_amount)),
-                }
-            }
-        }
-        if to_fetch.is_empty() {
-            return results;
-        }
-
-        let mut lookups = futures::stream::iter(to_fetch)
-            .map(|(out_point, with_amount)| {
-                let client = &self.esplora;
-                async move {
-                    let output = fetch_onchain_output(client, out_point, with_amount).await;
-                    (out_point, output)
-                }
-            })
-            .buffer_unordered(ONCHAIN_CHECK_CONCURRENCY);
-        let _ = tokio::time::timeout(ONCHAIN_CHECK_DEADLINE, async {
-            while let Some((out_point, output)) = lookups.next().await {
-                match output {
-                    Ok(output) => {
-                        self.onchain_cache
-                            .lock()
-                            .expect("onchain cache lock poisoned")
-                            .insert(out_point, (Instant::now(), output));
-                        results.insert(out_point, output);
-                    }
-                    Err(error) => debug!("On-chain lookup of {out_point} failed: {error:?}"),
-                }
-            }
-        })
-        .await;
-
-        results
     }
 
     pub async fn totals(&self) -> anyhow::Result<FedimintTotals> {
@@ -1455,71 +1217,10 @@ impl FederationObserver {
         })
     }
 
-    pub async fn get_nonces_spend_info(
-        &self,
-        federation_id: FederationId,
-        nonces: &[String],
-    ) -> anyhow::Result<std::collections::HashMap<String, NonceSpendInfo>> {
-        use chrono::{DateTime, Utc};
-
-        if nonces.is_empty() {
-            return Ok(std::collections::HashMap::new());
-        }
-        ensure!(
-            nonces.len() <= MAX_NONCES_PER_REQUEST,
-            "At most {MAX_NONCES_PER_REQUEST} nonces can be checked per request"
-        );
-
-        self.ensure_observed(federation_id).await?;
-
-        #[derive(Debug, FromRow)]
-        struct NonceSpendRow {
-            nonce: String,
-            session_index: i32,
-            estimated_session_timestamp: Option<chrono::NaiveDateTime>,
-        }
-
-        // Extract nonce from JSONB: {"V0": {"note": {"nonce": "..."}}}
-        // language=postgresql
-        let sql = "
-            SELECT
-                tid.details->'V0'->'note'->>'nonce' AS nonce,
-                t.session_index,
-                st.estimated_session_timestamp
-            FROM transaction_input_details tid
-            JOIN transactions t ON tid.federation_id = t.federation_id AND tid.txid = t.txid
-            LEFT JOIN session_times st ON t.federation_id = st.federation_id AND t.session_index = st.session_index
-            WHERE tid.federation_id = $1
-              AND tid.kind = 'mint'
-              AND tid.details->'V0'->'note'->>'nonce' = ANY($2)
-        ";
-
-        let rows = query::<NonceSpendRow>(
-            &self.connection().await?,
-            sql,
-            &[&federation_id.consensus_encode_to_vec(), &nonces],
-        )
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                (
-                    row.nonce,
-                    NonceSpendInfo {
-                        session_index: row.session_index as u64,
-                        estimated_timestamp: row
-                            .estimated_session_timestamp
-                            .map(|ts| DateTime::<Utc>::from_naive_utc_and_offset(ts, Utc)),
-                    },
-                )
-            })
-            .collect())
-    }
-
-    /// Reprocesses stored sessions of a federation, filling in rows that are
-    /// missing. Commits every `BACKFILL_BATCH` sessions, so an interrupted run
-    /// keeps its progress.
+    /// Reprocesses stored sessions of a federation, filling in core rows that
+    /// are missing. Commits every `BACKFILL_BATCH` sessions, so an interrupted
+    /// run keeps its progress. Module tables are rebuilt by resetting the
+    /// module's cursor instead (`reset_module_cursor`).
     pub async fn backfill_federation(
         &self,
         federation_id: FederationId,
@@ -1657,14 +1358,14 @@ impl SessionFetchGate {
 }
 
 /// Logs how far a sync got and how fast, at most every 5 s
-struct SyncProgress {
+pub(super) struct SyncProgress {
     unit: &'static str,
     logged_at: Instant,
     logged_position: u64,
 }
 
 impl SyncProgress {
-    fn new(unit: &'static str, position: u64) -> Self {
+    pub(super) fn new(unit: &'static str, position: u64) -> Self {
         SyncProgress {
             unit,
             logged_at: Instant::now(),
@@ -1672,7 +1373,7 @@ impl SyncProgress {
         }
     }
 
-    fn record(&mut self, position: u64) {
+    pub(super) fn record(&mut self, position: u64) {
         let elapsed = self.logged_at.elapsed();
         if elapsed < Duration::from_secs(5) {
             return;
@@ -1686,6 +1387,121 @@ impl SyncProgress {
     }
 }
 
+// Core rows written from a module's summary of an item. Ingest writes them as
+// it stores a session; the module's projector writes the ones of items stored
+// while the build lacked the module (projector.rs).
+
+pub(super) async fn insert_input_details(
+    dbtx: &Transaction<'_>,
+    federation_id: FederationId,
+    txid: TransactionId,
+    in_index: usize,
+    kind: &str,
+    details: &serde_json::Value,
+) -> anyhow::Result<()> {
+    dbtx.execute(
+        "INSERT INTO transaction_input_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        &[
+            &federation_id.consensus_encode_to_vec(),
+            &txid.consensus_encode_to_vec(),
+            &(in_index as i32),
+            &kind,
+            details,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn insert_output_details(
+    dbtx: &Transaction<'_>,
+    federation_id: FederationId,
+    txid: TransactionId,
+    out_index: usize,
+    kind: &str,
+    details: &serde_json::Value,
+) -> anyhow::Result<()> {
+    dbtx.execute(
+        "INSERT INTO transaction_output_details VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        &[
+            &federation_id.consensus_encode_to_vec(),
+            &txid.consensus_encode_to_vec(),
+            &(out_index as i32),
+            &kind,
+            details,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Where a module consensus item sits in a federation's history
+pub(super) struct CiPosition {
+    pub(super) federation_id: FederationId,
+    pub(super) session_index: u64,
+    pub(super) item_index: u64,
+    pub(super) peer: PeerId,
+}
+
+pub(super) async fn insert_consensus_item(
+    dbtx: &Transaction<'_>,
+    at: &CiPosition,
+    kind: &str,
+    data: &serde_json::Value,
+) -> anyhow::Result<()> {
+    dbtx.execute(
+        "INSERT INTO consensus_items VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+        &[
+            &at.federation_id.consensus_encode_to_vec(),
+            &(at.session_index as i32),
+            &(at.item_index as i32),
+            &(at.peer.to_usize() as i32),
+            &kind,
+            data,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn insert_block_height_vote(
+    dbtx: &Transaction<'_>,
+    at: &CiPosition,
+    height: u32,
+) -> anyhow::Result<()> {
+    dbtx.execute(
+        "INSERT INTO block_height_votes VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        &[
+            &at.federation_id.consensus_encode_to_vec(),
+            &(at.session_index as i32),
+            &(at.item_index as i32),
+            &(at.peer.to_usize() as i32),
+            &(height as i32),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+pub(super) async fn insert_unix_time_vote(
+    dbtx: &Transaction<'_>,
+    at: &CiPosition,
+    time: u64,
+) -> anyhow::Result<()> {
+    dbtx.execute(
+        "INSERT INTO unix_time_votes VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        &[
+            &at.federation_id.consensus_encode_to_vec(),
+            &(at.session_index as i32),
+            &(at.item_index as i32),
+            &(at.peer.to_usize() as i32),
+            &(time as i64),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
 pub(crate) fn federation_id_from_db(bytes: &[u8]) -> anyhow::Result<FederationId> {
     Ok(FederationId::consensus_decode_whole(
         bytes,
@@ -1697,104 +1513,6 @@ fn last_n_day_iter(now: NaiveDate, days: u32) -> impl Iterator<Item = NaiveDate>
     (0..days)
         .rev()
         .map(move |day| now - chrono::Duration::days(day as i64))
-}
-
-async fn fetch_onchain_output(
-    client: &esplora_client::AsyncClient,
-    out_point: OutPoint,
-    with_amount: bool,
-) -> anyhow::Result<OnChainOutput> {
-    let amount = if with_amount {
-        let Some(tx) = client.get_tx_info(&out_point.txid).await? else {
-            return Ok(OnChainOutput::Missing);
-        };
-        let Some(output) = tx.vout.get(out_point.vout as usize) else {
-            return Ok(OnChainOutput::Missing);
-        };
-        Some(bitcoin::Amount::from_sat(output.value))
-    } else {
-        None
-    };
-
-    let status = client
-        .get_output_status(&out_point.txid, out_point.vout.into())
-        .await?
-        .context("No output status")?;
-    Ok(match status.txid {
-        Some(by) if status.spent => OnChainOutput::Spent { by },
-        _ => OnChainOutput::Unspent { amount },
-    })
-}
-
-/// Marks responding guardians whose session count is behind the federation as
-/// lagging: their wallet summary predates outputs the others already know.
-///
-/// The reference is the `f+1`-th highest reported count, so up to `f` faulty
-/// guardians claiming an inflated count cannot push honest ones out of the
-/// comparison. Guardians that did not report a count stay in.
-fn mark_lagging_guardians(claims: &mut [GuardianUtxoClaim], num_guardians: usize) {
-    let max_faulty = num_guardians.saturating_sub(1) / 3;
-    let mut session_counts = claims
-        .iter()
-        .filter(|claim| matches!(claim.status, GuardianUtxoClaimStatus::Ok))
-        .filter_map(|claim| claim.session_count)
-        .collect::<Vec<_>>();
-    session_counts.sort_unstable_by(|a, b| b.cmp(a));
-    let Some(&reference) = session_counts.get(max_faulty) else {
-        return;
-    };
-
-    for claim in claims {
-        if matches!(claim.status, GuardianUtxoClaimStatus::Ok)
-            && claim
-                .session_count
-                .is_some_and(|session_count| session_count < reference)
-        {
-            claim.status = GuardianUtxoClaimStatus::Lagging;
-        }
-    }
-}
-
-fn wallet_summary_claimed_utxos(summary: WalletSummary) -> Vec<GuardianClaimedUtxo> {
-    let mut utxos = Vec::new();
-    append_claimed_utxos(
-        &mut utxos,
-        summary.spendable_utxos,
-        GuardianClaimedUtxoState::Spendable,
-    );
-    append_claimed_utxos(
-        &mut utxos,
-        summary.unsigned_peg_out_txos,
-        GuardianClaimedUtxoState::UnsignedPegOut,
-    );
-    append_claimed_utxos(
-        &mut utxos,
-        summary.unsigned_change_utxos,
-        GuardianClaimedUtxoState::UnsignedChange,
-    );
-    append_claimed_utxos(
-        &mut utxos,
-        summary.unconfirmed_peg_out_txos,
-        GuardianClaimedUtxoState::UnconfirmedPegOut,
-    );
-    append_claimed_utxos(
-        &mut utxos,
-        summary.unconfirmed_change_utxos,
-        GuardianClaimedUtxoState::UnconfirmedChange,
-    );
-    utxos
-}
-
-fn append_claimed_utxos(
-    utxos: &mut Vec<GuardianClaimedUtxo>,
-    txos: Vec<TxOutputSummary>,
-    state: GuardianClaimedUtxoState,
-) {
-    utxos.extend(txos.into_iter().map(|txo| GuardianClaimedUtxo {
-        out_point: txo.outpoint,
-        amount: Amount::from_sats(txo.amount.to_sat()),
-        state,
-    }));
 }
 
 #[cfg(test)]

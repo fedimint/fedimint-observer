@@ -2374,6 +2374,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fedimint-lnv2-common"
+version = "0.12.0"
+source = "git+https://github.com/fedimint/fedimint?tag=v0.12.0#2ead392ba22141bbe5898cdb724ec3dbc55387a9"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bitcoin 0.32.102",
+ "fedimint-connectors",
+ "fedimint-core 0.12.0",
+ "fedimint-ln-common",
+ "fedimint-tpe",
+ "group",
+ "lightning-invoice 0.33.3",
+ "rand 0.8.8",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "fedimint-logging"
 version = "0.4.4"
 source = "git+https://github.com/elsirion/fedimint?branch=v0.4.4-patch-xyz#ca970accfcb128a1d573cc0dee6844b84df235d8"
@@ -2456,6 +2477,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fedimint-mintv2-common"
+version = "0.12.0"
+source = "git+https://github.com/fedimint/fedimint?tag=v0.12.0#2ead392ba22141bbe5898cdb724ec3dbc55387a9"
+dependencies = [
+ "anyhow",
+ "bitcoin_hashes 0.14.101",
+ "fedimint-core 0.12.0",
+ "fedimint-tbs",
+ "serde",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "fedimint-tbs"
 version = "0.12.0"
 source = "git+https://github.com/fedimint/fedimint?tag=v0.12.0#2ead392ba22141bbe5898cdb724ec3dbc55387a9"
@@ -2493,6 +2528,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fedimint-tpe"
+version = "0.12.0"
+source = "git+https://github.com/fedimint/fedimint?tag=v0.12.0#2ead392ba22141bbe5898cdb724ec3dbc55387a9"
+dependencies = [
+ "bitcoin_hashes 0.14.101",
+ "bls12_381",
+ "fedimint-core 0.12.0",
+ "group",
+ "rand 0.8.8",
+ "rand_chacha 0.3.1",
+ "serde",
+ "serde-big-array",
+]
+
+[[package]]
 name = "fedimint-util-error"
 version = "0.12.0"
 source = "git+https://github.com/fedimint/fedimint?tag=v0.12.0#2ead392ba22141bbe5898cdb724ec3dbc55387a9"
@@ -2514,6 +2564,20 @@ dependencies = [
  "serde",
  "thiserror 2.0.20",
  "tracing",
+]
+
+[[package]]
+name = "fedimint-walletv2-common"
+version = "0.12.0"
+source = "git+https://github.com/fedimint/fedimint?tag=v0.12.0#2ead392ba22141bbe5898cdb724ec3dbc55387a9"
+dependencies = [
+ "anyhow",
+ "bitcoin 0.32.102",
+ "fedimint-core 0.12.0",
+ "miniscript 12.3.7",
+ "secp256k1 0.29.1",
+ "serde",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -2609,10 +2673,20 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum 0.7.9",
+ "chrono",
+ "fedimint-api-client",
+ "fedimint-connectors",
  "fedimint-core 0.12.0",
  "fedimint-ln-common",
+ "fmo_api_types",
  "fmo_core",
+ "futures",
+ "postgres-from-row",
+ "serde",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2621,9 +2695,13 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum 0.7.9",
+ "chrono",
  "fedimint-core 0.12.0",
  "fedimint-mint-common",
+ "fmo_api_types",
  "fmo_core",
+ "postgres-from-row",
  "serde_json",
 ]
 
@@ -2639,16 +2717,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "fmo_module_v2"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fedimint-api-client",
+ "fedimint-core 0.12.0",
+ "fedimint-lnv2-common",
+ "fedimint-mintv2-common",
+ "fedimint-walletv2-common",
+ "fmo_core",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "fmo_module_wallet"
 version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum 0.7.9",
  "bitcoin 0.32.102",
+ "esplora-client 0.10.0",
+ "fedimint-api-client",
  "fedimint-core 0.12.0",
  "fedimint-wallet-common",
+ "fmo_api_types",
  "fmo_core",
+ "futures",
+ "postgres-from-row",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 
@@ -2661,6 +2762,7 @@ dependencies = [
  "fmo_module_ln",
  "fmo_module_mint",
  "fmo_module_stability_pool",
+ "fmo_module_v2",
  "fmo_module_wallet",
  "tokio",
 ]

@@ -5,6 +5,7 @@ import { api } from '../services/api';
 import { publishNostrEvent } from '../services/nostr';
 import type {
   FederationHistogram,
+  FederationOverview,
   FederationSummary,
   GuardianClaimedUtxoState,
   GuardianHealth,
@@ -76,6 +77,7 @@ export function FederationDetail() {
   // UTXOs load the first time their tab opens, and are only ever shown there
   const [utxosRequested, setUtxosRequested] = useState(false);
   const [utxosLoading, setUtxosLoading] = useState(true);
+  const [overview, setOverview] = useState<FederationOverview | null>(null);
   const [utxoView, setUtxoView] = useState<UtxoView>('all');
   const [utxoPage, setUtxoPage] = useState(1);
   const [utxoSearch, setUtxoSearch] = useState('');
@@ -90,6 +92,8 @@ export function FederationDetail() {
   const [movingAverageWindow, setMovingAverageWindow] = useState<number>(0); // 0 = off, 7 = 7-day, 30 = 30-day
   const [useLogScale, setUseLogScale] = useState(false);
   const [guardianHealth, setGuardianHealth] = useState<Record<string, GuardianHealth>>({});
+  const hasWalletV1 = config?.modules.includes('wallet') ?? false;
+  const hasLightningV1 = config?.modules.includes('ln') ?? false;
   
   // Check if at least one guardian is online
   const hasOnlineGuardian = useMemo(() => {
@@ -213,6 +217,7 @@ export function FederationDetail() {
         setFederation(fed);
         setConfig(configData);
         setLoading(false);
+        if (configData.modules.includes('wallet')) setUtxosRequested(true);
       })
       .catch((err) => {
         if (signal.aborted) return;
@@ -245,7 +250,7 @@ export function FederationDetail() {
 
   // The server asks every guardian and mempool.space for these, so only when the tab is opened
   useEffect(() => {
-    if (!id || !utxosRequested) return;
+    if (!id || !utxosRequested || !hasWalletV1) return;
     const controller = new AbortController();
     const { signal } = controller;
 
@@ -263,8 +268,20 @@ export function FederationDetail() {
         if (!signal.aborted) setUtxosLoading(false);
       });
 
+    // How far the wallet module has indexed the stored sessions
+    api.getFederationOverview(id, signal)
+      .then((data) => {
+        if (!signal.aborted) setOverview(data);
+      })
+      .catch((err) => {
+        if (!signal.aborted) console.error('Failed to fetch federation overview:', err);
+      });
+
     return () => controller.abort();
-  }, [id, utxosRequested]);
+  }, [id, utxosRequested, hasWalletV1]);
+
+  const walletSessions = overview?.module_sessions.wallet;
+  const walletBehind = overview != null && walletSessions != null && walletSessions < overview.session_count;
 
   // Update zoom state when histogram data loads
   useEffect(() => {
@@ -497,7 +514,7 @@ export function FederationDetail() {
                   {config?.confirmationsRequired || 'N/A'}
                 </div>
               </div>
-              {id && (
+              {id && hasLightningV1 && (
                 <div>
                   <Link
                     to={`/federations/${id}/gateways`}
@@ -598,19 +615,21 @@ export function FederationDetail() {
             >
               Activity
             </button>
-            <button
-              onClick={() => {
-                setActiveTab('utxos');
-                setUtxosRequested(true);
-              }}
-              className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
-                activeTab === 'utxos'
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
-              }`}
-            >
-              UTXOs
-            </button>
+            {hasWalletV1 && (
+              <button
+                onClick={() => {
+                  setActiveTab('utxos');
+                  setUtxosRequested(true);
+                }}
+                className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
+                  activeTab === 'utxos'
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                }`}
+              >
+                UTXOs
+              </button>
+            )}
             <button
               onClick={() => setActiveTab('config')}
               className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
@@ -774,6 +793,12 @@ export function FederationDetail() {
                 {guardianFindings.length > 0 && (
                   <div className="border-b border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-900 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200 sm:px-6">
                     {guardianFindings.join(' ')}
+                  </div>
+                )}
+
+                {walletBehind && (
+                  <div className="border-b border-gray-200 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300 sm:px-6">
+                    The observer's wallet history is indexed to session {walletSessions} of {overview.session_count}, so outputs from later sessions are not listed yet.
                   </div>
                 )}
 

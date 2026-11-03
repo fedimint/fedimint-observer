@@ -25,6 +25,7 @@ impl ObserverModule for StabilityPoolObserver {
         InputSummary {
             amount_msat: None,
             ln_contract_id: None,
+            claimed_output: None,
             details: details_json::<StabilityPoolInput>(
                 input.as_any(),
                 input,

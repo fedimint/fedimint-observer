@@ -1,16 +1,21 @@
+//! Gateway monitoring: which gateways a federation's guardians announce,
+//! how long each has been seen, and what it did in a window
+
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
 use axum::extract::{Path, Query, State};
-use axum::Json;
+use axum::routing::get;
+use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use fedimint_api_client::api::{DynGlobalApi, FederationApiExt};
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::{ClientConfig, FederationId, JsonClientConfig};
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::encoding::Encodable;
+use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::ApiRequestErased;
 use fedimint_ln_common::federation_endpoint_constants::LIST_GATEWAYS_ENDPOINT;
 use fedimint_ln_common::LightningGatewayAnnouncement;
@@ -18,12 +23,10 @@ use fmo_api_types::{
     GatewayActivityMetrics, GatewayInfo, GatewayOverview, GatewayUptimeMetrics,
     GatewayUptimeTrendPoint,
 };
+use fmo_core::module::{federation_api, module_instance_id, query, ApiResult, Services};
 use futures::future::join_all;
 use serde::Deserialize;
 use tracing::{info, warn};
-
-use crate::federation::observer::FederationObserver;
-use crate::util::{federation_api, module_instance_id, query};
 
 const GATEWAY_POLL_INTERVAL_MINUTES: u64 = 5;
 const GATEWAY_SNAPSHOT_RETENTION_DAYS: i64 = 90;
@@ -95,8 +98,49 @@ impl GatewayMetricsWindow {
     }
 }
 
+/// The module's view of core, and its cache of overviews
+pub(crate) struct Gateways<'a> {
+    pub(crate) services: &'a Services,
+    pub(crate) overviews: &'a GatewayOverviewCache,
+}
+
+/// `GET /federations/:federation_id/gateways/overview`
+pub(crate) fn federation_routes(overviews: GatewayOverviewCache) -> Router<Services> {
+    Router::new().route(
+        "/gateways/overview",
+        get(move |path, query, state| {
+            get_federation_gateway_overview(overviews.clone(), path, query, state)
+        }),
+    )
+}
+
+/// `GET /config/:invite/gateways`
+pub(crate) fn config_routes() -> Router<Services> {
+    Router::new().route("/gateways", get(fetch_federation_gateways))
+}
+
+/// Invite codes name the servers to contact, so they can name unreachable
+/// ones, which the client keeps retrying
+const INVITE_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The gateways the guardians behind an invite code announce right now, for
+/// federations that aren't observed
+async fn fetch_federation_gateways(
+    Path(invite): Path<InviteCode>,
+    State(services): State<Services>,
+) -> ApiResult<Json<Vec<GatewayInfo>>> {
+    let config = services.config_for_invite(&invite).await?;
+    let gateways = tokio::time::timeout(
+        INVITE_FETCH_TIMEOUT,
+        fetch_gateways_for_config(services.connectors(), &config),
+    )
+    .await
+    .context("Timed out fetching the federation's gateways")??;
+    Ok(gateways.into())
+}
+
 #[derive(Debug, Deserialize)]
-pub(super) struct GetFederationGatewaysParams {
+pub(crate) struct GetFederationGatewaysParams {
     window: Option<String>,
     /// Comma-separated parts to return: `gateways`, `trend`. Both by default.
     include: Option<String>,
@@ -182,17 +226,17 @@ async fn fetch_gateway_announcements(
     (merged, successful_peer_queries)
 }
 
-impl FederationObserver {
+impl Gateways<'_> {
     /// Background task: poll the LN module on this federation for currently
     /// registered gateways and persist them. Runs in a loop until cancelled.
-    pub async fn monitor_gateways(
+    pub(crate) async fn monitor_gateways(
         &self,
         federation_id: FederationId,
         config: ClientConfig,
     ) -> anyhow::Result<()> {
         const POLL_INTERVAL: Duration = Duration::from_secs(GATEWAY_POLL_INTERVAL_MINUTES * 60);
 
-        let api = federation_api(self.connectors(), &config.global)?;
+        let api = federation_api(self.services.connectors(), &config.global)?;
         let ln_instance_id =
             module_instance_id(&config, "ln").context("No LN module found in federation config")?;
 
@@ -230,7 +274,7 @@ impl FederationObserver {
             );
         }
 
-        let mut conn = self.connection().await?;
+        let mut conn = self.services.connection().await?;
         let dbtx = conn.transaction().await?;
         let now = chrono::Utc::now();
         let federation_id_bytes = federation_id.consensus_encode_to_vec();
@@ -253,7 +297,7 @@ impl FederationObserver {
 
         if !gateway_ids.is_empty() {
             dbtx.execute(
-                "INSERT INTO gateways
+                "INSERT INTO fmo_ln.gateways
                      (federation_id, gateway_id, node_pub_key, api_endpoint,
                       lightning_alias, vetted, raw, first_seen, last_seen)
                  SELECT
@@ -304,7 +348,7 @@ impl FederationObserver {
                  FROM current_gateway_ids
                  UNION
                  SELECT g.gateway_id, FALSE AS is_seen
-                 FROM gateways g
+                 FROM fmo_ln.gateways g
                  WHERE g.federation_id = $1
                    AND g.last_seen >= $2::timestamptz - make_interval(days => $4)
                    AND NOT EXISTS (
@@ -313,7 +357,7 @@ impl FederationObserver {
                        WHERE c.gateway_id = g.gateway_id
                    )
              )
-             INSERT INTO gateway_poll_snapshots
+             INSERT INTO fmo_ln.gateway_poll_snapshots
                  (federation_id, gateway_id, poll_time, is_seen)
              SELECT
                  $1,
@@ -337,7 +381,7 @@ impl FederationObserver {
         let deleted_snapshots = if should_prune {
             let retention_cutoff = now - chrono::Duration::days(GATEWAY_SNAPSHOT_RETENTION_DAYS);
             dbtx.execute(
-                "DELETE FROM gateway_poll_snapshots
+                "DELETE FROM fmo_ln.gateway_poll_snapshots
                  WHERE federation_id = $1
                    AND poll_time < $2",
                 &[&federation_id_bytes, &retention_cutoff],
@@ -371,7 +415,7 @@ impl FederationObserver {
                 .filter(|window| tick.is_multiple_of(window.refresh_every_ticks()))
                 .collect();
             tick += 1;
-            let federations = match self.list_federations().await {
+            let federations = match self.services.federations().await {
                 Ok(federations) => federations,
                 Err(e) => {
                     warn!("Failed to list federations for gateway overviews: {e:?}");
@@ -384,7 +428,7 @@ impl FederationObserver {
                     let federation_id = federation.federation_id;
                     match self.compute_gateway_overview(federation_id, window).await {
                         Ok(overview) => {
-                            self.gateway_overviews()
+                            self.overviews
                                 .write()
                                 .expect("gateway overview lock poisoned")
                                 .insert((federation_id, window), Arc::new(overview));
@@ -415,7 +459,7 @@ impl FederationObserver {
         window: GatewayMetricsWindow,
     ) -> anyhow::Result<Arc<GatewayOverview>> {
         let cached = self
-            .gateway_overviews()
+            .overviews
             .read()
             .expect("gateway overview lock poisoned")
             .get(&(federation_id, window))
@@ -485,7 +529,7 @@ impl FederationObserver {
             total_samples: i64,
         }
 
-        let conn = self.connection().await?;
+        let conn = self.services.connection().await?;
         let federation_id_bytes = federation_id.consensus_encode_to_vec();
         let window_start_naive = window_start_utc.naive_utc();
         let metrics_window = window.label().to_owned();
@@ -493,7 +537,7 @@ impl FederationObserver {
         let rows = query::<GatewayRow>(
             &conn,
             "SELECT gateway_id, node_pub_key, lightning_alias, api_endpoint, vetted, raw, first_seen, last_seen
-             FROM gateways
+             FROM fmo_ln.gateways
              WHERE federation_id = $1
              ORDER BY last_seen DESC",
             &[&federation_id_bytes],
@@ -629,8 +673,8 @@ impl FederationObserver {
                  s.gateway_id,
                  COUNT(*) FILTER (WHERE s.is_seen)::bigint AS seen_samples,
                  COUNT(*)::bigint AS total_samples
-             FROM gateway_poll_snapshots s
-             JOIN gateways g ON g.federation_id = s.federation_id AND g.gateway_id = s.gateway_id
+             FROM fmo_ln.gateway_poll_snapshots s
+             JOIN fmo_ln.gateways g ON g.federation_id = s.federation_id AND g.gateway_id = s.gateway_id
              WHERE s.federation_id = $1
                AND s.poll_time >= $2
                AND s.poll_time <= g.last_seen + make_interval(days => $3)
@@ -710,7 +754,7 @@ impl FederationObserver {
             total_samples: i64,
         }
 
-        let conn = self.connection().await?;
+        let conn = self.services.connection().await?;
         let federation_id_bytes = federation_id.consensus_encode_to_vec();
         let rows = query::<TrendRow>(
             &conn,
@@ -718,8 +762,8 @@ impl FederationObserver {
                  date_trunc('day', s.poll_time) AS day,
                  COUNT(*) FILTER (WHERE s.is_seen)::bigint AS seen_samples,
                  COUNT(*)::bigint AS total_samples
-             FROM gateway_poll_snapshots s
-             JOIN gateways g ON g.federation_id = s.federation_id AND g.gateway_id = s.gateway_id
+             FROM fmo_ln.gateway_poll_snapshots s
+             JOIN fmo_ln.gateways g ON g.federation_id = s.federation_id AND g.gateway_id = s.gateway_id
              WHERE s.federation_id = $1
                AND s.poll_time >= $2
                AND s.poll_time <= g.last_seen + make_interval(days => $3)
@@ -776,17 +820,20 @@ fn parse_overview_include(include: Option<&str>) -> anyhow::Result<(bool, bool)>
     Ok((gateways, trend))
 }
 
-pub(super) async fn get_federation_gateway_overview(
+pub(crate) async fn get_federation_gateway_overview(
+    overviews: GatewayOverviewCache,
     Path(federation_id): Path<FederationId>,
     Query(params): Query<GetFederationGatewaysParams>,
-    State(state): State<crate::AppState>,
-) -> crate::error::Result<Json<GatewayOverview>> {
+    State(services): State<Services>,
+) -> ApiResult<Json<GatewayOverview>> {
     let window = GatewayMetricsWindow::parse(params.window.as_deref())?;
     let (include_gateways, include_trend) = parse_overview_include(params.include.as_deref())?;
-    let overview = state
-        .federation_observer
-        .gateway_overview(federation_id, window)
-        .await?;
+    let overview = Gateways {
+        services: &services,
+        overviews: &overviews,
+    }
+    .gateway_overview(federation_id, window)
+    .await?;
     // Only the requested parts are copied out of the shared cached overview
     Ok(Json(GatewayOverview {
         window: overview.window.clone(),

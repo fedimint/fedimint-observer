@@ -4,6 +4,13 @@ export interface FedimintTotals {
   tx_count: number;
 }
 
+export interface FederationOverview {
+  session_count: number;
+  total_assets_msat: number;
+  /** Sessions each module has processed, by module kind; behind session_count while it catches up */
+  module_sessions: Record<string, number>;
+}
+
 export interface FederationSummary {
   id: string;
   name: string | null;

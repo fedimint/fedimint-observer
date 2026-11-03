@@ -2,6 +2,7 @@ import type {
   ClientConfig,
   FedimintTotals,
   FederationHistogram,
+  FederationOverview,
   FederationSummary,
   FederationUtxosResponse,
   GatewayInfo,
@@ -61,6 +62,14 @@ export const api = {
     const response = await fetch(`${BASE_URL}/federations/${id}/transactions/histogram`, { signal });
     if (!response.ok) {
       throw new Error(`Failed to fetch transaction histogram for federation ${id} (${response.status})`);
+    }
+    return response.json();
+  },
+
+  async getFederationOverview(id: string, signal?: AbortSignal): Promise<FederationOverview> {
+    const response = await fetch(`${BASE_URL}/federations/${id}`, { signal });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch overview for federation ${id} (${response.status})`);
     }
     return response.json();
   },
