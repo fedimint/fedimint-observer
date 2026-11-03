@@ -27,8 +27,7 @@ impl FederationObserver {
         config: ClientConfig,
     ) -> anyhow::Result<()> {
         let api = federation_api(self.connectors(), &config.global)?;
-        let wallet_module =
-            module_instance_id(&config, "wallet").context("Wallet module not found")?;
+        let wallet_module = module_instance_id(&config, "wallet");
 
         let poll_guardians = async || {
             join_all(config.global.api_endpoints.keys().map(|&peer_id| {
@@ -49,21 +48,26 @@ impl FederationObserver {
                     // Second request is used to determine ping
                     // TODO: how much time does bitcoind take to answer if at all (caching?)?
                     let start_time = Instant::now();
-                    let block_height = api
-                        .with_module(wallet_module)
-                        .request_single_peer(
-                            BLOCK_COUNT_LOCAL_ENDPOINT.to_owned(),
-                            ApiRequestErased::default(),
-                            peer_id,
-                        )
-                        .await
-                        .ok()
-                        .and_then(|json| serde_json::from_value::<Option<u32>>(json).ok().flatten())
-                        .map(|block_count| {
-                            // Fedimint uses 1-based block heights, while bitcoind uses 0-based
-                            // heights. A guardian without blocks reports 0.
-                            block_count.saturating_sub(1)
-                        });
+                    let block_height = if let Some(wallet_module) = wallet_module {
+                        api.with_module(wallet_module)
+                            .request_single_peer(
+                                BLOCK_COUNT_LOCAL_ENDPOINT.to_owned(),
+                                ApiRequestErased::default(),
+                                peer_id,
+                            )
+                            .await
+                            .ok()
+                            .and_then(|json| {
+                                serde_json::from_value::<Option<u32>>(json).ok().flatten()
+                            })
+                            .map(|block_count| {
+                                // Fedimint uses 1-based block heights, while bitcoind uses 0-based
+                                // heights. A guardian without blocks reports 0.
+                                block_count.saturating_sub(1)
+                            })
+                    } else {
+                        None
+                    };
                     let api_latency = start_time.elapsed();
 
                     let software_version = api
