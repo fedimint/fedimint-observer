@@ -64,6 +64,7 @@ function utxoPageItems(current: number, total: number): (number | 'gap')[] {
 
 // Lazy load the chart component for code splitting
 const TransactionChart = lazy(() => import('../components/TransactionChart').then(module => ({ default: module.TransactionChart })));
+const WalletV2ChainChart = lazy(() => import('../components/WalletV2ChainChart').then(module => ({ default: module.WalletV2ChainChart })));
 
 export function FederationDetail() {
   const { id } = useParams<{ id: string }>();
@@ -827,6 +828,22 @@ export function FederationDetail() {
                 Wallet v2 keeps one federation UTXO. This view shows the latest on-chain
                 operations that merged deposits into it or peeled funds off as withdrawals.
               </p>
+              {walletV2Transactions.length > 0 && (
+                <>
+                  <h4 className="mt-6 text-base font-semibold text-gray-900 dark:text-white">
+                    Wallet balance history
+                  </h4>
+                  <div className="mt-2 flex flex-wrap gap-4 text-xs text-gray-500 dark:text-gray-400">
+                    <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-500" />Deposit merged</span>
+                    <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-orange-500" />Withdrawal peeled</span>
+                  </div>
+                  <div className="mt-2">
+                    <Suspense fallback={<div className="flex h-[320px] items-center justify-center text-sm text-gray-500 dark:text-gray-400">Loading graph...</div>}>
+                      <WalletV2ChainChart transactions={walletV2Transactions} />
+                    </Suspense>
+                  </div>
+                </>
+              )}
               <h4 className="mt-6 text-base font-semibold text-gray-900 dark:text-white">
                 Recent on-chain operations
               </h4>
