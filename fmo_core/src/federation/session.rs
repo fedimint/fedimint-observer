@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use fedimint_core::config::FederationId;
 use fedimint_core::encoding::Encodable;
@@ -8,16 +8,18 @@ use postgres_from_row::FromRow;
 use serde_json::json;
 
 use crate::federation::observer::FederationObserver;
+use crate::pagination::Page;
 use crate::util::{query, query_value};
 use crate::AppState;
 
 pub(super) async fn list_sessions(
     Path(federation_id): Path<FederationId>,
+    Query(page): Query<Page<i32>>,
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<BTreeMap<i64, serde_json::Value>>> {
     Ok(state
         .federation_observer
-        .federation_session_list(federation_id)
+        .federation_session_list(federation_id, page.after.unwrap_or(-1), page.limit()?)
         .await?
         .into_iter()
         .map(|session| {
@@ -51,17 +53,21 @@ impl FederationObserver {
     pub async fn federation_session_list(
         &self,
         federation_id: FederationId,
+        after: i32,
+        limit: i64,
     ) -> anyhow::Result<Vec<SessionData>> {
         self.ensure_observed(federation_id).await?;
 
         query::<SessionData>(&self.connection().await?, "
             SELECT s.session_index::bigint AS session_index, COUNT(t.txid) AS transaction_count
-            FROM sessions AS s
+            FROM (SELECT session_index, federation_id FROM sessions
+                  WHERE federation_id = $1 AND session_index > $2
+                  ORDER BY session_index LIMIT $3) AS s
             LEFT JOIN transactions AS t ON s.federation_id = t.federation_id AND s.session_index = t.session_index
             WHERE s.federation_id = $1
             GROUP BY s.session_index
             ORDER BY s.session_index ASC
-        ", &[&federation_id.consensus_encode_to_vec()])
+        ", &[&federation_id.consensus_encode_to_vec(), &after, &limit])
         .await
     }
 
@@ -71,7 +77,7 @@ impl FederationObserver {
     ) -> anyhow::Result<u64> {
         let session_count = query_value::<i64>(
             &self.connection().await?,
-            "SELECT COUNT(*) FROM sessions WHERE federation_id = $1",
+            "SELECT COALESCE((SELECT session_count FROM federation_session_counts WHERE federation_id = $1), 0)",
             &[&federation_id.consensus_encode_to_vec()],
         )
         .await?;
@@ -88,7 +94,8 @@ impl FederationObserver {
         let (next, count) = {
             let row = connection
                 .query_one(
-                    "SELECT COALESCE(MAX(session_index) + 1, 0)::bigint, COUNT(*)::bigint FROM sessions WHERE federation_id = $1",
+                    "SELECT COALESCE((SELECT MAX(session_index)::bigint + 1 FROM sessions WHERE federation_id = $1), 0),
+                            COALESCE((SELECT session_count FROM federation_session_counts WHERE federation_id = $1), 0)",
                     &[&federation_id.consensus_encode_to_vec()],
                 )
                 .await?;

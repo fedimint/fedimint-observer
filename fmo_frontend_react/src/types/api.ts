@@ -6,7 +6,7 @@ export interface FedimintTotals {
 
 export interface FederationOverview {
   session_count: number;
-  total_assets_msat: number;
+  total_assets_msat: number | null;
   /** Sessions each module has processed, by module kind; behind session_count while it catches up */
   module_sessions: Record<string, number>;
 }
@@ -25,7 +25,7 @@ export interface FederationSummary {
   id: string;
   name: string | null;
   last_7d_activity: FederationActivity[];
-  deposits: number;
+  deposits: number | null;
   invite: string;
   nostr_votes: FederationRating;
   health: FederationHealth;
@@ -54,7 +54,7 @@ export interface GuardianHealth {
 }
 
 export interface GuardianHealthLatest {
-  block_height: number;
+  block_height: number | null;
   block_outdated: boolean;
   session_count: number;
   session_outdated: boolean;

@@ -10,6 +10,28 @@ pub async fn federation_meta(
     cfg: &JsonClientConfig,
     state: &AppState,
 ) -> crate::error::Result<Json<MetaFields>> {
+    let federation_id = cfg.global.calculate_federation_id();
+    if state
+        .federation_observer
+        .get_federation(federation_id)
+        .await?
+        .is_some()
+    {
+        let services = crate::module::Services::new(state.federation_observer.clone());
+        let observed = services
+            .observation(federation_id, "meta")
+            .await?
+            .map(|(value, _)| serde_json::from_value::<MetaFields>(value))
+            .transpose()?
+            .unwrap_or_default();
+        let configured = parse_meta_lenient(
+            cfg.global
+                .meta
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone().into())),
+        );
+        return Ok(Json(merge_metas(&[observed, configured])));
+    }
     let maybe_consensus_meta = state
         .consensus_meta_cache
         .fetch_meta_cached(cfg, state.federation_observer.connectors())

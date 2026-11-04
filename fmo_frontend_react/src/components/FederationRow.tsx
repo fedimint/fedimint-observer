@@ -9,7 +9,7 @@ const CombinedMiniChart = lazy(() => import('./MiniChart').then((m) => ({ defaul
 interface FederationRowProps {
   id: string;
   name: string;
-  totalAssets: number;
+  totalAssets: number | null;
   health: FederationHealth;
   expiryTimestamp?: number | null;
   activityData: FederationActivity[];
@@ -80,7 +80,7 @@ export const FederationRow = memo(function FederationRow({
         {/* Total Assets */}
         <div className="text-right md:text-left">
           <span className="text-[10px] uppercase text-gray-600 dark:text-gray-400 block mb-1 md:hidden">Total Assets</span>
-          <span className="text-gray-900 dark:text-white whitespace-nowrap md:whitespace-normal">{asBitcoin(totalAssets, 6)}</span>
+          <span className="text-gray-900 dark:text-white whitespace-nowrap md:whitespace-normal">{totalAssets === null ? 'Awaiting balance' : asBitcoin(totalAssets, 6)}</span>
         </div>
 
         {/* Activity Charts (7d) */}

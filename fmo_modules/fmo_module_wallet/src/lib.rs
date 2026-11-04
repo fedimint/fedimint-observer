@@ -11,20 +11,18 @@ use fedimint_core::config::FederationId;
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
 use fedimint_core::encoding::Encodable;
 use fedimint_core::module::CommonModuleInit;
-use fedimint_core::util::backoff_util::aggressive_backoff;
-use fedimint_core::util::retry;
 use fedimint_core::NumPeers;
 use fedimint_wallet_common::{
     WalletCommonInit, WalletConsensusItem, WalletInput, WalletOutput, WalletOutputV0,
 };
 use fmo_core::module::{
     details_json, CiMeta, InputSummary, ItemMeta, ObserverModule, OutputSummary, ProcessCtx,
-    Services,
+    Services, Task,
 };
-use tracing::warn;
 
 use crate::utxos::UtxoCaches;
 
+mod enrichment;
 mod utxos;
 
 #[derive(Default)]
@@ -50,6 +48,14 @@ fn v0_output(output: &DynOutput) -> anyhow::Result<&WalletOutputV0> {
 
 #[async_trait]
 impl ObserverModule for WalletObserver {
+    fn migrations(&self) -> &'static [&'static str] {
+        &[include_str!("enrichment.sql")]
+    }
+
+    fn task(&self, services: &Services) -> Option<Task> {
+        Some(Box::pin(enrichment::run(services.clone())))
+    }
+
     fn kind(&self) -> ModuleKind {
         WalletCommonInit::KIND
     }
@@ -220,7 +226,6 @@ impl ObserverModule for WalletObserver {
             .context("config says this should be a wallet CI")?;
         match wallet_ci {
             WalletConsensusItem::PegOutSignature(peg_out_sig) => {
-                let peg_out_txid = peg_out_sig.txid;
                 let peg_out_txid_encoded = peg_out_sig.txid.to_byte_array().to_vec();
 
                 dbtx.execute(
@@ -274,56 +279,10 @@ impl ObserverModule for WalletObserver {
                     return Ok(());
                 }
 
-                let client = ctx.esplora;
-
-                // Bounded: this runs inside the session's database transaction.
-                // On failure the session is rolled back and retried 30 s later,
-                // instead of holding a pooled connection until esplora answers.
-                let fetched_tx = retry(
-                    "fetching tx from esplora".to_string(),
-                    aggressive_backoff(),
-                    || async {
-                        client.get_tx_no_opt(&peg_out_txid).await.map_err(|e| {
-                            warn!("failed to fetch tx: {e:?}");
-                            anyhow::anyhow!("failed fetching tx from esplora")
-                        })
-                    },
-                )
-                .await
-                .with_context(|| format!("Fetching peg-out transaction {peg_out_txid}"))?;
-
-                for input in fetched_tx.input {
-                    let prev_out_txid = input.previous_output.txid.to_byte_array().to_vec();
-
-                    dbtx.execute(
-                        "INSERT INTO fmo_wallet.withdrawal_transaction_inputs VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-                        &[
-                            &prev_out_txid,
-                            &(input.previous_output.vout as i32),
-                            &peg_out_txid_encoded,
-                        ],
-                    )
-                    .await?;
-                }
-
-                for (out_idx, output) in fetched_tx.output.iter().enumerate() {
-                    let address = bitcoin::Address::from_script(
-                        &output.script_pubkey,
-                        bitcoin::Network::Bitcoin,
-                    )
-                    .context("Peg-out output has no address")?;
-
-                    dbtx.execute(
-                        "INSERT INTO fmo_wallet.withdrawal_transaction_outputs VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                        &[
-                            &peg_out_txid_encoded,
-                            &(out_idx as i32),
-                            &address.to_string(),
-                            &((output.value.to_sat() as i64) * 1000),
-                        ],
-                    )
-                    .await?;
-                }
+                dbtx.execute(
+                    "INSERT INTO fmo_wallet.enrichment_jobs (on_chain_txid) VALUES ($1) ON CONFLICT DO NOTHING",
+                    &[&peg_out_txid_encoded],
+                ).await?;
             }
             _ => {
                 // Block height votes are core's (block_height_vote); other

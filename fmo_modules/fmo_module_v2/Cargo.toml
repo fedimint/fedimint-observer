@@ -17,3 +17,4 @@ fmo_api_types = { path = "../../fmo_api_types" }
 fmo_core = { path = "../../fmo_core" }
 serde_json = "1.0.115"
 tracing = "0.1.40"
+tokio = { version = "1.37.0", features = ["full"] }

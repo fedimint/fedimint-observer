@@ -82,6 +82,7 @@ export function FederationDetail() {
   const [overview, setOverview] = useState<FederationOverview | null>(null);
   const [walletV2Transactions, setWalletV2Transactions] = useState<WalletV2OnChainTransaction[]>([]);
   const [walletV2TransactionsLoading, setWalletV2TransactionsLoading] = useState(false);
+  const [walletV2TransactionsError, setWalletV2TransactionsError] = useState<string | null>(null);
   const [utxoView, setUtxoView] = useState<UtxoView>('all');
   const [utxoPage, setUtxoPage] = useState(1);
   const [utxoSearch, setUtxoSearch] = useState('');
@@ -204,6 +205,21 @@ export function FederationDetail() {
     const controller = new AbortController();
     const { signal } = controller;
 
+    setLoading(true);
+    setError(null);
+    setConfig(null);
+    setOverview(null);
+    setGuardianHealth({});
+    setHistogram([]);
+    setHistogramLoading(true);
+    setUtxosRequested(false);
+    setUtxoRows([]);
+    setUtxoGuardians([]);
+    setUtxosLoading(true);
+    setWalletV2Transactions([]);
+    setWalletV2TransactionsError(null);
+    setActiveTab('activity');
+
     // Every request below needs only the id, so none waits for another; only the
     // invite fallback waits for the federation list.
     // Fetch all federations and find the one matching the ID
@@ -226,7 +242,6 @@ export function FederationDetail() {
         setFederation(fed);
         setConfig(configData);
         setLoading(false);
-        if (configData.modules.includes('wallet')) setUtxosRequested(true);
       })
       .catch((err) => {
         if (signal.aborted) return;
@@ -262,19 +277,25 @@ export function FederationDetail() {
         if (!signal.aborted) console.error('Failed to fetch federation overview:', err);
       });
 
-    if (hasWalletV2) {
-      setWalletV2TransactionsLoading(true);
-      api.getWalletV2OnChain(id, signal)
-        .then((data) => {
-          if (!signal.aborted) setWalletV2Transactions(data);
-        })
-        .catch((err) => {
-          if (!signal.aborted) console.error('Failed to fetch Wallet v2 on-chain transactions:', err);
-        })
-        .finally(() => {
-          if (!signal.aborted) setWalletV2TransactionsLoading(false);
-        });
-    }
+    return () => controller.abort();
+  }, [id]);
+
+  useEffect(() => {
+    if (!id || !hasWalletV2) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setWalletV2TransactionsLoading(true);
+    setWalletV2TransactionsError(null);
+    api.getWalletV2OnChain(id, signal)
+      .then((data) => {
+        if (!signal.aborted) setWalletV2Transactions(data);
+      })
+      .catch((err) => {
+        if (!signal.aborted) setWalletV2TransactionsError(err.message);
+      })
+      .finally(() => {
+        if (!signal.aborted) setWalletV2TransactionsLoading(false);
+      });
 
     return () => controller.abort();
   }, [id, hasWalletV2]);
@@ -300,7 +321,7 @@ export function FederationDetail() {
       });
 
     return () => controller.abort();
-  }, [id, utxosRequested, hasWalletV1, hasWalletV2]);
+  }, [id, utxosRequested, hasWalletV1]);
 
   const walletSessions = overview?.module_sessions.wallet;
   const walletBehind = overview != null && walletSessions != null && walletSessions < overview.session_count;
@@ -469,7 +490,7 @@ export function FederationDetail() {
                 const isLoading = !health;
                 const isOnline = health?.latest !== null && health?.latest !== undefined;
                 const session = health?.latest?.session_count || 0;
-                const block = health?.latest ? health.latest.block_height - 1 : 0;
+                const block = health?.latest?.block_height ?? null;
                 const sessionOutdated = health?.latest?.session_outdated || false;
                 const blockOutdated = health?.latest?.block_outdated || false;
                 const softwareVersion = health?.software_version || 'Version unknown';
@@ -507,7 +528,7 @@ export function FederationDetail() {
                                 level={blockOutdated ? 'warning' : 'info'}
                                 tooltip={blockOutdated ? "Guardian's bitcoind is out of sync" : undefined}
                               >
-                                Block {block}
+                                {block === null ? 'Block height unavailable' : `Block ${block}`}
                               </Badge>
                             </>
                           )}
@@ -819,11 +840,12 @@ export function FederationDetail() {
           {activeTab === 'assets' && hasWalletV2 && (
             <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
               <h3 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white">
-                {overview ? asBitcoin(overview.total_assets_msat, 8) : 'Loading...'}
+                {overview ? (overview.total_assets_msat === null ? 'Awaiting balance' : asBitcoin(overview.total_assets_msat, 8)) : 'Loading...'}
               </h3>
               <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
                 Federation wallet assets
               </p>
+              {walletV2TransactionsError && <Alert level="warning" message="Wallet history is temporarily unavailable. Please try again shortly." />}
               <p className="mt-4 text-sm text-gray-600 dark:text-gray-300">
                 Wallet v2 keeps one federation UTXO. This view shows the latest on-chain
                 operations that merged deposits into it or peeled funds off as withdrawals.

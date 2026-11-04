@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context};
+use anyhow::anyhow;
 use axum::extract::{Path, State};
 use axum::Json;
 use chrono::{NaiveDateTime, TimeDelta};
@@ -35,47 +35,66 @@ impl FederationObserver {
                 async move {
                     // We don't time the first request, there might be a reconnect happening in
                     // the background
-                    let status = api
-                        .request_single_peer(
+                    let status = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        api.request_single_peer(
                             STATUS_ENDPOINT.to_owned(),
                             ApiRequestErased::default(),
                             peer_id,
-                        )
-                        .await
-                        .ok()
-                        .and_then(|json| serde_json::from_value::<StatusResponse>(json).ok());
+                        ),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .and_then(|json| serde_json::from_value::<StatusResponse>(json).ok());
 
                     // Second request is used to determine ping
                     // TODO: how much time does bitcoind take to answer if at all (caching?)?
                     let start_time = Instant::now();
+                    let timed_status = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        api.request_single_peer::<StatusResponse>(
+                            STATUS_ENDPOINT.to_owned(),
+                            ApiRequestErased::default(),
+                            peer_id,
+                        ),
+                    )
+                    .await;
+                    let api_latency = match timed_status {
+                        Ok(Ok(_)) => Some(start_time.elapsed().as_millis() as i32),
+                        _ => None,
+                    };
                     let block_height = if let Some(wallet_module) = wallet_module {
-                        api.with_module(wallet_module)
-                            .request_single_peer(
+                        tokio::time::timeout(
+                            Duration::from_secs(10),
+                            api.with_module(wallet_module).request_single_peer(
                                 BLOCK_COUNT_LOCAL_ENDPOINT.to_owned(),
                                 ApiRequestErased::default(),
                                 peer_id,
-                            )
-                            .await
-                            .ok()
-                            .and_then(|json| {
-                                serde_json::from_value::<Option<u32>>(json).ok().flatten()
-                            })
-                            .map(|block_count| {
-                                // Fedimint uses 1-based block heights, while bitcoind uses 0-based
-                                // heights. A guardian without blocks reports 0.
-                                block_count.saturating_sub(1)
-                            })
+                            ),
+                        )
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .and_then(|json| serde_json::from_value::<Option<u32>>(json).ok().flatten())
+                        .map(|block_count| {
+                            // Fedimint uses 1-based block heights, while bitcoind uses 0-based
+                            // heights. A guardian without blocks reports 0.
+                            block_count.saturating_sub(1)
+                        })
                     } else {
                         None
                     };
-                    let api_latency = start_time.elapsed();
 
-                    let software_version = api
-                        .fedimintd_version(peer_id)
-                        .await
-                        .ok()
-                        .map(|version| version.trim().to_owned())
-                        .filter(|version| !version.is_empty());
+                    let software_version = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        api.fedimintd_version(peer_id),
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .map(|version| version.trim().to_owned())
+                    .filter(|version| !version.is_empty());
 
                     (peer_id, status, software_version, block_height, api_latency)
                 }
@@ -140,7 +159,7 @@ impl FederationObserver {
                         &(peer_id.to_usize() as i32),
                         &status.map(|s| serde_json::to_value(s).expect("Can be serialized")),
                         &block_height.map(|bh| bh as i32),
-                        &(api_latency.as_millis() as i32),
+                        &api_latency,
                         &software_version,
                         // The sample stands for the time until the next poll
                         &(next_interval.as_secs() as i32),
@@ -222,13 +241,14 @@ impl FederationObserver {
              SELECT
                 g.guardian_id,
                 latest.block_height,
-                (latest.status -> 'federation' ->> 'session_count')::integer AS session_count,
+                CASE WHEN latest.time >= (now() AT TIME ZONE 'UTC') - INTERVAL '5 minutes'
+                    THEN (latest.status -> 'federation' ->> 'session_count')::integer END AS session_count,
                 latest.software_version,
                 last30d.uptime,
                 last30d.latency_ms
              FROM guardians g
              CROSS JOIN LATERAL (
-                 SELECT h.block_height, h.status, h.software_version
+                 SELECT h.block_height, h.status, h.software_version, h.time
                  FROM guardian_health h
                  WHERE h.federation_id = $1
                    AND h.guardian_id = g.guardian_id
@@ -245,7 +265,7 @@ impl FederationObserver {
                  SELECT
                      guardian_id,
                      (SUM(online_s)::decimal / SUM(polled_s)::decimal * 100)::real AS uptime,
-                     (SUM(latency_sum_ms)::decimal / NULLIF(SUM(latency_samples), 0))::real AS latency_ms
+                     COALESCE((SUM(latency_sum_ms)::decimal / NULLIF(SUM(latency_samples), 0))::real, 0) AS latency_ms
                  FROM (
                      SELECT h.guardian_id, h.polled_s, h.online_s, h.latency_samples, h.latency_sum_ms
                      FROM guardian_health_hourly h, window_bounds b
@@ -266,10 +286,7 @@ impl FederationObserver {
         )
         .await?;
 
-        let our_block_height = self
-            .last_fetched_block_height()
-            .await?
-            .context("No block times stored yet")?;
+        let our_block_height = self.last_fetched_block_height().await?;
         let max_session = health_rows
             .iter()
             .filter_map(|row| row.session_count)
@@ -279,14 +296,14 @@ impl FederationObserver {
         Ok(health_rows
             .into_iter()
             .map(|row| {
-                let latest = if let (Some(session_count), Some(block_height)) =
-                    (row.session_count, row.block_height)
-                {
-                    let block_height = block_height as u32;
+                let latest = if let Some(session_count) = row.session_count {
+                    let block_height = row.block_height.map(|height| height as u32);
                     let session_count = session_count as u32;
                     Some(GuardianHealthLatest {
                         block_height,
-                        block_outdated: our_block_height.saturating_sub(block_height) > 6,
+                        block_outdated: block_height
+                            .zip(our_block_height)
+                            .is_some_and(|(height, ours)| ours.saturating_sub(height) > 6),
                         session_count,
                         session_outdated: max_session.saturating_sub(session_count) > 1,
                     })
@@ -345,10 +362,11 @@ impl FederationObserver {
              SELECT
                 g.federation_id,
                 COUNT(*)::int as guardians,
-                COUNT(*) FILTER (WHERE latest.status -> 'federation' ->> 'session_count' IS NOT NULL)::int as online_guardians
+                COUNT(*) FILTER (WHERE latest.status -> 'federation' ->> 'session_count' IS NOT NULL
+                    AND latest.time >= (now() AT TIME ZONE 'UTC') - INTERVAL '5 minutes')::int as online_guardians
              FROM guardians g
              CROSS JOIN LATERAL (
-                 SELECT h.status
+                 SELECT h.status, h.time
                  FROM guardian_health h
                  WHERE h.federation_id = g.federation_id
                    AND h.guardian_id = g.guardian_id

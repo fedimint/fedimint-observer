@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, ensure, Context};
 use bitcoin::hashes::Hash;
 use chrono::{DateTime, NaiveDate};
-use deadpool_postgres::{GenericClient, Runtime, Transaction};
+use deadpool_postgres::{GenericClient, Transaction};
 use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::DynModuleConsensusItem;
@@ -27,10 +27,9 @@ use postgres_from_row::FromRow;
 use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 use tokio::time::sleep;
-use tokio_postgres::NoTls;
 use tracing::{debug, info, info_span, warn, Instrument};
 
-use crate::config::meta::{ConsensusMetaCache, MetaFieldsExt};
+use crate::config::meta::{ConsensusMetaCache, MetaFields, MetaFieldsExt};
 use crate::config::FederationConfigCache;
 use crate::db::{migration, migration_backfill, schema_setup, DbMigration};
 use crate::federation::db::Federation;
@@ -43,9 +42,6 @@ use crate::util::{federation_api, query, query_one, query_opt, query_value};
 /// Per request to the mempool instance; callers bound their total time
 /// themselves
 const ESPLORA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Federations whose consensus meta the list page fetches at once when it
-/// isn't cached yet
-const SUMMARY_META_CONCURRENCY: usize = 16;
 const NO_ACTIVITY: FederationActivity = FederationActivity {
     num_transactions: 0,
     amount_transferred: Amount::ZERO,
@@ -54,6 +50,10 @@ const NO_ACTIVITY: FederationActivity = FederationActivity {
 #[derive(Debug, Clone)]
 pub struct FederationObserver {
     connection_pool: deadpool_postgres::Pool,
+    worker_pool: deadpool_postgres::Pool,
+    worker_lease: Option<Arc<tokio_postgres::Client>>,
+    pub(crate) work_budget: Arc<tokio::sync::Semaphore>,
+    pub(crate) external_io: Arc<tokio::sync::Semaphore>,
     admin_auth: String,
     /// Shared so requests reuse its connections to the mempool instance
     esplora: esplora_client::AsyncClient,
@@ -75,35 +75,31 @@ impl FederationObserver {
         admin_auth: &str,
         mempool_url: &str,
         modules: ModuleRegistry,
+        options: &crate::runtime::RuntimeOptions,
     ) -> anyhow::Result<FederationObserver> {
-        let connection_pool = {
-            let pool_config = deadpool_postgres::Config {
-                url: Some(database.to_owned()),
-                pool: Some(deadpool_postgres::PoolConfig {
-                    // Fail with an error instead of hanging when every
-                    // connection is busy or the database doesn't answer
-                    timeouts: deadpool_postgres::Timeouts {
-                        wait: Some(Duration::from_secs(30)),
-                        create: Some(Duration::from_secs(10)),
-                        recycle: Some(Duration::from_secs(10)),
-                    },
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            pool_config.create_pool(Some(Runtime::Tokio1), NoTls)
-        }?;
+        let connection_pool = crate::runtime::pool(database, options.worker_db_connections, true)?;
+        let api_pool = crate::runtime::pool(database, options.api_db_connections, false)?;
+        let task_group = TaskGroup::default();
+        let worker_lease = if options.api_only {
+            None
+        } else {
+            Some(crate::runtime::worker_lease(database, task_group.clone()).await?)
+        };
 
         let connectors = ConnectorRegistry::build_from_client_env()?.bind().await?;
         let esplora = esplora_client::Builder::new(mempool_url)
             .timeout(ESPLORA_REQUEST_TIMEOUT.as_secs())
             .build_async()?;
 
-        let slf = FederationObserver {
+        let mut slf = FederationObserver {
+            worker_pool: connection_pool.clone(),
             connection_pool,
+            worker_lease,
+            work_budget: Arc::new(tokio::sync::Semaphore::new(options.worker_concurrency)),
+            external_io: Arc::new(tokio::sync::Semaphore::new(options.external_concurrency)),
             admin_auth: admin_auth.to_owned(),
             esplora,
-            task_group: Default::default(),
+            task_group,
             consensus_meta_cache: Default::default(),
             connectors,
             federation_config_cache: Default::default(),
@@ -112,6 +108,22 @@ impl FederationObserver {
             nostr_pool: Default::default(),
         };
 
+        if options.api_only {
+            slf.connection_pool = api_pool;
+            let version: i32 = query_value(
+                &slf.connection().await?,
+                "SELECT MAX(version) FROM schema_version",
+                &[],
+            )
+            .await?;
+            ensure!(
+                version == 13,
+                "Start the worker to migrate the database before API replicas"
+            );
+            return Ok(slf);
+        }
+        // The dedicated worker lease serializes startup migrations as well as
+        // collection. An API-only instance never runs migrations.
         slf.setup_schema().await?;
 
         for federation in slf.list_federations().await? {
@@ -146,6 +158,25 @@ impl FederationObserver {
             }),
         );
         slf.spawn_module_tasks();
+        let observer = slf.clone();
+        slf.task_group.spawn_cancellable(
+            "metadata snapshots",
+            supervise("Metadata snapshots", move || {
+                observer.clone().refresh_metadata()
+            }),
+        );
+
+        if options.health_retention_days > 0 {
+            let observer = slf.clone();
+            let days = options.health_retention_days;
+            slf.task_group.spawn_cancellable(
+                "health retention",
+                supervise("Health retention", move || {
+                    observer.clone().prune_health(days)
+                }),
+            );
+        }
+        slf.connection_pool = api_pool;
 
         Ok(slf)
     }
@@ -185,8 +216,33 @@ impl FederationObserver {
         &self.projector_wakeups
     }
 
+    pub(crate) fn worker(&self) -> Self {
+        let mut worker = self.clone();
+        worker.connection_pool = self.worker_pool.clone();
+        worker
+    }
+
+    pub(crate) fn healthy(&self) -> bool {
+        !self.task_group.is_shutting_down()
+            && self
+                .worker_lease
+                .as_ref()
+                .is_none_or(|client| !client.is_closed())
+    }
+
+    pub(crate) async fn shutdown(&self) -> anyhow::Result<()> {
+        self.task_group
+            .clone()
+            .shutdown_join_all(Some(Duration::from_secs(10)))
+            .await
+    }
+
+    pub(crate) fn pool_status(&self) -> (deadpool_postgres::Status, deadpool_postgres::Status) {
+        (self.connection_pool.status(), self.worker_pool.status())
+    }
+
     fn spawn_observer(&self, federation: Federation) {
-        let slf = self.clone();
+        let slf = self.worker();
 
         let federation_id = federation.federation_id;
         let config = federation.config.clone();
@@ -200,7 +256,7 @@ impl FederationObserver {
             .instrument(info_span!("sessions", fed = %federation_id.to_prefix())),
         );
 
-        let slf = self.clone();
+        let slf = self.worker();
         let federation_id = federation.federation_id;
         let config = federation.config.clone();
         self.task_group.spawn_cancellable(
@@ -220,7 +276,7 @@ impl FederationObserver {
     /// Runs the background task each module has for the federation, if any,
     /// supervised like core's own
     fn spawn_module_federation_tasks(&self, federation: Federation) {
-        let services = Services::new(self.clone());
+        let services = Services::new(self.worker());
         let federation_id = federation.federation_id;
         for module in self.modules.modules() {
             if module
@@ -330,6 +386,7 @@ impl FederationObserver {
                 FederationObserver::backfill_peg_in_outpoints
             ),
             migration!("/schema/v12.sql"),
+            migration!("/schema/v13.sql"),
         ];
 
         ensure!(
@@ -353,6 +410,11 @@ impl FederationObserver {
             if maybe_schema_version.is_none_or(|schema_version| index > schema_version) {
                 let mut conn = self.connection().await?;
                 let transaction = conn.transaction().await?;
+                transaction
+                    .batch_execute(
+                        "SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '30s'",
+                    )
+                    .await?;
                 transaction.batch_execute(migration.sql).await?;
 
                 if let Some(backfill_fn) = &migration.backfill {
@@ -585,22 +647,35 @@ impl FederationObserver {
         query(&self.connection().await?, "SELECT * FROM federations", &[]).await
     }
 
-    /// The federation list. Runs the same few queries however many
-    /// federations are observed; only consensus meta not cached yet is fetched
-    /// per federation.
+    /// The federation list uses a fixed number of database queries and no remote I/O.
     pub async fn list_federation_summaries(&self) -> anyhow::Result<Vec<FederationSummary>> {
         let federations = self.list_federations().await?;
         let federation_health = self.get_guardian_health_summary().await?;
         let assets = self.federation_assets().await?;
+        let snapshots = self.asset_snapshots().await?;
         let mut activity = self.federations_activity(7).await?;
         let mut ratings = self.federation_ratings().await?;
 
-        futures::stream::iter(federations)
-            .map(|federation| async {
-                let meta = self
-                    .consensus_meta_cache
-                    .fetch_meta_cached(&federation.config.to_json(), &self.connectors)
-                    .await;
+        let mut metas = self
+            .connection()
+            .await?
+            .query(
+                "SELECT federation_id, data FROM federation_observations WHERE kind = 'meta'",
+                &[],
+            )
+            .await?
+            .into_iter()
+            .map(|row| {
+                Ok((
+                    federation_id_from_db(&row.get::<_, Vec<u8>>(0))?,
+                    serde_json::from_value::<MetaFields>(row.get(1))?,
+                ))
+            })
+            .collect::<anyhow::Result<HashMap<_, _>>>()?;
+        federations
+            .into_iter()
+            .map(|federation| {
+                let meta = metas.remove(&federation.federation_id);
                 let name = meta
                     .as_ref()
                     .and_then(|meta| meta.get_as::<String>("federation_name"))
@@ -636,10 +711,6 @@ impl FederationObserver {
                     });
                 (federation, name, expiry_timestamp, successor)
             })
-            .buffered(SUMMARY_META_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
             .map(|(federation, name, expiry_timestamp, successor)| {
                 let federation_id = federation.federation_id;
                 let (first_peer_id, first_peer_url) = federation
@@ -662,7 +733,7 @@ impl FederationObserver {
                     last_7d_activity: activity
                         .remove(&federation_id)
                         .unwrap_or_else(|| vec![NO_ACTIVITY; 7]),
-                    deposits: assets.get(&federation_id).copied().unwrap_or(Amount::ZERO),
+                    deposits: self.combined_assets(&federation, &assets, &snapshots)?,
                     invite,
                     nostr_votes: ratings.remove(&federation_id).unwrap_or(FederationRating {
                         count: 0,
@@ -741,7 +812,9 @@ impl FederationObserver {
             .map(|row| {
                 Ok((
                     federation_id_from_db(&row.get::<_, Vec<u8>>(0))?,
-                    Amount::from_msats(row.get::<_, i64>(1) as u64),
+                    Amount::from_msats(
+                        u64::try_from(row.get::<_, i64>(1)).context("Negative wallet balance")?,
+                    ),
                 ))
             })
             .collect()
@@ -802,13 +875,17 @@ impl FederationObserver {
     }
 
     // FIXME: use middleware for auth and get it out of here
-    pub fn check_auth(&self, bearer_token: &str) -> anyhow::Result<()> {
+    pub fn check_auth(&self, bearer_token: &str) -> crate::error::Result<()> {
         // Constant time, so response timing doesn't reveal how much of a
         // guessed token is right
-        ensure!(
-            bool::from(self.admin_auth.as_bytes().ct_eq(bearer_token.as_bytes())),
-            "Invalid bearer token"
-        );
+        if !bool::from(self.admin_auth.as_bytes().ct_eq(bearer_token.as_bytes())) {
+            return Err(crate::error::AppError::unauthorized());
+        }
+        if self.worker_lease.is_none() {
+            return Err(crate::error::AppError::unavailable(
+                "Administrative operations must be sent to the worker instance",
+            ));
+        }
         Ok(())
     }
 
@@ -921,6 +998,7 @@ impl FederationObserver {
 
         let mut progress = SyncProgress::new("session", next_session);
         while let Some((session_index, signed_session_outcome)) = session_stream.next().await {
+            let _permit = self.work_budget.acquire().await?;
             let mut connection = self.connection().await?;
             let dbtx = connection.transaction().await?;
             let new = self
@@ -1173,25 +1251,12 @@ impl FederationObserver {
     pub async fn get_federation_assets(
         &self,
         federation_id: FederationId,
-    ) -> anyhow::Result<Amount> {
+    ) -> anyhow::Result<Option<Amount>> {
+        let federation = self
+            .get_federation(federation_id)
+            .await?
+            .context("Federation not observed")?;
         let services = Services::new(self.clone());
-        let mut module_assets = Amount::ZERO;
-        let mut has_module_assets = false;
-        for module in self.modules.modules() {
-            if let Some(amount) = module
-                .federation_assets(&services)
-                .await?
-                .get(&federation_id)
-            {
-                has_module_assets = true;
-                module_assets = module_assets
-                    .checked_add(*amount)
-                    .context("Federation asset total overflow")?;
-            }
-        }
-        if has_module_assets {
-            return Ok(module_assets);
-        }
         let total_assets_msat = query_value::<i64>(
             &self.connection().await?,
             "SELECT COALESCE(
@@ -1202,7 +1267,75 @@ impl FederationObserver {
         )
         .await?;
 
-        Ok(Amount::from_msats(total_assets_msat as u64))
+        let mut amount = Amount::from_msats(
+            u64::try_from(total_assets_msat).context("Negative wallet balance")?,
+        );
+        for module in self
+            .modules
+            .modules()
+            .filter(|module| module.reports_assets())
+        {
+            let kind = module.kind().to_string();
+            if crate::util::module_instance_id(&federation.config, &kind).is_some() {
+                let Some((value, observed_at)) = services
+                    .observation(federation_id, &format!("assets:{kind}"))
+                    .await?
+                else {
+                    return Ok(None);
+                };
+                if chrono::Utc::now().signed_duration_since(observed_at)
+                    > chrono::Duration::minutes(5)
+                {
+                    return Ok(None);
+                }
+                amount = amount
+                    .checked_add(Amount::from_msats(
+                        value.as_u64().context("Invalid asset snapshot")?,
+                    ))
+                    .context("Federation asset total overflow")?;
+            }
+        }
+        Ok(Some(amount))
+    }
+
+    async fn asset_snapshots(&self) -> anyhow::Result<HashMap<(FederationId, String), Amount>> {
+        self.connection().await?.query(
+            "SELECT federation_id, kind, data FROM federation_observations WHERE kind LIKE 'assets:%' AND observed_at >= now() - INTERVAL '5 minutes'", &[]
+        ).await?.into_iter().map(|row| {
+            let value: serde_json::Value = row.get(2);
+            Ok(((federation_id_from_db(&row.get::<_, Vec<u8>>(0))?, row.get(1)),
+                Amount::from_msats(value.as_u64().context("Invalid asset snapshot")?)))
+        }).collect()
+    }
+
+    fn combined_assets(
+        &self,
+        federation: &Federation,
+        legacy: &HashMap<FederationId, Amount>,
+        snapshots: &HashMap<(FederationId, String), Amount>,
+    ) -> anyhow::Result<Option<Amount>> {
+        let mut total = legacy
+            .get(&federation.federation_id)
+            .copied()
+            .unwrap_or(Amount::ZERO);
+        for module in self
+            .modules
+            .modules()
+            .filter(|module| module.reports_assets())
+        {
+            let kind = module.kind().to_string();
+            if crate::util::module_instance_id(&federation.config, &kind).is_some() {
+                let Some(amount) =
+                    snapshots.get(&(federation.federation_id, format!("assets:{kind}")))
+                else {
+                    return Ok(None);
+                };
+                total = total
+                    .checked_add(*amount)
+                    .context("Federation asset total overflow")?;
+            }
+        }
+        Ok(Some(total))
     }
 
     pub async fn totals(&self) -> anyhow::Result<FedimintTotals> {
@@ -1284,6 +1417,7 @@ impl FederationObserver {
             let batch_end = batch_start
                 .saturating_add(BACKFILL_BATCH - 1)
                 .min(session_end);
+            let _permit = self.work_budget.acquire().await?;
             let mut connection = self.connection().await?;
             let dbtx = connection.transaction().await?;
             let rows = dbtx
@@ -1305,6 +1439,13 @@ impl FederationObserver {
                 .await?;
                 processed += 1;
             }
+            // Publish restored rows and their read models atomically. A cancelled
+            // HTTP request must not leave previously committed batches inconsistent.
+            dbtx.execute(
+                "SELECT rebuild_read_models($1, $2)",
+                &[&federation_id.consensus_encode_to_vec(), &batch_start],
+            )
+            .await?;
             dbtx.commit().await?;
             info!("Backfilled up to session {batch_end} ({processed} sessions)");
 
@@ -1313,17 +1454,6 @@ impl FederationObserver {
             }
             batch_start = batch_end + 1;
         }
-
-        // Restored votes can move session times, and restored transactions
-        // change daily activity
-        info!("Rebuilding read models of federation {federation_id} from session {session_start}");
-        self.connection()
-            .await?
-            .execute(
-                "SELECT rebuild_read_models($1, $2)",
-                &[&federation_id.consensus_encode_to_vec(), &session_start],
-            )
-            .await?;
 
         info!("Backfill complete!");
         Ok(())

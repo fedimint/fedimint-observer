@@ -193,7 +193,7 @@ impl ConsensusMetaCache {
         meta
     }
 
-    async fn try_fetch_meta_inner(
+    pub(crate) async fn try_fetch_meta_inner(
         config: &JsonClientConfig,
         connectors: &ConnectorRegistry,
     ) -> anyhow::Result<Option<MetaFields>> {

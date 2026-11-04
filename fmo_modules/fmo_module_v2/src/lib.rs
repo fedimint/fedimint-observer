@@ -1,6 +1,6 @@
 //! Observation support for Fedimint's v2 modules.
 
-use std::collections::HashMap;
+use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -8,10 +8,10 @@ use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use fedimint_api_client::api::FederationApiExt;
-use fedimint_core::config::FederationId;
+use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
 use fedimint_core::module::{ApiRequestErased, CommonModuleInit};
-use fedimint_core::{Amount, OutPoint};
+use fedimint_core::OutPoint;
 use fedimint_lnv2_common::{
     LightningCommonInit, LightningConsensusItem, LightningInput, LightningInputV0, LightningOutput,
     LightningOutputV0,
@@ -26,7 +26,7 @@ use fedimint_walletv2_common::{
 use fmo_api_types::WalletV2OnChainTransaction;
 use fmo_core::module::{
     details_json, federation_api, module_instance_id, ApiResult, InputSummary, ObserverModule,
-    OutputSummary, Services,
+    OutputSummary, Services, Task,
 };
 
 fn v2_input(
@@ -167,31 +167,96 @@ impl V2Module {
             .federation(federation_id)
             .await?
             .context("Federation not observed")?;
-        let Some(instance_id) = module_instance_id(&federation.config, "walletv2") else {
+        let Some(_) = module_instance_id(&federation.config, "walletv2") else {
             return Err(anyhow::anyhow!("Federation does not have a walletv2 module").into());
         };
-        let api = federation_api(services.connectors(), &federation.config.global)?
-            .with_module(instance_id);
-        let mut transactions = api
-            .request_current_consensus::<Vec<TxInfo>>(
-                TRANSACTION_CHAIN_ENDPOINT.to_owned(),
-                ApiRequestErased::default(),
-            )
+        let (data, observed_at) = services
+            .observation(federation_id, "walletv2-chain")
             .await?
-            .into_iter()
-            .map(|tx| WalletV2OnChainTransaction {
-                index: tx.index,
-                txid: tx.txid.to_string(),
-                input_msat: tx.input.to_sat() * 1000,
-                output_msat: tx.output.to_sat() * 1000,
-                fee_msat: tx.fee.to_sat() * 1000,
-                vbytes: tx.vbytes,
-                created: tx.created,
-            })
-            .collect::<Vec<_>>();
-        transactions.sort_by_key(|tx| std::cmp::Reverse(tx.created));
-        transactions.truncate(20);
-        Ok(Json(transactions))
+            .ok_or_else(|| {
+                fmo_core::module::ApiError::unavailable("Wallet history is still being collected")
+            })?;
+        if std::time::SystemTime::now()
+            .duration_since(observed_at.into())
+            .unwrap_or_default()
+            > Duration::from_secs(300)
+        {
+            return Err(fmo_core::module::ApiError::unavailable(
+                "Wallet history collection is delayed",
+            ));
+        }
+        Ok(Json(serde_json::from_value(data)?))
+    }
+
+    async fn poll_wallet(
+        services: Services,
+        federation_id: FederationId,
+        config: ClientConfig,
+    ) -> anyhow::Result<()> {
+        let instance_id =
+            module_instance_id(&config, "walletv2").context("Missing walletv2 module")?;
+        let api = federation_api(services.connectors(), &config.global)?.with_module(instance_id);
+        loop {
+            let balance = async {
+                let _permit = services.external_io_permit().await?;
+                let wallet = tokio::time::timeout(
+                    Duration::from_secs(20),
+                    api.request_current_consensus::<Option<FederationWallet>>(
+                        FEDERATION_WALLET_ENDPOINT.to_owned(),
+                        ApiRequestErased::default(),
+                    ),
+                )
+                .await
+                .context("Wallet balance poll timed out")??;
+                let amount = wallet
+                    .map_or(0, |wallet| wallet.value.to_sat())
+                    .checked_mul(1000)
+                    .context("Wallet amount overflow")?;
+                services
+                    .save_observation(federation_id, "assets:walletv2", &serde_json::json!(amount))
+                    .await
+            };
+            let chain = async {
+                let _permit = services.external_io_permit().await?;
+                let transactions = tokio::time::timeout(
+                    Duration::from_secs(20),
+                    api.request_current_consensus::<Vec<TxInfo>>(
+                        TRANSACTION_CHAIN_ENDPOINT.to_owned(),
+                        ApiRequestErased::default(),
+                    ),
+                )
+                .await
+                .context("Wallet history poll timed out")??;
+                let mut transactions = transactions
+                    .into_iter()
+                    .map(|tx| WalletV2OnChainTransaction {
+                        index: tx.index,
+                        txid: tx.txid.to_string(),
+                        input_msat: tx.input.to_sat() * 1000,
+                        output_msat: tx.output.to_sat() * 1000,
+                        fee_msat: tx.fee.to_sat() * 1000,
+                        vbytes: tx.vbytes,
+                        created: tx.created,
+                    })
+                    .collect::<Vec<_>>();
+                transactions.sort_by_key(|tx| std::cmp::Reverse((tx.created, tx.index)));
+                transactions.truncate(20);
+                services
+                    .save_observation(
+                        federation_id,
+                        "walletv2-chain",
+                        &serde_json::to_value(transactions)?,
+                    )
+                    .await
+            };
+            let (balance, chain) = tokio::join!(balance, chain);
+            for result in [balance, chain] {
+                if let Err(error) = result {
+                    tracing::warn!(%federation_id, %error, "Wallet v2 poll failed; preserving last observation");
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
     }
 }
 
@@ -253,37 +318,18 @@ impl ObserverModule for V2Module {
         }
     }
 
-    async fn federation_assets(
+    fn reports_assets(&self) -> bool {
+        self.kind == WalletCommonInit::KIND
+    }
+
+    fn federation_task(
         &self,
         services: &Services,
-    ) -> anyhow::Result<HashMap<FederationId, Amount>> {
-        if self.kind != WalletCommonInit::KIND {
-            return Ok(HashMap::new());
-        }
-        let mut assets = HashMap::new();
-        for federation in services.federations().await? {
-            let Some(instance_id) =
-                federation.config.modules.iter().find_map(|(&id, module)| {
-                    (module.kind == WalletCommonInit::KIND).then_some(id)
-                })
-            else {
-                continue;
-            };
-            let api =
-                fmo_core::module::federation_api(services.connectors(), &federation.config.global)?
-                    .with_module(instance_id);
-            let wallet = api
-                .request_current_consensus::<Option<FederationWallet>>(
-                    FEDERATION_WALLET_ENDPOINT.to_owned(),
-                    ApiRequestErased::default(),
-                )
-                .await?;
-            assets.insert(
-                federation.federation_id,
-                Amount::from_sats(wallet.map_or(0, |wallet| wallet.value.to_sat())),
-            );
-        }
-        Ok(assets)
+        federation_id: FederationId,
+        config: ClientConfig,
+    ) -> Option<Task> {
+        (self.reports_assets() && module_instance_id(&config, "walletv2").is_some())
+            .then(|| Box::pin(Self::poll_wallet(services.clone(), federation_id, config)) as Task)
     }
 }
 

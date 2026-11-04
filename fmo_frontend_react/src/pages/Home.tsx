@@ -20,7 +20,7 @@ export function Home() {
       .then((data) => {
         if (signal.aborted) return;
         // Order by assets under management, largest first
-        setFederations([...data].sort((a, b) => b.deposits - a.deposits));
+        setFederations([...data].sort((a, b) => (b.deposits ?? -1) - (a.deposits ?? -1)));
         setLoading(false);
       })
       .catch((err) => {

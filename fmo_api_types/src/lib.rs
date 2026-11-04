@@ -17,7 +17,7 @@ pub struct FedimintTotals {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationOverview {
     pub session_count: u64,
-    pub total_assets_msat: Amount,
+    pub total_assets_msat: Option<Amount>,
     /// Sessions each module has processed, by module kind: behind
     /// `session_count` while the module catches up with the stored sessions
     pub module_sessions: BTreeMap<String, u64>,
@@ -39,7 +39,7 @@ pub struct FederationSummary {
     pub id: FederationId,
     pub name: Option<String>,
     pub last_7d_activity: Vec<FederationActivity>,
-    pub deposits: Amount,
+    pub deposits: Option<Amount>,
     pub invite: String,
     pub nostr_votes: FederationRating,
     pub health: FederationHealth,
@@ -184,7 +184,7 @@ pub struct GuardianHealth {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardianHealthLatest {
-    pub block_height: u32,
+    pub block_height: Option<u32>,
     pub block_outdated: bool,
     pub session_count: u32,
     pub session_outdated: bool,

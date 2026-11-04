@@ -30,7 +30,9 @@
             nativeBuildInputs = with pkgs; [
               # cmake is required for building aws-lc-sys (fedimint dependency)
               cmake
+              pkg-config
             ];
+            buildInputs = with pkgs; [ openssl ];
           };
           targets = (pkgs.lib.getAttrs
             ([
@@ -72,8 +74,9 @@
               fmo_server = craneLib.buildPackage { };
               fmo_server_image = pkgs.dockerTools.buildLayeredImage {
                 name = "fmo_server";
-                contents = [ fmo_server pkgs.bash pkgs.coreutils ];
+                contents = [ fmo_server pkgs.bash pkgs.coreutils pkgs.cacert ];
                 config = {
+                  Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
                   Cmd = [
                     "${fmo_server}/bin/fmo_server"
                   ];
@@ -146,7 +149,9 @@
             pkgs.nixpkgs-fmt
             # cmake is required for building aws-lc-sys (fedimint dependency)
             pkgs.cmake
+            pkgs.pkg-config
           ];
+          buildInputs = [ pkgs.openssl ];
 
           shellHook = ''
             source scripts/pg_dev/env.sh

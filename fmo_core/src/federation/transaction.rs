@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::NaiveDate;
 use fedimint_core::config::FederationId;
@@ -13,16 +13,18 @@ use postgres_from_row::FromRow;
 use serde::Serialize;
 
 use crate::federation::observer::FederationObserver;
+use crate::pagination::Page;
 use crate::util::{query, query_value};
 use crate::AppState;
 
 pub(super) async fn list_transactions(
     Path(federation_id): Path<FederationId>,
+    Query(page): Query<Page<TransactionId>>,
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<Vec<TransactionId>>> {
     Ok(state
         .federation_observer
-        .federation_transaction_ids(federation_id)
+        .federation_transaction_ids(federation_id, page.after, page.limit()?)
         .await?
         .into())
 }
@@ -75,6 +77,8 @@ impl FederationObserver {
     pub async fn federation_transaction_ids(
         &self,
         federation_id: FederationId,
+        after: Option<TransactionId>,
+        limit: i64,
     ) -> anyhow::Result<Vec<TransactionId>> {
         self.ensure_observed(federation_id).await?;
 
@@ -83,8 +87,15 @@ impl FederationObserver {
         self.connection()
             .await?
             .query(
-                "SELECT txid FROM transactions WHERE federation_id = $1",
-                &[&federation_id.consensus_encode_to_vec()],
+                "SELECT txid FROM transactions WHERE federation_id = $1 AND txid > $2
+                 ORDER BY txid LIMIT $3",
+                &[
+                    &federation_id.consensus_encode_to_vec(),
+                    &after
+                        .map(|id| id.consensus_encode_to_vec())
+                        .unwrap_or_default(),
+                    &limit,
+                ],
             )
             .await?
             .iter()
@@ -105,7 +116,7 @@ impl FederationObserver {
 
         Ok(query_value::<i64>(
             &self.connection().await?,
-            "SELECT COUNT(txid) FROM transactions WHERE federation_id = $1",
+            "SELECT COALESCE((SELECT tx_count FROM federation_totals WHERE federation_id = $1), 0)",
             &[&federation_id.consensus_encode_to_vec()],
         )
         .await? as u64)

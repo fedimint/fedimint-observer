@@ -32,3 +32,7 @@ jobs:
 
     - name: Check build output
       run: ls -la result*
+
+    - name: Database invariants
+      if: matrix.target == 'fmo_server'
+      run: nix develop -c bash scripts/test-db.sh

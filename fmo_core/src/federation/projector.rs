@@ -73,7 +73,7 @@ impl FederationObserver {
             if module_instance_id(&federation.config, &kind).is_none() {
                 continue;
             }
-            let slf = self.clone();
+            let slf = self.worker();
             let config = federation.config.clone();
             self.task_group().spawn_cancellable(
                 format!("{kind} projector for {federation_id}"),
@@ -107,6 +107,7 @@ impl FederationObserver {
         loop {
             // Created before reading, so a session stored in between still wakes us
             let woken = wakeup.notified();
+            let permit = self.work_budget.acquire().await?;
             let mut connection = self.connection().await?;
             let dbtx = connection.transaction().await?;
             let (cursor, repair_from) = module_cursor(&dbtx, &kind, &federation_bytes).await?;
@@ -144,6 +145,7 @@ impl FederationObserver {
                 // Hand the connection back while waiting
                 drop(dbtx);
                 drop(connection);
+                drop(permit);
                 tokio::select! {
                     _ = woken => {}
                     _ = tokio::time::sleep(IDLE_POLL) => {}
@@ -167,7 +169,6 @@ impl FederationObserver {
             let ctx = ProcessCtx {
                 dbtx: &dbtx,
                 config: &config,
-                esplora: self.esplora(),
             };
             for (session_index, outcome) in sessions {
                 process_module_items(
@@ -181,8 +182,8 @@ impl FederationObserver {
                 .await?;
             }
 
-            // Only if nobody moved the cursor meanwhile, which a reset does:
-            // then this batch is dropped and the next starts from the new cursor
+            // The cursor row is locked for this batch. Keep the expected-position
+            // check as a defensive assertion against future changes to this path.
             let moved = dbtx
                 .execute(
                     "INSERT INTO module_cursors (module_kind, federation_id, next_session, repair_from)
@@ -285,8 +286,7 @@ impl FederationObserver {
         let mut connection = self.connection().await?;
         let dbtx = connection.transaction().await?;
         // The cursor first: its row lock waits for a batch the projector is
-        // committing, so the delete below also removes that batch's rows, and
-        // makes a batch that commits later find the cursor moved and roll back
+        // committing, so the delete below also removes that batch's rows.
         dbtx.execute(
             "INSERT INTO module_cursors (module_kind, federation_id, next_session)
              VALUES ($1, $2, $3)
@@ -303,7 +303,6 @@ impl FederationObserver {
             let ctx = ProcessCtx {
                 dbtx: &dbtx,
                 config: &federation.config,
-                esplora: self.esplora(),
             };
             module.reset_federation(&ctx, federation_id).await?;
         }
@@ -324,15 +323,23 @@ impl FederationObserver {
 
 /// The next session the module processes for the federation, 0 without a row,
 /// and the first session whose read models wait for a rebuild, if any
-async fn module_cursor(
+pub(crate) async fn module_cursor(
     dbtx: &DbTransaction<'_>,
     kind: &str,
     federation_bytes: &[u8],
 ) -> anyhow::Result<(u64, Option<u64>)> {
+    // Serialize resets with the whole batch, including resets to the same
+    // position. Comparing only the numeric cursor after processing misses ABA.
+    dbtx.execute(
+        "INSERT INTO module_cursors(module_kind, federation_id, next_session)
+         VALUES ($1, $2, 0) ON CONFLICT DO NOTHING",
+        &[&kind, &federation_bytes],
+    )
+    .await?;
     Ok(dbtx
         .query_opt(
             "SELECT next_session, repair_from FROM module_cursors
-             WHERE module_kind = $1 AND federation_id = $2",
+             WHERE module_kind = $1 AND federation_id = $2 FOR UPDATE",
             &[&kind, &federation_bytes],
         )
         .await?

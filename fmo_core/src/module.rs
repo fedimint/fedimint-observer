@@ -22,7 +22,7 @@
 //! `public`. Module SQL names its tables schema-qualified; only the module's
 //! own migrations run with its schema first on the search path.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -36,7 +36,7 @@ use fedimint_core::core::{
 };
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
-use fedimint_core::{Amount, OutPoint, PeerId, TransactionId};
+use fedimint_core::{OutPoint, PeerId, TransactionId};
 
 pub use crate::error::{AppError as ApiError, Result as ApiResult};
 pub use crate::federation::db::Federation;
@@ -104,8 +104,6 @@ pub struct ProcessCtx<'a> {
     /// The batch's transaction, committed with the move of the module's cursor
     pub dbtx: &'a DbTransaction<'a>,
     pub config: &'a ClientConfig,
-    /// Client of the configured mempool instance
-    pub esplora: &'a esplora_client::AsyncClient,
 }
 
 /// What core offers a module's endpoints and background tasks
@@ -113,6 +111,10 @@ pub struct ProcessCtx<'a> {
 pub struct Services(FederationObserver);
 
 impl Services {
+    /// A process-wide budget for bounded background calls to external services.
+    pub async fn external_io_permit(&self) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
+        Ok(self.0.external_io.clone().acquire_owned().await?)
+    }
     pub(crate) fn new(observer: FederationObserver) -> Self {
         Self(observer)
     }
@@ -259,14 +261,10 @@ pub trait ObserverModule: Send + Sync + 'static {
         None
     }
 
-    /// What each federation running the module holds through it, such as its
-    /// on-chain funds, for the federations the module can tell. A federation's
-    /// assets are the sum over its modules, unknown if none reports any.
-    async fn federation_assets(
-        &self,
-        _services: &Services,
-    ) -> anyhow::Result<HashMap<FederationId, Amount>> {
-        Ok(HashMap::new())
+    /// This module's worker writes an amount (msat JSON integer) to the
+    /// `assets:<kind>` observation. No snapshot means unknown, not zero.
+    fn reports_assets(&self) -> bool {
+        false
     }
 
     /// Deletes everything the module derived from the federation's sessions,

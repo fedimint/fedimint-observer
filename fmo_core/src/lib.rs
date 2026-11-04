@@ -33,11 +33,17 @@ use crate::module::{ModuleRegistry, ObserverModule, Services};
 /// Fedimint config fetching service implementation
 mod config;
 mod db;
+#[cfg(test)]
+mod db_tests;
 /// `anyhow`-based error handling for axum
 mod error;
 mod federation;
+mod http;
 mod meta;
 pub mod module;
+mod observations;
+mod pagination;
+mod runtime;
 mod task;
 mod util;
 
@@ -59,6 +65,8 @@ struct Args {
         default_value = "https://mempool.space/api"
     )]
     mempool_url: String,
+    #[command(flatten)]
+    runtime: runtime::RuntimeOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +75,7 @@ struct AppState {
     meta_override_cache: MetaOverrideCache,
     consensus_meta_cache: ConsensusMetaCache,
     federation_observer: FederationObserver,
+    http_metrics: Arc<http::HttpMetrics>,
 }
 
 /// Entry point of an observer build
@@ -101,6 +110,7 @@ impl FedimintObserverBuilder {
 
 async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
     let args = Args::parse();
+    args.runtime.validate()?;
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
@@ -126,12 +136,18 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
         &args.admin_auth,
         &args.mempool_url,
         modules.clone(),
+        &args.runtime,
     )
     .await?;
     let services = Services::new(federation_observer.clone());
+    let shutdown_observer = federation_observer.clone();
+    let http_metrics = Arc::new(http::HttpMetrics::new(args.runtime.http_concurrency));
 
     let mut app = Router::new()
         .route("/health", get(|| async { "Server is up and running!" }))
+        .route("/live", get(|| async { "alive" }))
+        .route("/ready", get(http::ready))
+        .route("/metrics", get(http::metrics))
         .nest("/config", get_config_routes())
         .nest("/federations", get_federations_routes())
         // TODO: move into nostr service/module
@@ -147,18 +163,28 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
     if let Some(routes) = modules.config_routes() {
         app = app.nest("/config/:invite", routes.with_state(services));
     }
-    let app = app.layer(CorsLayer::permissive()).with_state(AppState {
-        federation_config_cache: federation_observer.federation_config_cache().clone(),
-        meta_override_cache: Default::default(),
-        consensus_meta_cache: federation_observer.consensus_meta_cache().clone(),
-        federation_observer,
-    });
+    let app = app
+        .layer(axum::middleware::from_fn_with_state(
+            http_metrics.clone(),
+            http::admission,
+        ))
+        .layer(tower_http::compression::CompressionLayer::new())
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(CorsLayer::permissive())
+        .with_state(AppState {
+            federation_config_cache: federation_observer.federation_config_cache().clone(),
+            meta_override_cache: Default::default(),
+            consensus_meta_cache: federation_observer.consensus_meta_cache().clone(),
+            federation_observer,
+            http_metrics,
+        });
 
     let listener = tokio::net::TcpListener::bind(&args.bind)
         .await
         .context("Binding to port")?;
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(http::shutdown_signal(shutdown_observer))
         .await
         .context("Starting axum server")?;
 

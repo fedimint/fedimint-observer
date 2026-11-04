@@ -3,7 +3,7 @@ mod guardians;
 mod meta;
 pub(crate) mod nostr;
 pub mod observer;
-mod projector;
+pub(crate) mod projector;
 mod session;
 mod transaction;
 
@@ -160,6 +160,7 @@ async fn backfill_federation(
 
     Ok(state
         .federation_observer
+        .worker()
         .backfill_federation(federation_id, params.session_start, params.session_end)
         .await?)
 }
@@ -187,6 +188,7 @@ async fn reset_module_cursor(
 
     Ok(state
         .federation_observer
+        .worker()
         .reset_module_cursor(federation_id, &kind, params.session_start, params.clean)
         .await?)
 }

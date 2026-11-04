@@ -5,11 +5,40 @@ use axum::response::{IntoResponse, Response};
 
 pub type Result<T> = std::result::Result<T, AppError>;
 
-pub struct AppError(anyhow::Error);
+#[derive(Debug)]
+pub struct AppError {
+    status: StatusCode,
+    message: String,
+}
+
+impl AppError {
+    pub fn unauthorized() -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: "Invalid bearer token".to_owned(),
+        }
+    }
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
+    }
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+}
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (StatusCode::BAD_REQUEST, format!("Error: {}", self.0)).into_response()
+        (
+            self.status,
+            axum::Json(serde_json::json!({"error": self.message})),
+        )
+            .into_response()
     }
 }
 
@@ -18,6 +47,11 @@ where
     E: Into<anyhow::Error>,
 {
     fn from(err: E) -> Self {
-        Self(err.into())
+        let error = err.into();
+        tracing::error!(error = ?error, "Request failed");
+        Self {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: "Internal server error".to_owned(),
+        }
     }
 }
