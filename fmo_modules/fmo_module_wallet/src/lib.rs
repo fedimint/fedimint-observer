@@ -49,7 +49,7 @@ fn v0_output(output: &DynOutput) -> anyhow::Result<&WalletOutputV0> {
 #[async_trait]
 impl ObserverModule for WalletObserver {
     fn migrations(&self) -> &'static [&'static str] {
-        &[include_str!("enrichment.sql")]
+        &[include_str!("../schema/v1.sql")]
     }
 
     fn task(&self, services: &Services) -> Option<Task> {

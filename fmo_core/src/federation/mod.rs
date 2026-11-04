@@ -3,7 +3,7 @@ mod guardians;
 mod meta;
 pub(crate) mod nostr;
 pub mod observer;
-pub(crate) mod projector;
+mod projector;
 mod session;
 mod transaction;
 

@@ -115,17 +115,12 @@ the same numeric position.
 
 ```sh
 nix develop -c cargo test --workspace --locked
-nix develop -c bash scripts/test-db.sh
 cd fmo_frontend_react
 npm ci
 npm run lint
 npm run build
 ```
 
-The database test creates and deletes its own PostgreSQL cluster and never uses
-`FO_DATABASE` or `.pg_dev`. It checks schema upgrades, idempotent session counts,
-transaction rollback, duplicate collector rejection, lease loss, pool deadlines,
-same-position reset locking, and enrichment reset fencing/retry eligibility.
 HTTP unit tests check overload, probe availability, deadlines, and permit release.
 
 `/live` (and legacy `/health`) is liveness. `/ready` checks the database and local

@@ -6,7 +6,6 @@ use crate::config::meta::MetaFields;
 use crate::federation::observed_config_json;
 use crate::meta::federation_meta;
 
-// FIXME: cache meta in DB
 pub(super) async fn get_federation_meta(
     Path(federation_id): Path<FederationId>,
     State(state): State<crate::AppState>,

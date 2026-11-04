@@ -32,10 +32,7 @@ use crate::module::{ModuleRegistry, ObserverModule, Services};
 
 /// Fedimint config fetching service implementation
 mod config;
-mod db;
-#[cfg(test)]
-mod db_tests;
-/// `anyhow`-based error handling for axum
+/// HTTP error responses with sanitized internal errors.
 mod error;
 mod federation;
 mod http;
@@ -174,7 +171,7 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
         .with_state(AppState {
             federation_config_cache: federation_observer.federation_config_cache().clone(),
             meta_override_cache: Default::default(),
-            consensus_meta_cache: federation_observer.consensus_meta_cache().clone(),
+            consensus_meta_cache: Default::default(),
             federation_observer,
             http_metrics,
         });

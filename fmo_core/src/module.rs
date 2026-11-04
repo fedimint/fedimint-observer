@@ -76,8 +76,7 @@ pub struct CiMeta {
 #[derive(Debug, Default, Clone)]
 pub struct InputSummary {
     pub amount_msat: Option<u64>,
-    /// Consensus-encoded Lightning contract id, kept in a core column until the
-    /// Lightning tables move into their module's schema
+    /// Consensus-encoded Lightning contract id for cross-module input resolution.
     pub ln_contract_id: Option<Vec<u8>>,
     /// The federation output this input claims, for inputs that don't carry
     /// their amount but take that of the output, such as Lightning v2 contract
@@ -93,8 +92,7 @@ pub struct InputSummary {
 pub struct OutputSummary {
     pub amount_msat: Option<u64>,
     /// How the output interacts with a Lightning contract (`fund`, `offer`,
-    /// `cancel`) and the consensus-encoded contract id; core columns until the
-    /// Lightning tables move into their module's schema
+    /// `cancel`) and the consensus-encoded contract id for input resolution.
     pub ln_contract: Option<(&'static str, Vec<u8>)>,
     pub details: Option<serde_json::Value>,
 }

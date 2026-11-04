@@ -3,8 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, ensure, Context};
-use bitcoin::hashes::Hash;
+use anyhow::{ensure, Context};
 use chrono::{DateTime, NaiveDate};
 use deadpool_postgres::{GenericClient, Transaction};
 use fedimint_connectors::ConnectorRegistry;
@@ -18,7 +17,6 @@ use fedimint_core::task::TaskGroup;
 use fedimint_core::util::backoff_util::background_backoff;
 use fedimint_core::util::retry;
 use fedimint_core::{Amount, PeerId, TransactionId};
-use fedimint_wallet_common::WalletInput;
 use fmo_api_types::{
     FederationActivity, FederationHealth, FederationRating, FederationSummary, FedimintTotals,
 };
@@ -29,9 +27,8 @@ use tokio::sync::Notify;
 use tokio::time::sleep;
 use tracing::{debug, info, info_span, warn, Instrument};
 
-use crate::config::meta::{ConsensusMetaCache, MetaFields, MetaFieldsExt};
+use crate::config::meta::{MetaFields, MetaFieldsExt};
 use crate::config::FederationConfigCache;
-use crate::db::{migration, migration_backfill, schema_setup, DbMigration};
 use crate::federation::db::Federation;
 use crate::federation::projector::ProjectorWakeups;
 use crate::federation::{db, instance_to_kind};
@@ -42,6 +39,23 @@ use crate::util::{federation_api, query, query_one, query_opt, query_value};
 /// Per request to the mempool instance; callers bound their total time
 /// themselves
 const ESPLORA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+// Older SQL is retained for new databases; populated databases upgrade from v11.
+const CORE_MIGRATIONS: &[&str] = &[
+    include_str!("../../schema/v0.sql"),
+    include_str!("../../schema/v1.sql"),
+    include_str!("../../schema/v2.sql"),
+    include_str!("../../schema/v3.sql"),
+    include_str!("../../schema/v4.sql"),
+    include_str!("../../schema/v5.sql"),
+    include_str!("../../schema/v6.sql"),
+    include_str!("../../schema/v7.sql"),
+    include_str!("../../schema/v8.sql"),
+    include_str!("../../schema/v9.sql"),
+    include_str!("../../schema/v10.sql"),
+    include_str!("../../schema/v11.sql"),
+    include_str!("../../schema/v12.sql"),
+    include_str!("../../schema/v13.sql"),
+];
 const NO_ACTIVITY: FederationActivity = FederationActivity {
     num_transactions: 0,
     amount_transferred: Amount::ZERO,
@@ -58,7 +72,6 @@ pub struct FederationObserver {
     /// Shared so requests reuse its connections to the mempool instance
     esplora: esplora_client::AsyncClient,
     task_group: TaskGroup,
-    consensus_meta_cache: ConsensusMetaCache,
     connectors: ConnectorRegistry,
     /// Configs fetched by invite code, shared with the config API
     federation_config_cache: FederationConfigCache,
@@ -100,7 +113,6 @@ impl FederationObserver {
             admin_auth: admin_auth.to_owned(),
             esplora,
             task_group,
-            consensus_meta_cache: Default::default(),
             connectors,
             federation_config_cache: Default::default(),
             modules,
@@ -117,7 +129,7 @@ impl FederationObserver {
             )
             .await?;
             ensure!(
-                version == 13,
+                version == CORE_MIGRATIONS.len() as i32 - 1,
                 "Start the worker to migrate the database before API replicas"
             );
             return Ok(slf);
@@ -179,12 +191,6 @@ impl FederationObserver {
         slf.connection_pool = api_pool;
 
         Ok(slf)
-    }
-
-    /// Shared with the API so the list page and the meta endpoints agree and
-    /// each federation's consensus meta is fetched once
-    pub(crate) fn consensus_meta_cache(&self) -> &ConsensusMetaCache {
-        &self.consensus_meta_cache
     }
 
     pub fn connectors(&self) -> &ConnectorRegistry {
@@ -366,38 +372,12 @@ impl FederationObserver {
                 version => Some(version as usize),
             };
 
-        let migrations: &[DbMigration] = &[
-            schema_setup!("/schema/v0.sql"),
-            schema_setup!("/schema/v1.sql"),
-            schema_setup!("/schema/v2.sql"),
-            schema_setup!("/schema/v3.sql"),
-            schema_setup!("/schema/v4.sql"),
-            schema_setup!("/schema/v5.sql"),
-            schema_setup!("/schema/v6.sql"),
-            migration!("/schema/v7.sql"),
-            migration_backfill!(
-                "/schema/v8.sql",
-                FederationObserver::backfill_reprocess_all_sessions
-            ),
-            migration!("/schema/v9.sql"),
-            migration!("/schema/v10.sql"),
-            migration_backfill!(
-                "/schema/v11.sql",
-                FederationObserver::backfill_peg_in_outpoints
-            ),
-            migration!("/schema/v12.sql"),
-            migration!("/schema/v13.sql"),
-        ];
-
         ensure!(
-            maybe_schema_version.is_none_or(|version| version < migrations.len()),
+            maybe_schema_version.is_none_or(|version| version < CORE_MIGRATIONS.len()),
             "Database schema is newer than this binary; use a compatible observer version"
         );
 
-        // The v8 and v11 backfills reprocess stored sessions with the modules
-        // of this build, whose tables now live in the fmo_<kind> schemas that
-        // only exist from v12 on. Only an empty database may run them: a
-        // populated one must already be at the last version before the move.
+        // Earlier versions require Rust backfills from the previous release.
         const MIN_UPGRADE_VERSION: usize = 11;
         if let Some(version) = maybe_schema_version {
             ensure!(
@@ -406,7 +386,7 @@ impl FederationObserver {
             );
         }
 
-        for (index, migration) in migrations.iter().enumerate() {
+        for (index, sql) in CORE_MIGRATIONS.iter().enumerate() {
             if maybe_schema_version.is_none_or(|schema_version| index > schema_version) {
                 let mut conn = self.connection().await?;
                 let transaction = conn.transaction().await?;
@@ -415,15 +395,8 @@ impl FederationObserver {
                         "SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '30s'",
                     )
                     .await?;
-                transaction.batch_execute(migration.sql).await?;
-
-                if let Some(backfill_fn) = &migration.backfill {
-                    info!("Running backfill procedure for migration to V{}", index);
-                    backfill_fn(self, &transaction).await?;
-                } else if maybe_schema_version.is_some() {
-                    bail!("Migration V{} does not have a backfill procedure but needs one since the DB is already populated. Please use an older version of Fedimint Observer to run the migration.", index);
-                }
-
+                info!("Applying core schema v{index}");
+                transaction.batch_execute(sql).await?;
                 transaction.commit().await?;
             }
         }
@@ -492,150 +465,6 @@ impl FederationObserver {
                 dbtx.commit().await?;
             }
         }
-        Ok(())
-    }
-
-    async fn backfill_reprocess_all_sessions(&self, dbtx: &Transaction<'_>) -> anyhow::Result<()> {
-        info!("Beginning data backfill needed by schema update, this may take a long time");
-
-        let num_cpus = std::thread::available_parallelism()
-            .map(|non_zero_cpus| non_zero_cpus.get())
-            .unwrap_or(12);
-
-        for fed in self.list_federations().await? {
-            info!(
-                "Parsing all session outcomes for fed: {}",
-                fed.federation_id
-            );
-            let decoders = self.modules.decoders_for_config(&fed.config);
-            let session_outcome_rows = dbtx
-                .query(
-                    "SELECT * FROM sessions WHERE federation_id = $1",
-                    &[&fed.federation_id.consensus_encode_to_vec()],
-                )
-                .await?;
-
-            let rows_count = session_outcome_rows.len();
-
-            // take advantage of all cores, otherwise backfilling can take a long time
-            let mut parsing_stream =
-                futures::stream::iter(session_outcome_rows.into_iter().enumerate())
-                    .map(|(row_idx, row)| {
-                        let decoders_clone = decoders.clone();
-                        tokio::task::spawn(async move {
-                            if row_idx % 1000 == 0 {
-                                let percentage = (row_idx as f64) / (rows_count as f64);
-                                let percentage_str = format!("{:.2}%", percentage * 100.0);
-                                info!(
-                                    "parsing session index: {:?}/{:?} ({})",
-                                    row_idx, rows_count, percentage_str
-                                );
-                            }
-                            db::SessionOutcome::try_from_row_with_decoders(&row, &decoders_clone)
-                        })
-                    })
-                    .buffered(num_cpus)
-                    .boxed();
-
-            while let Some(outcome) = parsing_stream.next().await {
-                let outcome = outcome??;
-                self.process_session(
-                    fed.federation_id,
-                    &fed.config,
-                    outcome.session_index as u64,
-                    outcome.data,
-                    dbtx,
-                )
-                .await?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Rewrites every peg-in's outpoint from the stored transaction that
-    /// brought it in. Some older rows were stored in display byte order, a few
-    /// of them twice, and only the original transaction tells which is right.
-    async fn backfill_peg_in_outpoints(&self, dbtx: &Transaction<'_>) -> anyhow::Result<()> {
-        info!("Rewriting peg-in outpoints from their stored transactions");
-
-        // Read through the migration's transaction: dropping
-        // wallet_withdrawal_addresses locks the federations table it references
-        // until commit, so another connection would wait on us forever
-        for fed in query::<Federation>(dbtx, "SELECT * FROM federations", &[]).await? {
-            let decoders = self.modules.decoders_for_config(&fed.config);
-            let rows = dbtx
-                .query(
-                    "SELECT p.on_chain_txid, p.on_chain_vout, p.in_index, t.data
-                     FROM wallet_peg_ins p
-                     JOIN transactions t ON t.federation_id = p.federation_id AND t.txid = p.txid
-                     WHERE p.federation_id = $1",
-                    &[&fed.federation_id.consensus_encode_to_vec()],
-                )
-                .await?;
-
-            let mut rewritten = 0;
-            for row in rows {
-                let stored_txid = row.get::<_, Vec<u8>>("on_chain_txid");
-                let stored_vout = row.get::<_, i32>("on_chain_vout");
-                let in_index = row.get::<_, i32>("in_index");
-                let transaction =
-                    match fedimint_core::transaction::Transaction::consensus_decode_whole(
-                        &row.get::<_, Vec<u8>>("data"),
-                        &decoders,
-                    ) {
-                        Ok(transaction) => transaction,
-                        Err(error) => {
-                            warn!("Skipping peg-in whose transaction cannot be decoded: {error}");
-                            continue;
-                        }
-                    };
-                let Some(outpoint) = transaction
-                    .inputs
-                    .get(in_index as usize)
-                    .and_then(|input| input.as_any().downcast_ref::<WalletInput>())
-                    .and_then(|input| match input {
-                        WalletInput::V0(peg_in_proof) => Some(peg_in_proof.outpoint()),
-                        WalletInput::V1(v1) => Some(v1.outpoint),
-                        WalletInput::Default { .. } => None,
-                    })
-                else {
-                    warn!("Skipping peg-in whose input {in_index} is not a known wallet input");
-                    continue;
-                };
-
-                let txid = outpoint.txid.to_byte_array().to_vec();
-                let vout = outpoint.vout as i32;
-                if txid == stored_txid && vout == stored_vout {
-                    continue;
-                }
-                // The peg-in may already be stored correctly, making this row a duplicate
-                let deleted = dbtx
-                    .execute(
-                        "DELETE FROM wallet_peg_ins
-                         WHERE on_chain_txid = $1 AND on_chain_vout = $2
-                           AND EXISTS (SELECT 1 FROM wallet_peg_ins WHERE on_chain_txid = $3 AND on_chain_vout = $4)",
-                        &[&stored_txid, &stored_vout, &txid, &vout],
-                    )
-                    .await?;
-                if deleted == 0 {
-                    dbtx.execute(
-                        "UPDATE wallet_peg_ins SET on_chain_txid = $3, on_chain_vout = $4
-                         WHERE on_chain_txid = $1 AND on_chain_vout = $2",
-                        &[&stored_txid, &stored_vout, &txid, &vout],
-                    )
-                    .await?;
-                }
-                rewritten += 1;
-            }
-            if rewritten > 0 {
-                info!(
-                    "Rewrote {rewritten} peg-in outpoints for federation {}",
-                    fed.federation_id
-                );
-            }
-        }
-
-        dbtx.execute("REFRESH MATERIALIZED VIEW utxos", &[]).await?;
         Ok(())
     }
 

@@ -323,7 +323,7 @@ impl FederationObserver {
 
 /// The next session the module processes for the federation, 0 without a row,
 /// and the first session whose read models wait for a rebuild, if any
-pub(crate) async fn module_cursor(
+async fn module_cursor(
     dbtx: &DbTransaction<'_>,
     kind: &str,
     federation_bytes: &[u8],
