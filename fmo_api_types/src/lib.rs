@@ -44,6 +44,7 @@ pub struct WalletV2History {
     pub balance_msat: Option<u64>,
     pub balance_observed_at: Option<DateTime<Utc>>,
     pub balance_stale: bool,
+    pub accounting_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

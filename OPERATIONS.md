@@ -189,7 +189,9 @@ stored sessions. Other module cursors and core session ingestion continue.
 Deposit jobs query the guardians for the tracked output value, subtract the
 receive fee, and update the input amount and daily volume once, transactionally.
 Inspect `fmo_walletv2.deposit_jobs` for retry backlog; `retry_at` backs off on
-remote failure. Take a private database backup before upgrading the collector.
+remote failure. Enrichment drains bounded batches independently of balance
+polling; the history API exposes `accounting_pending` while jobs remain.
+Take a private database backup before upgrading the collector.
 
 `GET /federations/:id/wallet-v2/history` accepts `module_instance_id`, `before`
 (exclusive transaction index) and `limit` (1–100, default 20). It returns

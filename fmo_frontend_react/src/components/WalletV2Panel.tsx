@@ -61,6 +61,7 @@ function WalletInstance({ id, instance, network }: { id: string; instance: numbe
   };
 
   return <>
+    {page?.accounting_pending && <p role="status" className="text-sm text-gray-500 dark:text-gray-400">Historical deposit accounting is catching up. Activity totals may still increase.</p>}
     {olderLoaded && <p className="text-xs text-gray-500 dark:text-gray-400">Automatic refresh is paused while reading older operations. <button type="button" className="text-blue-600 dark:text-blue-400" onClick={() => setOlderLoaded(false)}>Show latest</button></p>}
     <WalletV2Assets balance={page ? page.balance_msat : undefined} transactions={page?.transactions ?? []} loading={loading} error={error} network={network}
       observedAt={page?.observed_at} stale={page?.stale} balanceStale={page?.balance_stale} balanceObservedAt={page?.balance_observed_at}

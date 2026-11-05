@@ -87,11 +87,17 @@ pub(crate) async fn run(
     fed: FederationId,
     config: ClientConfig,
 ) -> anyhow::Result<()> {
-    try_join_all(
-        instances(&config)
-            .into_iter()
-            .map(|instance| run_instance(services.clone(), fed, config.clone(), instance)),
-    )
+    try_join_all(instances(&config).into_iter().map(|instance| {
+        let services = services.clone();
+        let config = config.clone();
+        async move {
+            tokio::try_join!(
+                run_instance(services.clone(), fed, config.clone(), instance),
+                enrich_loop(services, fed, config, instance),
+            )?;
+            anyhow::Ok(())
+        }
+    }))
     .await?;
     Ok(())
 }
@@ -222,9 +228,6 @@ async fn run_instance(
             }
             history_due = tokio::time::Instant::now() + history_interval(unchanged);
         }
-        if let Err(error) = enrich_deposits(&services, fed, &config, instance).await {
-            tracing::warn!(%fed, instance, %error, "Wallet deposit enrichment will retry");
-        }
         tokio::time::sleep(
             history_interval(failures).min(Duration::from_secs(900)) + Duration::from_secs(jitter),
         )
@@ -336,12 +339,31 @@ pub(crate) async fn apply_deposit(
     Ok(())
 }
 
+async fn enrich_loop(
+    services: Services,
+    fed: FederationId,
+    config: ClientConfig,
+    instance: u16,
+) -> anyhow::Result<()> {
+    loop {
+        let delay = match enrich_deposits(&services, fed, &config, instance).await {
+            Ok(true) => 1,
+            Ok(false) => 30,
+            Err(error) => {
+                tracing::warn!(%fed,instance,%error,"Wallet deposit enrichment will retry");
+                10
+            }
+        };
+        tokio::time::sleep(Duration::from_secs(delay)).await;
+    }
+}
+
 async fn enrich_deposits(
     services: &Services,
     fed: FederationId,
     config: &ClientConfig,
     instance: u16,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let bytes = fed.consensus_encode_to_vec();
     let mut jobs = services
         .connection()
@@ -350,7 +372,7 @@ async fn enrich_deposits(
         .await?;
     jobs.sort_by_key(|row| row.get::<_, i64>(3));
     let Some(first) = jobs.first() else {
-        return Ok(());
+        return Ok(false);
     };
     let start = u64::try_from(first.get::<_, i64>(3))?;
     let end = start.checked_add(128).context("Output index overflow")?;
@@ -380,5 +402,5 @@ async fn enrich_deposits(
         apply_deposit(&tx, &bytes, &txid, in_index, session, amount).await?;
         tx.commit().await?;
     }
-    Ok(())
+    Ok(true)
 }

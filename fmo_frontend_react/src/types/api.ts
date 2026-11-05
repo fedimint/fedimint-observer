@@ -30,6 +30,7 @@ export interface WalletV2History {
   balance_msat: number | null;
   balance_observed_at: string | null;
   balance_stale: boolean;
+  accounting_pending: boolean;
 }
 
 export interface GatewayV2Registry {

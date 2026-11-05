@@ -96,8 +96,13 @@ async fn history(
     } else {
         None
     };
+    let accounting_pending: bool = connection.query_one(
+        "SELECT EXISTS(SELECT 1 FROM fmo_walletv2.deposit_jobs WHERE federation_id=$1 AND module_instance_id=$2)",
+        &[&bytes,&i32::from(instance)],
+    ).await?.get(0);
     Ok(Json(WalletV2History {
         module_instance_id: instance,
+        accounting_pending,
         transactions,
         next_before,
         observed_at,
