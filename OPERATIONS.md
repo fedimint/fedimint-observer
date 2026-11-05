@@ -24,8 +24,10 @@ preserve a session advisory lock. Budget one extra database connection for it.
    older populated databases need the previous release's migrations first.
 3. Allow time for the session counter backfill and new indexes to finish.
    Migrations run transactionally with no statement deadline and a 30 second
-   lock deadline. These are regular index builds: plan a maintenance window on
-   a large database, rather than assuming zero downtime.
+   lock deadline. Version 13 also schedules one session history repair per
+   existing federation; monitor the repair queue as it drains. The indexes are
+   regular builds: plan a maintenance window on a large database, rather than
+   assuming zero downtime.
 4. Check `/ready`, then start API replicas with the same binary/module set.
    Deploy the matching frontend: balances and guardian block heights are now
    nullable. Route administrative requests to the collector.
@@ -89,6 +91,9 @@ federation URLs or public inspector endpoints.
   Continue with `after=<last session index>` or `after=<last transaction ID>`.
   Ordering is ascending by cursor, and response shapes are unchanged. Clients
   that relied on downloading the entire list must now paginate.
+* Block-height votes can be stored before their block timestamps arrive. The
+  collector checks durable timestamp repair jobs every minute and rebuilds the
+  affected session history and daily activity once the timestamp is available.
 * Session and transaction counts use incremental database read models. Session
   history is append-only: direct SQL deletion requires rebuilding its counter.
 * Guardian latency measures a timed status RPC after a warm-up request. Missing
@@ -104,6 +109,11 @@ rows bounds public responses, not that upstream payload. Wallet v1 UTXO
 comparison still performs bounded remote checks on a cold cache. These paths,
 gateway aggregation, full view refreshes, and long historical backfills remain
 candidates for profiling at production volume.
+
+Session batches are bounded by count, not bytes; live collection can buffer 32
+sessions per federation. The enrichment and timestamp repair queues have no
+global size limit. Large replays can repeatedly rebuild federation activity,
+so measure the resulting database work and queue growth before setting capacity.
 
 Use bounded ranges for administrative backfills. Each batch publishes restored
 rows and read models atomically; cancellation rolls back the current batch.
@@ -121,6 +131,13 @@ npm run lint
 npm run build
 ```
 
+With a disposable local PostgreSQL instance and `createdb`, `dropdb`, and
+`psql` on `PATH`, run `fmo_core/tests/run-session-time-repair.sh`. It creates
+and drops a separate database, applies the core migrations, and checks populated
+v11 upgrades, counts, wallet totals, delayed block timestamps, activity
+correction, and rollback recovery. Set `PGHOST`,
+`PGPORT`, and `PGUSER` to the test instance before running it.
+
 HTTP unit tests check overload, probe availability, deadlines, and permit release.
 
 `/live` (and legacy `/health`) is liveness. `/ready` checks the database and local
@@ -133,6 +150,7 @@ Monitor snapshot ages, queue backlog, and module lag alongside HTTP percentiles:
 
 ```sql
 SELECT kind, max(now() - observed_at) AS oldest FROM federation_observations GROUP BY kind;
+SELECT count(*) AS pending_timestamp_repairs FROM session_time_repairs;
 SELECT count(*) AS pending, min(retry_at) AS next_retry, max(attempts) FROM fmo_wallet.enrichment_jobs;
 SELECT c.module_kind, encode(c.federation_id, 'hex') AS federation,
        s.session_count - c.next_session AS sessions_behind, c.updated_at

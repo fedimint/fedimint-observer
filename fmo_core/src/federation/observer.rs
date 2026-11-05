@@ -156,6 +156,13 @@ impl FederationObserver {
         );
         let observer = slf.clone();
         slf.task_group.spawn_cancellable(
+            "repair session times",
+            supervise("Session time repair", move || {
+                observer.clone().repair_session_times()
+            }),
+        );
+        let observer = slf.clone();
+        slf.task_group.spawn_cancellable(
             "sync nostr events",
             supervise("Nostr sync", move || observer.clone().sync_nostr_events()),
         );
@@ -215,7 +222,7 @@ impl FederationObserver {
         &self.esplora
     }
 
-    pub(super) fn task_group(&self) -> &TaskGroup {
+    pub(crate) fn task_group(&self) -> &TaskGroup {
         &self.task_group
     }
 
@@ -718,6 +725,25 @@ impl FederationObserver {
             ));
         }
         Ok(())
+    }
+
+    /// A repair is committed with deletion of its durable request, so a crash
+    /// or database error leaves it available for the next attempt.
+    async fn repair_session_times(self) -> anyhow::Result<()> {
+        loop {
+            let permit = self.work_budget.acquire().await?;
+            let connection = self.connection().await?;
+            let repaired: bool = connection
+                .query_one("SELECT process_session_time_repair()", &[])
+                .await?
+                .get(0);
+            drop(connection);
+            drop(permit);
+            if repaired {
+                continue;
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
     }
 
     async fn fetch_block_times(self) {

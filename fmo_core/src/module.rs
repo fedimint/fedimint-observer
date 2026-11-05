@@ -238,6 +238,10 @@ pub trait ObserverModule: Send + Sync + 'static {
         None
     }
 
+    /// Called after a projector batch commits, so module tasks can observe
+    /// durable work created in that transaction.
+    fn projection_committed(&self) {}
+
     fn summarize_input(&self, input: &DynInput) -> anyhow::Result<InputSummary>;
 
     fn summarize_output(&self, output: &DynOutput) -> anyhow::Result<OutputSummary>;

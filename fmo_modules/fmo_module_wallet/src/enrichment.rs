@@ -1,6 +1,7 @@
 //! Durable Bitcoin transaction enrichment. No database connection is held
 //! during I/O.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -9,8 +10,12 @@ use bitcoin::Txid;
 use fmo_core::module::Services;
 use futures::{stream, StreamExt};
 
-pub(crate) async fn run(services: Services) -> anyhow::Result<()> {
+pub(crate) async fn run(
+    services: Services,
+    wakeup: Arc<tokio::sync::Notify>,
+) -> anyhow::Result<()> {
     loop {
+        let notified = wakeup.notified();
         // The lease recovers unfinished work after a crash. The unique job id
         // also fences a response that arrives after an administrator resets a module.
         let jobs = services
@@ -29,7 +34,20 @@ pub(crate) async fn run(services: Services) -> anyhow::Result<()> {
             )
             .await?;
         if jobs.is_empty() {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            // Register the notification before inspecting the queue. A
+            // committed enqueue between these queries still wakes the worker.
+            let delay: Option<f64> = services.connection().await?.query_one(
+                "SELECT EXTRACT(EPOCH FROM (MIN(retry_at) - clock_timestamp()))::double precision FROM fmo_wallet.enrichment_jobs",
+                &[],
+            ).await?.get(0);
+            if let Some(seconds) = delay {
+                tokio::select! {
+                    _ = notified => {},
+                    _ = tokio::time::sleep(Duration::from_secs_f64(seconds.max(0.0))) => {},
+                }
+            } else {
+                notified.await;
+            }
             continue;
         }
         stream::iter(jobs).for_each_concurrent(4, |row| {

@@ -207,6 +207,7 @@ impl FederationObserver {
                 continue;
             }
             dbtx.commit().await?;
+            module.projection_committed();
             progress.record(next);
         }
     }
