@@ -179,3 +179,47 @@ unreachable guardians, and several API replicas. Measure p50/p95/p99 latency,
 rejections, pool waits, projection lag, database CPU/I/O, and recovery after
 collector termination. Unit and integration tests establish invariants; they
 do not establish a production throughput figure or disaster-recovery guarantee.
+
+## Wallet v2 and Lightning v2
+
+The module migrations add `fmo_walletv2` history, balance snapshots and durable
+input enrichment jobs, and `fmo_lnv2` gateway registrations. The first Wallet v2
+upgrade resets only its projector cursor to discover deposit output indices in
+stored sessions. Other module cursors and core session ingestion continue.
+Deposit jobs query the guardians for the tracked output value, subtract the
+receive fee, and update the input amount and daily volume once, transactionally.
+Inspect `fmo_walletv2.deposit_jobs` for retry backlog; `retry_at` backs off on
+remote failure. Take a private database backup before upgrading the collector.
+
+`GET /federations/:id/wallet-v2/history` accepts `module_instance_id`, `before`
+(exclusive transaction index) and `limit` (1–100, default 20). It returns
+transactions, `next_before`, balance and history observation timestamps, and
+separate stale flags. With several Wallet v2 instances, an instance id is
+required. The existing `/wallet-v2/on-chain` array response remains available.
+History and balances are retained across failed polls; fresh aggregate assets
+require a fresh observation from every configured wallet instance, and inherit
+the oldest component's timestamp.
+
+Wallet balance polling starts at one minute and backs off up to 15 minutes on
+failure, with an instance-specific offset. Unchanged history polling also backs
+off up to 15 minutes; newly projected wallet activity requests an earlier poll.
+The Fedimint v0.12 transaction-chain endpoint still returns the entire chain.
+The observer persists new entries in batches of 100, skips already published
+indices, and serves bounded pages,
+but reducing transfer size per poll requires an upstream range/cursor endpoint.
+A completed import publishes its highest index so API readers do not see a
+partly imported initial history.
+
+`GET /federations/:id/gateways/v2` accepts `module_instance_id`, `after` (exclusive
+endpoint URL) and `limit` (1–100). It returns Lightning v2 registry membership,
+which guardians announced each URL, observation time, and guardian coverage.
+Only a complete guardian poll can mark an endpoint removed. Partial or failed
+polls preserve previous registrations. Removed entries are kept for 90 days.
+The frontend exposes a separate Lightning v2 gateway page for federations that
+have that module. Registry membership is not a probe of gateway reachability,
+Lightning liquidity, or payment success; no v1 uptime metrics are synthesized.
+
+Run the database regression test against an empty, isolated database by setting
+`FMO_WALLETV2_TEST_DATABASE` to its PostgreSQL URL and running
+`cargo test -p fmo_module_walletv2 postgres_deposit_replay_and_instance_pagination -- --ignored`.
+The test rolls back all fixtures and does not use `FO_DATABASE`.

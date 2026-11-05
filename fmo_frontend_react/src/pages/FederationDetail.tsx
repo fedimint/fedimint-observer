@@ -11,13 +11,12 @@ import type {
   GuardianHealth,
   GuardianUtxoReport,
   UtxoComparisonRow,
-  WalletV2OnChainTransaction,
 } from '../types/api';
 import type { HistogramEntry } from '../components/TransactionChart';
 import { Badge } from '../components/Badge';
 import { Alert } from '../components/Alert';
 import { Copyable } from '../components/Copyable';
-import { WalletV2Assets } from '../components/WalletV2Assets';
+import { WalletV2Panel } from '../components/WalletV2Panel';
 import { guardianThreshold, parseConfig, type FederationConfig } from '../utils/config';
 import { asBitcoin, MSATS_PER_BTC, shortMiddle } from '../utils/format';
 
@@ -80,9 +79,6 @@ export function FederationDetail() {
   const [utxosRequested, setUtxosRequested] = useState(false);
   const [utxosLoading, setUtxosLoading] = useState(true);
   const [overview, setOverview] = useState<FederationOverview | null>(null);
-  const [walletV2Transactions, setWalletV2Transactions] = useState<WalletV2OnChainTransaction[]>([]);
-  const [walletV2TransactionsLoading, setWalletV2TransactionsLoading] = useState(false);
-  const [walletV2TransactionsError, setWalletV2TransactionsError] = useState<string | null>(null);
   const [utxoView, setUtxoView] = useState<UtxoView>('all');
   const [utxoPage, setUtxoPage] = useState(1);
   const [utxoSearch, setUtxoSearch] = useState('');
@@ -100,6 +96,7 @@ export function FederationDetail() {
   const hasWalletV1 = config?.modules.includes('wallet') ?? false;
   const hasWalletV2 = config?.modules.includes('walletv2') ?? false;
   const hasLightningV1 = config?.modules.includes('ln') ?? false;
+  const hasLightningV2 = config?.modules.includes('lnv2') ?? false;
   const expiryDate = federation?.expiry_timestamp
     ? new Date(federation.expiry_timestamp * 1000)
     : null;
@@ -216,8 +213,6 @@ export function FederationDetail() {
     setUtxoRows([]);
     setUtxoGuardians([]);
     setUtxosLoading(true);
-    setWalletV2Transactions([]);
-    setWalletV2TransactionsError(null);
     setActiveTab('activity');
 
     // Every request below needs only the id, so none waits for another; only the
@@ -279,26 +274,6 @@ export function FederationDetail() {
 
     return () => controller.abort();
   }, [id]);
-
-  useEffect(() => {
-    if (!id || !hasWalletV2) return;
-    const controller = new AbortController();
-    const { signal } = controller;
-    setWalletV2TransactionsLoading(true);
-    setWalletV2TransactionsError(null);
-    api.getWalletV2OnChain(id, signal)
-      .then((data) => {
-        if (!signal.aborted) setWalletV2Transactions(data);
-      })
-      .catch((err) => {
-        if (!signal.aborted) setWalletV2TransactionsError(err.message);
-      })
-      .finally(() => {
-        if (!signal.aborted) setWalletV2TransactionsLoading(false);
-      });
-
-    return () => controller.abort();
-  }, [id, hasWalletV2]);
 
   // The server asks every guardian and mempool.space for these, so only when the tab is opened
   useEffect(() => {
@@ -586,6 +561,11 @@ export function FederationDetail() {
                   </Link>
                 </div>
               )}
+              {id && hasLightningV2 && (
+                <Link to={`/federations/${id}/gateways/v2`} className="inline-flex w-full items-center justify-center rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-700">
+                  Lightning v2 Gateway Details
+                </Link>
+              )}
               {federation?.invite && hasOnlineGuardian && !shuttingDown && (
                 <div>
                   <div className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mb-2">Invite Link</div>
@@ -833,14 +813,7 @@ export function FederationDetail() {
             </>
           )}
           {activeTab === 'assets' && hasWalletV2 && (
-            <WalletV2Assets
-              balance={overview?.total_assets_msat}
-              includesWalletV1={hasWalletV1}
-              transactions={walletV2Transactions}
-              loading={walletV2TransactionsLoading}
-              error={walletV2TransactionsError}
-              network={Object.values(config?.raw.modules ?? {}).find((module) => module.kind === 'walletv2')?.network}
-            />
+            <WalletV2Panel id={id!} modules={config?.raw.modules ?? {}} />
           )}
           {activeTab === 'utxos' && (
             <>

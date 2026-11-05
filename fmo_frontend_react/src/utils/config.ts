@@ -25,11 +25,12 @@ export function parseConfig(config: ClientConfig): FederationConfig {
 
   // Network and confirmations come from the wallet module
   const walletModule = moduleConfigs.find((mod) => mod.kind === 'wallet');
+  const networkModule = walletModule ?? moduleConfigs.find((mod) => mod.kind === 'walletv2');
 
   return {
     guardians,
     modules,
-    network: walletModule?.network || 'unknown',
+    network: networkModule?.network || 'unknown',
     // A deposit needs finality_delay + 1 confirmations
     confirmationsRequired: walletModule ? (walletModule.finality_delay || 0) + 1 : 0,
     raw: config,

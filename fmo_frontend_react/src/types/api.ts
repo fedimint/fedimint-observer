@@ -21,6 +21,33 @@ export interface WalletV2OnChainTransaction {
   created: number;
 }
 
+export interface WalletV2History {
+  module_instance_id: number;
+  transactions: WalletV2OnChainTransaction[];
+  next_before: number | null;
+  observed_at: string | null;
+  stale: boolean;
+  balance_msat: number | null;
+  balance_observed_at: string | null;
+  balance_stale: boolean;
+}
+
+export interface GatewayV2Registry {
+  module_instance_id: number;
+  observed_at: string | null;
+  stale: boolean;
+  successful_guardians: number;
+  total_guardians: number;
+  next_after: string | null;
+  gateways: {
+    api_endpoint: string;
+    announcing_guardians: number[];
+    registered: boolean;
+    first_seen: string;
+    last_seen: string;
+  }[];
+}
+
 export interface FederationSummary {
   id: string;
   name: string | null;

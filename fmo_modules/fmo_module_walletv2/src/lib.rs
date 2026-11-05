@@ -1,146 +1,26 @@
-use std::time::Duration;
-
 use anyhow::Context;
 use async_trait::async_trait;
-use axum::extract::{Path, State};
-use axum::routing::get;
-use axum::{Json, Router};
-use fedimint_api_client::api::FederationApiExt;
+use axum::Router;
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
-use fedimint_core::module::{ApiRequestErased, CommonModuleInit};
-use fedimint_walletv2_common::endpoint_constants::{
-    FEDERATION_WALLET_ENDPOINT, TRANSACTION_CHAIN_ENDPOINT,
-};
-use fedimint_walletv2_common::{
-    FederationWallet, TxInfo, WalletCommonInit, WalletConsensusItem, WalletInput, WalletOutput,
-};
-use fmo_api_types::WalletV2OnChainTransaction;
+use fedimint_core::module::CommonModuleInit;
+use fedimint_walletv2_common::{WalletCommonInit, WalletConsensusItem, WalletInput, WalletOutput};
 use fmo_core::module::{
-    details_json, federation_api, module_instance_id, ApiResult, InputSummary, ObserverModule,
-    OutputSummary, Services, Task,
+    details_json, module_instance_id, InputSummary, ItemMeta, ObserverModule, OutputSummary,
+    ProcessCtx, Services, Task,
 };
+
+mod collector;
+mod history;
 
 pub struct WalletV2Observer;
 
-impl WalletV2Observer {
-    async fn wallet_v2_on_chain(
-        Path(federation_id): Path<FederationId>,
-        State(services): State<Services>,
-    ) -> ApiResult<Json<Vec<WalletV2OnChainTransaction>>> {
-        let federation = services
-            .federation(federation_id)
-            .await?
-            .context("Federation not observed")?;
-        let Some(_) = module_instance_id(&federation.config, "walletv2") else {
-            return Err(anyhow::anyhow!("Federation does not have a walletv2 module").into());
-        };
-        let (data, observed_at) = services
-            .observation(federation_id, "walletv2-chain")
-            .await?
-            .ok_or_else(|| {
-                fmo_core::module::ApiError::unavailable("Wallet history is still being collected")
-            })?;
-        if std::time::SystemTime::now()
-            .duration_since(observed_at.into())
-            .unwrap_or_default()
-            > Duration::from_secs(300)
-        {
-            return Err(fmo_core::module::ApiError::unavailable(
-                "Wallet history collection is delayed",
-            ));
-        }
-        Ok(Json(serde_json::from_value(data)?))
-    }
-
-    async fn poll_wallet(
-        services: Services,
-        federation_id: FederationId,
-        config: ClientConfig,
-    ) -> anyhow::Result<()> {
-        let instance_id =
-            module_instance_id(&config, "walletv2").context("Missing walletv2 module")?;
-        let api = federation_api(services.connectors(), &config.global)?.with_module(instance_id);
-        loop {
-            let balance = async {
-                let _permit = services.external_io_permit().await?;
-                let wallet = tokio::time::timeout(
-                    Duration::from_secs(20),
-                    api.request_current_consensus::<Option<FederationWallet>>(
-                        FEDERATION_WALLET_ENDPOINT.to_owned(),
-                        ApiRequestErased::default(),
-                    ),
-                )
-                .await
-                .context("Wallet balance poll timed out")??;
-                let amount = wallet
-                    .map_or(0, |wallet| wallet.value.to_sat())
-                    .checked_mul(1000)
-                    .context("Wallet amount overflow")?;
-                services
-                    .save_observation(federation_id, "assets:walletv2", &serde_json::json!(amount))
-                    .await
-            };
-            let chain = async {
-                let _permit = services.external_io_permit().await?;
-                let transactions = tokio::time::timeout(
-                    Duration::from_secs(20),
-                    api.request_current_consensus::<Vec<TxInfo>>(
-                        TRANSACTION_CHAIN_ENDPOINT.to_owned(),
-                        ApiRequestErased::default(),
-                    ),
-                )
-                .await
-                .context("Wallet history poll timed out")??;
-                let mut transactions = transactions
-                    .into_iter()
-                    .map(|tx| {
-                        Ok(WalletV2OnChainTransaction {
-                            index: tx.index,
-                            txid: tx.txid.to_string(),
-                            input_msat: tx
-                                .input
-                                .to_sat()
-                                .checked_mul(1000)
-                                .context("Wallet history input overflow")?,
-                            output_msat: tx
-                                .output
-                                .to_sat()
-                                .checked_mul(1000)
-                                .context("Wallet history output overflow")?,
-                            fee_msat: tx
-                                .fee
-                                .to_sat()
-                                .checked_mul(1000)
-                                .context("Wallet history fee overflow")?,
-                            vbytes: tx.vbytes,
-                            created: tx.created,
-                        })
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-                transactions.sort_by_key(|tx| std::cmp::Reverse((tx.created, tx.index)));
-                transactions.truncate(20);
-                services
-                    .save_observation(
-                        federation_id,
-                        "walletv2-chain",
-                        &serde_json::to_value(transactions)?,
-                    )
-                    .await
-            };
-            let (balance, chain) = tokio::join!(balance, chain);
-            for result in [balance, chain] {
-                if let Err(error) = result {
-                    tracing::warn!(%federation_id, %error, "Wallet v2 poll failed; preserving last observation");
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(60)).await;
-        }
-    }
-}
-
 #[async_trait]
 impl ObserverModule for WalletV2Observer {
+    fn migrations(&self) -> &'static [&'static str] {
+        &[include_str!("../schema/v0.sql")]
+    }
+
     fn kind(&self) -> ModuleKind {
         WalletCommonInit::KIND
     }
@@ -148,7 +28,7 @@ impl ObserverModule for WalletV2Observer {
         WalletCommonInit::decoder()
     }
     fn federation_routes(&self) -> Option<Router<Services>> {
-        Some(Router::new().route("/wallet-v2/on-chain", get(Self::wallet_v2_on_chain)))
+        Some(history::routes())
     }
     fn summarize_input(&self, input: &DynInput) -> anyhow::Result<InputSummary> {
         let value = input.as_any();
@@ -181,6 +61,61 @@ impl ObserverModule for WalletV2Observer {
             ..Default::default()
         })
     }
+    async fn reset_federation(
+        &self,
+        ctx: &ProcessCtx<'_>,
+        federation_id: FederationId,
+    ) -> anyhow::Result<()> {
+        use fedimint_core::encoding::Encodable;
+        ctx.dbtx
+            .execute(
+                "DELETE FROM fmo_walletv2.deposit_jobs WHERE federation_id=$1",
+                &[&federation_id.consensus_encode_to_vec()],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn process_input(
+        &self,
+        ctx: &ProcessCtx<'_>,
+        meta: &ItemMeta,
+        input: &DynInput,
+        _summary: &InputSummary,
+    ) -> anyhow::Result<()> {
+        use fedimint_core::encoding::Encodable;
+        let input = input
+            .as_any()
+            .downcast_ref::<WalletInput>()
+            .context("Not a walletv2 input")?
+            .maybe_v0_ref()
+            .context("Unsupported walletv2 input version")?;
+        ctx.dbtx.execute(
+            "INSERT INTO fmo_walletv2.deposit_jobs
+             (federation_id, module_instance_id, txid, in_index, session_index, output_index, fee_sat)
+             SELECT $1, $2, $3, $4, $5, $6, $7
+             WHERE EXISTS (SELECT 1 FROM transaction_inputs
+                 WHERE federation_id=$1 AND txid=$3 AND in_index=$4 AND amount_msat IS NULL)
+             ON CONFLICT DO NOTHING",
+            &[&meta.federation_id.consensus_encode_to_vec(), &i32::from(meta.module_instance_id),
+              &meta.txid.consensus_encode_to_vec(), &i32::try_from(meta.index)?,
+              &i32::try_from(meta.session_index)?, &i64::try_from(input.output_index)?,
+              &i64::try_from(input.fee.to_sat())?],
+        ).await?;
+        mark_history_dirty(ctx, meta).await?;
+        Ok(())
+    }
+
+    async fn process_output(
+        &self,
+        ctx: &ProcessCtx<'_>,
+        meta: &ItemMeta,
+        _output: &DynOutput,
+        _summary: &OutputSummary,
+    ) -> anyhow::Result<()> {
+        mark_history_dirty(ctx, meta).await
+    }
+
     fn summarize_ci(&self, ci: &DynModuleConsensusItem) -> Option<serde_json::Value> {
         details_json::<WalletConsensusItem>(ci.as_any(), ci, "Walletv2 CI")
     }
@@ -200,8 +135,24 @@ impl ObserverModule for WalletV2Observer {
         config: ClientConfig,
     ) -> Option<Task> {
         module_instance_id(&config, "walletv2")
-            .map(|_| Box::pin(Self::poll_wallet(services.clone(), federation_id, config)) as Task)
+            .map(|_| Box::pin(collector::run(services.clone(), federation_id, config)) as Task)
     }
+}
+
+async fn mark_history_dirty(ctx: &ProcessCtx<'_>, meta: &ItemMeta) -> anyhow::Result<()> {
+    use fedimint_core::encoding::Encodable;
+    ctx.dbtx
+        .execute(
+            "INSERT INTO fmo_walletv2.wallets(federation_id,module_instance_id,history_revision)
+         VALUES($1,$2,1) ON CONFLICT(federation_id,module_instance_id)
+         DO UPDATE SET history_revision=fmo_walletv2.wallets.history_revision+1",
+            &[
+                &meta.federation_id.consensus_encode_to_vec(),
+                &i32::from(meta.module_instance_id),
+            ],
+        )
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

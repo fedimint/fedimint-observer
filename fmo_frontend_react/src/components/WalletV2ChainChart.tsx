@@ -57,7 +57,7 @@ export function WalletV2ChainChart({ transactions }: WalletV2ChainChartProps) {
           const change = Math.abs(transaction.output_msat - transaction.input_msat);
           return [
             `<strong>Operation #${transaction.index}</strong>`,
-            `${deposit ? 'Deposit merged' : 'Withdrawal peeled'}: ${deposit ? '+' : '-'}${asBitcoin(change, 8)}`,
+            `Net wallet change: ${deposit ? '+' : '-'}${asBitcoin(change, 8)}`,
             `Wallet balance: ${asBitcoin(transaction.output_msat, 8)}`,
             `Fee: ${asBitcoin(transaction.fee_msat, 8)}`,
           ].join('<br/>');

@@ -6,6 +6,7 @@ import { Home } from './pages/Home';
 import { Nostr } from './pages/Nostr';
 import { FederationDetail } from './pages/FederationDetail';
 import { FederationGateways } from './pages/FederationGateways';
+import { FederationGatewaysV2 } from './pages/FederationGatewaysV2';
 import { useTheme } from './hooks/useTheme';
 
 // The router reuses a page when only :id changes; remount it so it never shows
@@ -23,6 +24,7 @@ function AppRoutes() {
         <Route path="/" element={<Home />} />
         <Route path="/nostr" element={<Nostr />} />
         <Route path="/federations/:id" element={<PerFederation page={FederationDetail} />} />
+        <Route path="/federations/:id/gateways/v2" element={<PerFederation page={FederationGatewaysV2} />} />
         <Route path="/federations/:id/gateways" element={<PerFederation page={FederationGateways} />} />
         <Route path="*" element={<div className="p-4 text-gray-900 dark:text-white">Page not found</div>} />
       </Routes>

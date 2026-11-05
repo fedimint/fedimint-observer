@@ -35,6 +35,18 @@ pub struct WalletV2OnChainTransaction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletV2History {
+    pub module_instance_id: u16,
+    pub transactions: Vec<WalletV2OnChainTransaction>,
+    pub next_before: Option<u64>,
+    pub observed_at: Option<DateTime<Utc>>,
+    pub stale: bool,
+    pub balance_msat: Option<u64>,
+    pub balance_observed_at: Option<DateTime<Utc>>,
+    pub balance_stale: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationSummary {
     pub id: FederationId,
     pub name: Option<String>,
@@ -285,4 +297,24 @@ pub struct GatewayOverview {
     /// Left out when `include` doesn't ask for `trend`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime_trend: Option<Vec<GatewayUptimeTrendPoint>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayV2Info {
+    pub api_endpoint: String,
+    pub announcing_guardians: Vec<u16>,
+    pub registered: bool,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayV2Registry {
+    pub module_instance_id: u16,
+    pub observed_at: Option<DateTime<Utc>>,
+    pub stale: bool,
+    pub successful_guardians: i32,
+    pub total_guardians: i32,
+    pub gateways: Vec<GatewayV2Info>,
+    pub next_after: Option<String>,
 }

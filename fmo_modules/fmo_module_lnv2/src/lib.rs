@@ -8,10 +8,34 @@ use fedimint_lnv2_common::{
 };
 use fmo_core::module::{details_json, InputSummary, ObserverModule, OutputSummary};
 
+mod gateways;
+
 pub struct LnV2Observer;
 
 #[async_trait]
 impl ObserverModule for LnV2Observer {
+    fn migrations(&self) -> &'static [&'static str] {
+        &[include_str!("../schema/v0.sql")]
+    }
+    fn federation_routes(&self) -> Option<axum::Router<fmo_core::module::Services>> {
+        Some(gateways::routes())
+    }
+    fn federation_task(
+        &self,
+        services: &fmo_core::module::Services,
+        federation_id: fedimint_core::config::FederationId,
+        config: fedimint_core::config::ClientConfig,
+    ) -> Option<fmo_core::module::Task> {
+        if gateways::instances(&config).is_empty() {
+            return None;
+        }
+        Some(Box::pin(gateways::run(
+            services.clone(),
+            federation_id,
+            config,
+        )))
+    }
+
     fn kind(&self) -> ModuleKind {
         LightningCommonInit::KIND
     }

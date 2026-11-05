@@ -3,7 +3,8 @@ import type {
   FedimintTotals,
   FederationHistogram,
   FederationOverview,
-  WalletV2OnChainTransaction,
+  WalletV2History,
+  GatewayV2Registry,
   FederationSummary,
   FederationUtxosResponse,
   GatewayInfo,
@@ -75,11 +76,19 @@ export const api = {
     return response.json();
   },
 
-  async getWalletV2OnChain(id: string, signal?: AbortSignal): Promise<WalletV2OnChainTransaction[]> {
-    const response = await fetch(`${BASE_URL}/federations/${id}/wallet-v2/on-chain`, { signal });
-    if (!response.ok) {
-      throw new Error(`Failed to fetch Wallet v2 on-chain transactions (${response.status})`);
-    }
+  async getWalletV2OnChain(id: string, moduleInstanceId: number, before?: number, signal?: AbortSignal): Promise<WalletV2History> {
+    const query = new URLSearchParams({ module_instance_id: String(moduleInstanceId), limit: '20' });
+    if (before !== undefined) query.set('before', String(before));
+    const response = await fetch(`${BASE_URL}/federations/${id}/wallet-v2/history?${query}`, { signal });
+    if (!response.ok) throw new Error(`Could not fetch wallet history (${response.status})`);
+    return response.json();
+  },
+
+  async getGatewayV2Registry(id: string, moduleInstanceId: number, after?: string, signal?: AbortSignal): Promise<GatewayV2Registry> {
+    const query = new URLSearchParams({ module_instance_id: String(moduleInstanceId) });
+    if (after !== undefined) query.set('after', after);
+    const response = await fetch(`${BASE_URL}/federations/${id}/gateways/v2?${query}`, { signal });
+    if (!response.ok) throw new Error(`Could not fetch gateway registrations (${response.status})`);
     return response.json();
   },
 

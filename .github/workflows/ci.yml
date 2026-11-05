@@ -32,3 +32,28 @@ jobs:
 
     - name: Check build output
       run: ls -la result*
+
+  v2-database-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: observer_v2_test
+        ports:
+          - 5432/tcp
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Test v2 migrations, accounting replay and instance pagination
+        env:
+          FMO_WALLETV2_TEST_DATABASE: postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/observer_v2_test
+        run: nix develop -c cargo test -p fmo_module_walletv2 postgres_deposit_replay_and_instance_pagination -- --ignored

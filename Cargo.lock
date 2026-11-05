@@ -2748,10 +2748,18 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum 0.7.9",
+ "chrono",
+ "fedimint-api-client",
  "fedimint-core 0.12.0",
  "fedimint-lnv2-common",
+ "fmo_api_types",
  "fmo_core",
+ "futures",
+ "serde",
  "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2821,13 +2829,18 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum 0.7.9",
+ "chrono",
+ "deadpool-postgres",
  "fedimint-api-client",
  "fedimint-core 0.12.0",
  "fedimint-walletv2-common",
  "fmo_api_types",
  "fmo_core",
+ "futures",
+ "serde",
  "serde_json",
  "tokio",
+ "tokio-postgres",
  "tracing",
 ]
 

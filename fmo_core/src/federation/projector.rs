@@ -461,7 +461,7 @@ async fn complete_core_rows(
                         let summary = module.summarize_input(input)?;
                         let claimed_output = summary.claimed_output;
                         let row = dbtx.query_one(
-                            "UPDATE transaction_inputs SET ln_contract_id = $4, amount_msat = COALESCE($5, (
+                            "UPDATE transaction_inputs SET ln_contract_id = COALESCE(ln_contract_id, $4), amount_msat = COALESCE(amount_msat, $5, (
                                  SELECT amount_msat FROM transaction_outputs
                                  WHERE federation_id = $1 AND txid = $6 AND out_index = $7
                              ))
