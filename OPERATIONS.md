@@ -1,5 +1,21 @@
 # Running the observer with bounded resources
 
+For local development, start PostgreSQL only if it is stopped. In the repository
+root, export the variables from `.env` before running the server:
+
+```sh
+source scripts/pg_dev/env.sh
+set -a
+source .env
+set +a
+just run
+```
+
+The server reads `FO_DATABASE` and `FO_ADMIN_AUTH` from its environment.
+`source .env` alone does not export those variables to `cargo run`. A database
+already at the earlier v13 schema receives the additive session time repair
+update when the collector starts.
+
 Run one collector instance and any number of API instances against the same
 PostgreSQL database. The default instance collects data and serves HTTP. Set
 `FO_API_ONLY=true` on additional API instances. They do not run migrations,

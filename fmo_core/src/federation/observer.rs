@@ -133,6 +133,7 @@ impl FederationObserver {
                 version == CORE_MIGRATIONS.len() as i32 - 1,
                 "Start the worker to migrate the database before API replicas"
             );
+            slf.ensure_session_time_repair_schema().await?;
             return Ok(slf);
         }
         // The dedicated worker lease serializes startup migrations as well as
@@ -333,6 +334,23 @@ impl FederationObserver {
         }
     }
 
+    async fn has_session_time_repair_schema(&self) -> anyhow::Result<bool> {
+        query_value(
+            &self.connection().await?,
+            "SELECT to_regclass('session_time_repairs') IS NOT NULL",
+            &[],
+        )
+        .await
+    }
+
+    async fn ensure_session_time_repair_schema(&self) -> anyhow::Result<()> {
+        ensure!(
+            self.has_session_time_repair_schema().await?,
+            "The v13 schema needs the session time repair update; start the collector first"
+        );
+        Ok(())
+    }
+
     async fn setup_schema(&self) -> anyhow::Result<()> {
         self.connection()
             .await?
@@ -407,6 +425,21 @@ impl FederationObserver {
                 transaction.batch_execute(sql).await?;
                 transaction.commit().await?;
             }
+        }
+
+        // Earlier v13 databases predate the repair section. The collector
+        // lease makes this additive update safe to apply exactly once.
+        if !self.has_session_time_repair_schema().await? {
+            let sql = CORE_MIGRATIONS[13]
+                .split_once("-- BEGIN SESSION TIME REPAIR")
+                .expect("v13 repair section is present")
+                .1;
+            let mut connection = self.connection().await?;
+            let tx = connection.transaction().await?;
+            tx.batch_execute("SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '30s'")
+                .await?;
+            tx.batch_execute(sql).await?;
+            tx.commit().await?;
         }
 
         if query_value::<i64>(
