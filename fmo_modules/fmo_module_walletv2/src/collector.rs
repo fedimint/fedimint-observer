@@ -303,8 +303,6 @@ pub(crate) async fn apply_deposit(
     session: i32,
     amount: i64,
 ) -> anyhow::Result<()> {
-    tx.execute("SELECT lock_federation_read_models($1)", &[&bytes])
-        .await?;
     if tx.query_opt("SELECT 1 FROM fmo_walletv2.deposit_jobs WHERE federation_id=$1 AND txid=$2 AND in_index=$3 FOR UPDATE", &[&bytes,&txid,&in_index]).await?.is_none() {
         return Ok(());
     }
@@ -316,8 +314,12 @@ pub(crate) async fn apply_deposit(
         )
         .await?;
     if updated > 0 {
-        // A null input previously contributed zero. Serialize the delta with
-        // session ingestion and read-model repair through their federation lock.
+        // Match ingest's lock order: the input's totals trigger runs before
+        // taking the federation read-model lock. Taking it first can deadlock
+        // with a session writer that already owns the totals row.
+        tx.execute("SELECT lock_federation_read_models($1)", &[&bytes])
+            .await?;
+        // A null input previously contributed zero; publish its delta once.
         tx.execute(
             "UPDATE federation_daily_activity a SET volume_msat=a.volume_msat+$3
              FROM session_times s WHERE s.federation_id=$1 AND s.session_index=$2
