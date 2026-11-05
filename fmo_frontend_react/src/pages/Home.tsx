@@ -15,21 +15,28 @@ export function Home() {
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
-    api
-      .getFederations(signal)
+    const loadFederations = (initial: boolean) => api.getFederations(signal)
       .then((data) => {
         if (signal.aborted) return;
         // Order by assets under management, largest first
         setFederations([...data].sort((a, b) => (b.deposits ?? -1) - (a.deposits ?? -1)));
-        setLoading(false);
+        setFailed(false);
+        if (initial) setLoading(false);
       })
       .catch((err) => {
         if (signal.aborted) return;
         console.error('Failed to fetch federations:', err);
-        setFailed(true);
-        setLoading(false);
+        if (initial) {
+          setFailed(true);
+          setLoading(false);
+        }
       });
-    return () => controller.abort();
+    loadFederations(true);
+    const refresh = window.setInterval(() => loadFederations(false), 60_000);
+    return () => {
+      window.clearInterval(refresh);
+      controller.abort();
+    };
   }, []);
 
   const activeFederations = federations.filter((fed) => fed.health !== 'offline');
