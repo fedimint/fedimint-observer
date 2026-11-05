@@ -106,6 +106,9 @@ impl FedimintObserverBuilder {
 }
 
 async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
+    // Dependencies enable both Rustls providers. Select one before any
+    // background HTTPS/WebSocket task can initialize a TLS client.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let args = Args::parse();
     args.runtime.validate()?;
 
