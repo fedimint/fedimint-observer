@@ -479,7 +479,7 @@ export function FederationDetail() {
             Guardians
             {config && (
               <span className="ml-2 text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
-                {guardianThreshold(config.guardians.length)} of {config.guardians.length} Federation
+                Consensus needs {guardianThreshold(config.guardians.length)} of {config.guardians.length} guardians
               </span>
             )}
           </h2>

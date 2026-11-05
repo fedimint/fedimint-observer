@@ -168,6 +168,9 @@ impl FederationObserver {
                 .await?;
             }
             dbtx.commit().await?;
+            // The next poll can be a minute or more away. Return the connection
+            // before sleeping so other federations can record their health.
+            drop(conn);
 
             if next_interval != poll_interval {
                 log_poll_interval(next_interval, offline_since);
