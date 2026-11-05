@@ -70,9 +70,9 @@ just test_package fmo_core
   - `/federations/*` endpoints - Federation monitoring API (unstable)
   - Background tasks for monitoring federations and syncing data
   - `module.rs` - the `ObserverModule` trait and `ModuleRegistry`
-- `fmo_modules/` - One crate per Fedimint module (`fmo_module_mint`, `_wallet`, `_ln`): decoding and processing of that module's inputs, outputs and consensus items
+- `fmo_modules/` - One crate per Fedimint module (`fmo_module_mint`, `_wallet`, `_ln`, and their `_mintv2`, `_walletv2`, `_lnv2` counterparts): decoding and processing of that module's inputs, outputs and consensus items
   - `fmo_module_stability_pool` (Fedi's stability pool v1) is optional and outside the workspace members: `fmo_server --features stability_pool_v1` registers it, and it doesn't build until Fedi's `stability-pool-common` supports this Fedimint version
-- `fmo_server/` - The default build: `FedimintObserver::builder().with_module(...)` with the mint, wallet and ln modules
+- `fmo_server/` - The default build: `FedimintObserver::builder().with_module(...)` with both v1 and v2 mint, wallet and ln modules
 - `fmo_frontend_react/` - Frontend (React + TypeScript)
 
 ### Key Patterns

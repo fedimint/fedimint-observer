@@ -21,6 +21,10 @@ of all federations that are being observed.
 This API is also the data source for the frontend that powers https://observer.fedimint.org. The frontend is hosted in
 the `fmo_frontend_react` directory and is built with React and TypeScript.
 
+Fedimint module support lives in independent crates under `fmo_modules/`.
+Mint, wallet and Lightning each have separate v1 and v2 implementations; the
+default server registers all six in the same application.
+
 When it comes to stability guarantees the Postgres database should always be migratable backwards-compatibly, so we
 don't lose historic data. The API under `/federations` isn't stable at this point and I'd recommend to subscribing to
 changes in Fedimint Observer if building against it.

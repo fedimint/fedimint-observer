@@ -4,7 +4,9 @@ members = [
     "fmo_core",
     "fmo_modules/fmo_module_ln",
     "fmo_modules/fmo_module_mint",
-    "fmo_modules/fmo_module_v2",
+    "fmo_modules/fmo_module_mintv2",
+    "fmo_modules/fmo_module_walletv2",
+    "fmo_modules/fmo_module_lnv2",
     "fmo_modules/fmo_module_wallet",
     "fmo_server",
 ]

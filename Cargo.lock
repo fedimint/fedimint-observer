@@ -2742,6 +2742,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fmo_module_lnv2"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fedimint-core 0.12.0",
+ "fedimint-lnv2-common",
+ "fmo_core",
+ "serde_json",
+]
+
+[[package]]
 name = "fmo_module_mint"
 version = "0.2.0"
 dependencies = [
@@ -2758,6 +2770,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fmo_module_mintv2"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fedimint-core 0.12.0",
+ "fedimint-mintv2-common",
+ "fmo_core",
+ "serde_json",
+]
+
+[[package]]
 name = "fmo_module_stability_pool"
 version = "0.2.0"
 dependencies = [
@@ -2766,25 +2790,6 @@ dependencies = [
  "fmo_core",
  "serde_json",
  "stability-pool-common",
-]
-
-[[package]]
-name = "fmo_module_v2"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum 0.7.9",
- "fedimint-api-client",
- "fedimint-core 0.12.0",
- "fedimint-lnv2-common",
- "fedimint-mintv2-common",
- "fedimint-walletv2-common",
- "fmo_api_types",
- "fmo_core",
- "serde_json",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2809,16 +2814,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "fmo_module_walletv2"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum 0.7.9",
+ "fedimint-api-client",
+ "fedimint-core 0.12.0",
+ "fedimint-walletv2-common",
+ "fmo_api_types",
+ "fmo_core",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "fmo_server"
 version = "0.2.0"
 dependencies = [
  "anyhow",
  "fmo_core",
  "fmo_module_ln",
+ "fmo_module_lnv2",
  "fmo_module_mint",
+ "fmo_module_mintv2",
  "fmo_module_stability_pool",
- "fmo_module_v2",
  "fmo_module_wallet",
+ "fmo_module_walletv2",
  "tokio",
 ]
 

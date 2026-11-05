@@ -9,9 +9,9 @@ async fn main() -> anyhow::Result<()> {
         .with_module(MintObserver)
         .with_module(WalletObserver::default())
         .with_module(LnObserver::default())
-        .with_module(fmo_module_v2::mint())
-        .with_module(fmo_module_v2::wallet())
-        .with_module(fmo_module_v2::lightning());
+        .with_module(fmo_module_mintv2::MintV2Observer)
+        .with_module(fmo_module_walletv2::WalletV2Observer)
+        .with_module(fmo_module_lnv2::LnV2Observer);
     #[cfg(feature = "stability_pool_v1")]
     let builder = builder.with_module(fmo_module_stability_pool::StabilityPoolObserver);
     builder.run().await
