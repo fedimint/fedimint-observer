@@ -74,8 +74,9 @@ impl ObserverModule for LnV2Observer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use fedimint_core::core::IntoDynInstance;
+
+    use super::*;
 
     #[test]
     fn lightning_time_vote_keeps_its_session_timestamp_behavior() {

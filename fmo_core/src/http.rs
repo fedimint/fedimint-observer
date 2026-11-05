@@ -1,9 +1,8 @@
-//! Bounded admission, request deadlines, and low-cardinality Prometheus metrics.
+//! Bounded admission, request deadlines, and low-cardinality Prometheus
+//! metrics.
 
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::{Request, State};
@@ -203,9 +202,12 @@ pub(crate) async fn shutdown_signal(observer: crate::federation::observer::Feder
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use axum::{body::Body, middleware, routing::get, Router};
+    use axum::body::Body;
+    use axum::routing::get;
+    use axum::{middleware, Router};
     use tower::ServiceExt;
+
+    use super::*;
 
     fn request(path: &str) -> Request {
         Request::builder().uri(path).body(Body::empty()).unwrap()

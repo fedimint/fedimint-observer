@@ -1,4 +1,5 @@
-//! Persisted, last-known-good snapshots. A failed poll never replaces good data.
+//! Persisted, last-known-good snapshots. A failed poll never replaces good
+//! data.
 
 use std::time::Duration;
 

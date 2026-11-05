@@ -39,7 +39,8 @@ use crate::util::{federation_api, query, query_one, query_opt, query_value};
 /// Per request to the mempool instance; callers bound their total time
 /// themselves
 const ESPLORA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-// Older SQL is retained for new databases; populated databases upgrade from v11.
+// Older SQL is retained for new databases; populated databases upgrade from
+// v11.
 const CORE_MIGRATIONS: &[&str] = &[
     include_str!("../../schema/v0.sql"),
     include_str!("../../schema/v1.sql"),
@@ -476,7 +477,8 @@ impl FederationObserver {
         query(&self.connection().await?, "SELECT * FROM federations", &[]).await
     }
 
-    /// The federation list uses a fixed number of database queries and no remote I/O.
+    /// The federation list uses a fixed number of database queries and no
+    /// remote I/O.
     pub async fn list_federation_summaries(&self) -> anyhow::Result<Vec<FederationSummary>> {
         let federations = self.list_federations().await?;
         let federation_health = self.get_guardian_health_summary().await?;

@@ -1,4 +1,5 @@
-//! Durable Bitcoin transaction enrichment. No database connection is held during I/O.
+//! Durable Bitcoin transaction enrichment. No database connection is held
+//! during I/O.
 
 use std::time::Duration;
 

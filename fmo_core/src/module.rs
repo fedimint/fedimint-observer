@@ -76,7 +76,8 @@ pub struct CiMeta {
 #[derive(Debug, Default, Clone)]
 pub struct InputSummary {
     pub amount_msat: Option<u64>,
-    /// Consensus-encoded Lightning contract id for cross-module input resolution.
+    /// Consensus-encoded Lightning contract id for cross-module input
+    /// resolution.
     pub ln_contract_id: Option<Vec<u8>>,
     /// The federation output this input claims, for inputs that don't carry
     /// their amount but take that of the output, such as Lightning v2 contract

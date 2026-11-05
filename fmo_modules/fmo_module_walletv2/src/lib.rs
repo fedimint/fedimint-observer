@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::Context;
 use async_trait::async_trait;
 use axum::extract::{Path, State};
@@ -6,8 +8,7 @@ use axum::{Json, Router};
 use fedimint_api_client::api::FederationApiExt;
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
-use fedimint_core::module::ApiRequestErased;
-use fedimint_core::module::CommonModuleInit;
+use fedimint_core::module::{ApiRequestErased, CommonModuleInit};
 use fedimint_walletv2_common::endpoint_constants::{
     FEDERATION_WALLET_ENDPOINT, TRANSACTION_CHAIN_ENDPOINT,
 };
@@ -15,9 +16,10 @@ use fedimint_walletv2_common::{
     FederationWallet, TxInfo, WalletCommonInit, WalletConsensusItem, WalletInput, WalletOutput,
 };
 use fmo_api_types::WalletV2OnChainTransaction;
-use fmo_core::module::{details_json, InputSummary, ObserverModule, OutputSummary};
-use fmo_core::module::{federation_api, module_instance_id, ApiResult, Services, Task};
-use std::time::Duration;
+use fmo_core::module::{
+    details_json, federation_api, module_instance_id, ApiResult, InputSummary, ObserverModule,
+    OutputSummary, Services, Task,
+};
 
 pub struct WalletV2Observer;
 
@@ -204,8 +206,9 @@ impl ObserverModule for WalletV2Observer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use fedimint_core::core::IntoDynInstance;
+
+    use super::*;
 
     #[test]
     fn wallet_block_vote_and_asset_reporting_are_preserved() {

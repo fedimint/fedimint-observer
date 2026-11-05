@@ -52,8 +52,9 @@ impl ObserverModule for MintV2Observer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use fedimint_core::core::IntoDynInstance;
+
+    use super::*;
 
     #[test]
     fn mint_consensus_details_remain_available() {

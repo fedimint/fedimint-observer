@@ -1,4 +1,5 @@
-//! Bounded keyset pagination; response shapes stay compatible with existing clients.
+//! Bounded keyset pagination; response shapes stay compatible with existing
+//! clients.
 
 use serde::Deserialize;
 

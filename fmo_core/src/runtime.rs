@@ -1,4 +1,5 @@
-//! Deployment limits and database ownership. API replicas never start collectors.
+//! Deployment limits and database ownership. API replicas never start
+//! collectors.
 
 use std::sync::Arc;
 use std::time::Duration;
