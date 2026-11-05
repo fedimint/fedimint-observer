@@ -17,6 +17,7 @@ import type { HistogramEntry } from '../components/TransactionChart';
 import { Badge } from '../components/Badge';
 import { Alert } from '../components/Alert';
 import { Copyable } from '../components/Copyable';
+import { WalletV2Assets } from '../components/WalletV2Assets';
 import { guardianThreshold, parseConfig, type FederationConfig } from '../utils/config';
 import { asBitcoin, MSATS_PER_BTC, shortMiddle } from '../utils/format';
 
@@ -64,7 +65,6 @@ function utxoPageItems(current: number, total: number): (number | 'gap')[] {
 
 // Lazy load the chart component for code splitting
 const TransactionChart = lazy(() => import('../components/TransactionChart').then(module => ({ default: module.TransactionChart })));
-const WalletV2ChainChart = lazy(() => import('../components/WalletV2ChainChart').then(module => ({ default: module.WalletV2ChainChart })));
 
 export function FederationDetail() {
   const { id } = useParams<{ id: string }>();
@@ -716,12 +716,7 @@ export function FederationDetail() {
             </button>
           </nav>
         </div>
-        {hasWalletV2 && (
-          <div className="mt-4 rounded-lg border border-blue-500/50 bg-blue-900/20 p-3 text-xs text-blue-300 sm:text-sm">
-            This federation uses Wallet v2. Bitcoin holdings are tracked through the
-            federation wallet state; the v1 guardian UTXO comparison is not available.
-          </div>
-        )}
+
         <div className="mt-4 sm:mt-6">
           {activeTab === 'activity' && (
             <>
@@ -838,97 +833,14 @@ export function FederationDetail() {
             </>
           )}
           {activeTab === 'assets' && hasWalletV2 && (
-            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
-              <h3 className="text-xl sm:text-2xl font-bold text-gray-900 dark:text-white">
-                {overview ? (overview.total_assets_msat === null ? 'Awaiting balance' : asBitcoin(overview.total_assets_msat, 8)) : 'Loading...'}
-              </h3>
-              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                Federation wallet assets
-              </p>
-              {walletV2TransactionsError && <Alert level="warning" message="Wallet history is temporarily unavailable. Please try again shortly." />}
-              <p className="mt-4 text-sm text-gray-600 dark:text-gray-300">
-                Wallet v2 keeps one federation UTXO. This view shows the latest on-chain
-                operations that merged deposits into it or peeled funds off as withdrawals.
-              </p>
-              {walletV2Transactions.length > 0 && (
-                <>
-                  <h4 className="mt-6 text-base font-semibold text-gray-900 dark:text-white">
-                    Wallet balance history
-                  </h4>
-                  <div className="mt-2 flex flex-wrap gap-4 text-xs text-gray-500 dark:text-gray-400">
-                    <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-emerald-500" />Deposit merged</span>
-                    <span><span className="mr-1 inline-block h-2 w-2 rounded-full bg-orange-500" />Withdrawal peeled</span>
-                  </div>
-                  <div className="mt-2">
-                    <Suspense fallback={<div className="flex h-[320px] items-center justify-center text-sm text-gray-500 dark:text-gray-400">Loading graph...</div>}>
-                      <WalletV2ChainChart transactions={walletV2Transactions} />
-                    </Suspense>
-                  </div>
-                </>
-              )}
-              <h4 className="mt-6 text-base font-semibold text-gray-900 dark:text-white">
-                Recent on-chain operations
-              </h4>
-              {walletV2TransactionsLoading ? (
-                <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">Loading on-chain history...</p>
-              ) : walletV2Transactions.length === 0 ? (
-                <p className="mt-3 text-sm text-gray-500 dark:text-gray-400">No on-chain operations recorded.</p>
-              ) : (
-                <div className="mt-4 space-y-3">
-                  {(() => {
-                    const maxBalance = Math.max(
-                      ...walletV2Transactions.flatMap((transaction) => [
-                        transaction.input_msat,
-                        transaction.output_msat,
-                      ]),
-                    );
-                    return walletV2Transactions.map((transaction) => {
-                    const deposit = transaction.output_msat > transaction.input_msat;
-                    const amount = Math.abs(transaction.output_msat - transaction.input_msat);
-                    const inputWidth = `${(transaction.input_msat / maxBalance) * 100}%`;
-                    const outputWidth = `${(transaction.output_msat / maxBalance) * 100}%`;
-                    return (
-                      <div key={`${transaction.index}-${transaction.txid}`} className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className={`font-medium ${deposit ? 'text-emerald-600 dark:text-emerald-400' : 'text-orange-600 dark:text-orange-400'}`}>
-                            {deposit ? 'Deposit merged' : 'Withdrawal peeled'}
-                          </span>
-                          <span className="font-semibold text-gray-900 dark:text-white">
-                            {deposit ? '+' : '-'}{asBitcoin(amount, 8)}
-                          </span>
-                        </div>
-                        <div className="mt-3 space-y-1 text-[11px] text-gray-500 dark:text-gray-400">
-                          <div className="flex items-center gap-2">
-                            <span className="w-12 shrink-0">Before</span>
-                            <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700" style={{ width: inputWidth }} />
-                            <span>{asBitcoin(transaction.input_msat, 4)}</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="w-12 shrink-0">After</span>
-                            <div className={`h-2 rounded-full ${deposit ? 'bg-emerald-500' : 'bg-orange-500'}`} style={{ width: outputWidth }} />
-                            <span>{asBitcoin(transaction.output_msat, 4)}</span>
-                          </div>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
-                          <span>Chain operation #{transaction.index}</span>
-                          <span>{transaction.vbytes} vbytes</span>
-                          <span>fee {asBitcoin(transaction.fee_msat, 8)}</span>
-                        </div>
-                        <a
-                          className="mt-1 block truncate text-xs text-blue-600 hover:underline dark:text-blue-400"
-                          href={`https://mempool.space/tx/${transaction.txid}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {transaction.txid}
-                        </a>
-                      </div>
-                    );
-                  });
-                  })()}
-                </div>
-              )}
-            </div>
+            <WalletV2Assets
+              balance={overview?.total_assets_msat}
+              includesWalletV1={hasWalletV1}
+              transactions={walletV2Transactions}
+              loading={walletV2TransactionsLoading}
+              error={walletV2TransactionsError}
+              network={Object.values(config?.raw.modules ?? {}).find((module) => module.kind === 'walletv2')?.network}
+            />
           )}
           {activeTab === 'utxos' && (
             <>
