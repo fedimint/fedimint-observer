@@ -4,7 +4,7 @@ import { asBitcoin, shortMiddle } from '../utils/format';
 
 const WalletV2ChainChart = lazy(() => import('./WalletV2ChainChart').then((module) => ({ default: module.WalletV2ChainChart })));
 
-type MobileView = 'chart' | 'operations' | 'details';
+type MobileView = 'chart' | 'operations';
 type OperationFilter = 'all' | 'deposits' | 'withdrawals';
 
 interface WalletV2AssetsProps {
@@ -91,6 +91,11 @@ export function WalletV2Assets({ balance, includesWalletV1, transactions, loadin
 
   return (
     <div className="space-y-4">
+      <section className={`${card} p-4 sm:p-6`} aria-labelledby="wallet-details-title">
+        <h4 id="wallet-details-title" className="text-base font-semibold text-gray-900 dark:text-white">About this wallet</h4>
+        <p className={`mt-2 text-sm ${muted}`}>Wallet v2 tracks a single federation UTXO. Deposits are merged into it, and withdrawals are peeled from it. The chart and operations below use the latest available wallet history.</p>
+      </section>
+
       <section className={`${card} p-4 sm:p-6`} aria-labelledby="wallet-v2-title">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -110,7 +115,7 @@ export function WalletV2Assets({ balance, includesWalletV1, transactions, loadin
       </section>
 
       <div className="flex rounded-lg border border-gray-200 bg-gray-100 p-1 dark:border-gray-700 dark:bg-gray-800 sm:hidden" role="group" aria-label="Wallet details view">
-        {(['chart', 'operations', 'details'] as const).map((view) => <button key={view} type="button" aria-pressed={mobileView === view} onClick={() => setMobileView(view)} className={`flex-1 ${button} ${mobileView === view ? 'bg-blue-600 text-white' : 'text-gray-600 dark:text-gray-300'}`}>{view === 'chart' ? 'Chart' : view === 'operations' ? 'Operations' : 'Details'}</button>)}
+        {(['chart', 'operations'] as const).map((view) => <button key={view} type="button" aria-pressed={mobileView === view} onClick={() => setMobileView(view)} className={`flex-1 ${button} ${mobileView === view ? 'bg-blue-600 text-white' : 'text-gray-600 dark:text-gray-300'}`}>{view === 'chart' ? 'Chart' : 'Operations'}</button>)}
       </div>
 
       {error && <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">Wallet history is temporarily unavailable. Please try again shortly.</div>}
@@ -130,10 +135,6 @@ export function WalletV2Assets({ balance, includesWalletV1, transactions, loadin
         <div className="mt-4 space-y-2">{loading ? <p className={`py-6 text-center text-sm ${muted}`}>Loading on-chain history…</p> : error ? <p className={`py-6 text-center text-sm ${muted}`}>History is unavailable.</p> : visible.length === 0 ? <p className={`py-6 text-center text-sm ${muted}`}>{ordered.length ? 'No operations match this filter.' : 'No on-chain operations recorded yet.'}</p> : visible.map((transaction) => <OperationCard key={`${transaction.index}-${transaction.txid}`} transaction={transaction} network={network} />)}</div>
       </section>
 
-      <section className={`${card} p-4 sm:p-6 ${mobileView === 'details' ? 'block' : 'hidden sm:block'}`} aria-labelledby="wallet-details-title">
-        <h4 id="wallet-details-title" className="text-base font-semibold text-gray-900 dark:text-white">About this wallet</h4>
-        <p className={`mt-2 text-sm ${muted}`}>Wallet v2 tracks a single federation UTXO. Deposits are merged into it, and withdrawals are peeled from it. The chart and operations above use the latest available wallet history.</p>
-      </section>
     </div>
   );
 }
