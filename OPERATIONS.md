@@ -81,8 +81,9 @@ contested and credited to neither.
 Gateway endpoints come from guardians, and their Iroh addresses from discovery
 records the gateway operator publishes. HTTPS probes are pinned to public
 addresses in code; Iroh probes are not, so a published record can direct QUIC
-handshake packets to private addresses. The handshake only completes with the
-named node key, so nothing is read back, but the packets are still sent. The
+handshake packets to private addresses. Authentication stops another node from
+posing as the named gateway, but it does not stop those packets being sent or
+handshake and discovery replies being received. The
 public config inspector also connects to guardian URLs from user-supplied invite
 codes. Enforce this at the network layer: run the observer as a dedicated user,
 container or network namespace and drop its outbound traffic to non-public
