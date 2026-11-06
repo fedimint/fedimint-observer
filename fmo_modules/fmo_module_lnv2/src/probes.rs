@@ -1,3 +1,4 @@
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
@@ -24,14 +25,90 @@ pub(crate) const PRUNE_KEYS_SQL: &str = "DELETE FROM fmo_lnv2.gateway_keys
          WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3
          ORDER BY last_claimed DESC,module_public_key LIMIT $4)";
 
-/// Seconds until the next probe or retention deadline, by the database clock;
-/// negative when overdue, NULL when there is none (wait for a notification).
-pub(crate) const NEXT_PROBE_SQL: &str =
-    "SELECT EXTRACT(EPOCH FROM min(deadline)-now())::float8 FROM (
-        SELECT min(COALESCE(probed_at+interval '5 minutes',now())) AS deadline
-        FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND registered
-        UNION ALL SELECT min(hour)+interval '90 days' FROM fmo_lnv2.gateway_health_hourly
-     ) due";
+/// When a gateway is next due: never probed is due now, otherwise five
+/// minutes after its last probe, or ten when that probe got no answer, so dead
+/// endpoints a guardian announces cost half as much.
+macro_rules! next_due {
+    () => {
+        "COALESCE(probed_at+CASE WHEN reachable IS FALSE THEN interval '10 minutes' ELSE interval '5 minutes' END,now())"
+    };
+}
+
+pub(crate) const DUE_PROBES_SQL: &str = concat!(
+    "SELECT api_endpoint FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2
+     AND registered AND ",
+    next_due!(),
+    "<=now() ORDER BY probed_at NULLS FIRST,api_endpoint LIMIT 100"
+);
+
+/// Seconds until this federation instance's next probe, by the database
+/// clock; negative when overdue, NULL when it has no registered gateways (wait
+/// for a notification). Health retention is global, in `retention`.
+pub(crate) const NEXT_PROBE_SQL: &str = concat!(
+    "SELECT EXTRACT(EPOCH FROM min(",
+    next_due!(),
+    ")-now())::float8
+     FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND registered"
+);
+
+/// Probes have their own process-wide budget instead of
+/// `Services::external_io_permit`: guardians choose which endpoints are
+/// probed, so slow or dead gateways must not starve wallet, metadata and
+/// registry collection.
+const PROBE_CONCURRENCY: usize = 8;
+static PROBE_SLOTS: LazyLock<tokio::sync::Semaphore> =
+    LazyLock::new(|| tokio::sync::Semaphore::new(PROBE_CONCURRENCY));
+
+/// Why a probe produced no routing info. Only a probe the gateway never
+/// answered is evidence of downtime.
+#[derive(Debug)]
+pub(crate) enum ProbeError {
+    /// Nothing was sent: an invalid or non-public address, DNS, or a local
+    /// failure. The gateway's state is unknown.
+    NotProbed(anyhow::Error),
+    /// No answer: connection, handshake or timeout.
+    Unreachable(anyhow::Error),
+    /// The gateway answered, but not with usable routing info.
+    BadResponse(anyhow::Error),
+}
+
+impl ProbeError {
+    pub(crate) fn not_probed(error: impl Into<anyhow::Error>) -> Self {
+        Self::NotProbed(error.into())
+    }
+    pub(crate) fn unreachable(error: impl Into<anyhow::Error>) -> Self {
+        Self::Unreachable(error.into())
+    }
+    pub(crate) fn bad_response(error: impl Into<anyhow::Error>) -> Self {
+        Self::BadResponse(error.into())
+    }
+    /// Of two failed attempts at one gateway, the one that got furthest: an
+    /// answer from either transport means the gateway is reachable.
+    pub(crate) fn furthest(self, other: Self) -> Self {
+        let rank = |error: &Self| match error {
+            Self::NotProbed(_) => 0,
+            Self::Unreachable(_) => 1,
+            Self::BadResponse(_) => 2,
+        };
+        if rank(&other) > rank(&self) {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotProbed(error) => write!(f, "not probed: {error:#}"),
+            Self::Unreachable(error) => write!(f, "unreachable: {error:#}"),
+            Self::BadResponse(error) => write!(f, "bad response: {error:#}"),
+        }
+    }
+}
+
+impl std::error::Error for ProbeError {}
 
 /// Characters of a gateway's self-reported alias that are stored and served.
 /// A Lightning node alias is at most 32 bytes; the reply may carry up to the
@@ -57,6 +134,8 @@ pub(crate) fn bounded_routing(
 
 pub(crate) enum Observation {
     Unreachable,
+    /// Answered without usable routing info: reachable, support unknown
+    BadResponse,
     Reachable {
         latency: i32,
         routing: Option<serde_json::Value>,
@@ -72,6 +151,7 @@ pub(crate) async fn save(
 ) -> anyhow::Result<()> {
     let (reachable, supported, latency, routing) = match observation {
         Observation::Unreachable => (false, None, None, None),
+        Observation::BadResponse => (true, None, None, None),
         Observation::Reachable { latency, routing } => {
             (true, Some(routing.is_some()), Some(latency), routing)
         }
@@ -138,27 +218,22 @@ pub(crate) async fn run(
     let bytes = fed.consensus_encode_to_vec();
     loop {
         wakeup.borrow_and_update();
-        let rows=services.connection().await?.query(
-            "SELECT api_endpoint FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2
-             AND registered AND (probed_at IS NULL OR probed_at<now()-interval '5 minutes')
-             ORDER BY probed_at NULLS FIRST,api_endpoint LIMIT 100",&[&bytes,&i32::from(instance)],
-        ).await?;
+        let rows = services
+            .connection()
+            .await?
+            .query(DUE_PROBES_SQL, &[&bytes, &i32::from(instance)])
+            .await?;
         let errors = stream::iter(rows).map(|row| {
             let services=services.clone();
             async move {
                 let url:String=row.get(0);
                 if let Err(error)=probe(&services,fed,instance,&url).await {
-                    tracing::warn!(%fed,instance,%error,"Gateway probe could not be recorded; keeping previous observation");
+                    tracing::warn!(%fed,instance,%url,error=%format!("{error:#}"),"Gateway probe did not run or was not recorded; retrying");
                     return true;
                 }
                 false
             }
         }).buffer_unordered(4).collect::<Vec<_>>().await;
-        services.connection().await?.execute(
-            "DELETE FROM fmo_lnv2.gateway_health_hourly WHERE (federation_id,module_instance_id,api_endpoint,hour) IN
-             (SELECT federation_id,module_instance_id,api_endpoint,hour FROM fmo_lnv2.gateway_health_hourly
-              WHERE hour<now()-interval '90 days' ORDER BY hour LIMIT 1000 FOR UPDATE SKIP LOCKED)",&[],
-        ).await?;
         if errors.iter().any(|error| *error) {
             tokio::time::sleep(Duration::from_secs(10)).await;
             continue;
@@ -190,48 +265,50 @@ async fn probe(
     url: &str,
 ) -> anyhow::Result<()> {
     // Queue overload is unknown observation coverage, not evidence of gateway
-    // downtime.
-    let permit = tokio::time::timeout(Duration::from_secs(5), services.external_io_permit())
+    // downtime: it returns an error and the probe runs again.
+    let permit = tokio::time::timeout(Duration::from_secs(5), PROBE_SLOTS.acquire())
         .await
         .context("Gateway probe queue is full")??;
-    let endpoint: SafeUrl = url.parse()?;
-    let target = if endpoint.scheme() == "iroh" {
-        None
-    } else {
-        match super::public_http::Target::prepare(&endpoint).await {
-            Ok(target) => Some(target),
-            Err(error) => {
-                drop(permit);
-                // Policy/DNS failures have no remote probe sample. Record an
-                // unknown state and a retry timestamp without claiming downtime.
-                services.connection().await?.execute(
-                    "UPDATE fmo_lnv2.gateways SET probed_at=now(),reachable=NULL,federation_supported=NULL,latency_ms=NULL
-                     WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3",
-                    &[&fed.consensus_encode_to_vec(),&i32::from(instance),&url],
-                ).await?;
-                return Err(error);
-            }
-        }
-    };
     // Latency starts at the request on both transports: DNS for HTTPS and
     // local endpoint setup for Iroh happen before it. Connection handshakes count.
-    let result = match target {
-        Some(target) => {
-            let started = Instant::now();
-            target
-                .routing_info(&fed)
-                .await
-                .map(|info| (info, started.elapsed()))
+    let result = async {
+        let endpoint: SafeUrl = url.parse().map_err(ProbeError::not_probed)?;
+        if endpoint.scheme() == "iroh" {
+            return super::bounded_iroh::routing_info(&endpoint, &fed).await;
         }
-        None => super::bounded_iroh::routing_info(&endpoint, &fed).await,
-    };
+        let target = super::public_http::Target::prepare(&endpoint)
+            .await
+            .map_err(ProbeError::not_probed)?;
+        let started = Instant::now();
+        let info = target.routing_info(&fed).await?;
+        Ok((info, started.elapsed()))
+    }
+    .await;
     drop(permit);
     let observation = match result {
         Ok((info, elapsed)) => Observation::Reachable {
             latency: i32::try_from(elapsed.as_millis())?,
             routing: info.map(bounded_routing).transpose()?,
         },
-        Err(_) => Observation::Unreachable,
+        Err(ProbeError::BadResponse(error)) => {
+            tracing::debug!(%fed, instance, %url, error = %format!("{error:#}"), "Gateway answered without routing info");
+            Observation::BadResponse
+        }
+        Err(ProbeError::Unreachable(error)) => {
+            tracing::debug!(%fed, instance, %url, error = %format!("{error:#}"), "Gateway did not answer");
+            Observation::Unreachable
+        }
+        Err(ProbeError::NotProbed(error)) => {
+            // No remote sample: record an unknown state and a retry timestamp
+            // without claiming downtime or adding a health sample.
+            tracing::info!(%fed, instance, %url, error = %format!("{error:#}"), "Gateway not probed; its state is unknown");
+            services.connection().await?.execute(
+                "UPDATE fmo_lnv2.gateways SET probed_at=now(),reachable=NULL,federation_supported=NULL,latency_ms=NULL
+                 WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3 AND registered",
+                &[&fed.consensus_encode_to_vec(),&i32::from(instance),&url],
+            ).await?;
+            return Ok(());
+        }
     };
     let mut db = services.connection().await?;
     let tx = db.transaction().await?;

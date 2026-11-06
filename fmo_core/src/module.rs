@@ -126,6 +126,11 @@ impl Services {
         std::time::Duration::try_from_secs_f64(seconds.max(0.0))
             .unwrap_or(std::time::Duration::from_secs(60))
     }
+    /// Days of health history to keep (`FO_HEALTH_RETENTION_DAYS`), or `None`
+    /// when retention is disabled and history is kept indefinitely
+    pub fn health_retention_days(&self) -> Option<u32> {
+        Some(self.0.health_retention_days).filter(|days| *days > 0)
+    }
     /// A process-wide budget for bounded background calls to external services.
     pub async fn external_io_permit(&self) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
         Ok(self.0.external_io.clone().acquire_owned().await?)

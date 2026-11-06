@@ -8,13 +8,13 @@
 - [Nostr announcements](/nostr): Federation discovery through public Nostr announcements.
 - [Source code](https://github.com/fedimint/fedimint-observer): Implementation and development documentation.
 
-## Public data
+## Public data (%API_BASE%)
 
-- [Federation summaries](/api/federations): Observed federation identifiers, health and recent activity.
-- [Aggregate statistics](/api/federations/totals): Federation count, transactions and public volume.
+- [Federation summaries](%API_BASE%/federations): Observed federation identifiers, health and recent activity.
+- [Aggregate statistics](%API_BASE%/federations/totals): Federation count, transactions and public volume.
 
 Federation pages use /federations/{id}. Lightning v2 gateway pages use
-/federations/{id}/gateways/v2. Discover identifiers from the federation summaries.
+/federations/{id}/gateways/v2.
 API snapshots can be stale or incomplete. An online gateway observation does not
 guarantee Lightning liquidity or successful payment routing. This website does
 not advertise an autonomous agent or MCP service.

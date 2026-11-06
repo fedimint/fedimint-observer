@@ -2756,6 +2756,7 @@ dependencies = [
  "fmo_api_types",
  "fmo_core",
  "futures",
+ "hyper 1.11.1",
  "iroh 0.35.0",
  "iroh 1.0.3",
  "reqwest 0.12.28",

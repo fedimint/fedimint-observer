@@ -21,9 +21,7 @@ pub(crate) struct Params {
 }
 
 pub(crate) fn routes() -> Router<Services> {
-    Router::new()
-        .route("/wallet-v2/history", get(history))
-        .route("/wallet-v2/on-chain", get(legacy_history))
+    Router::new().route("/wallet-v2/history", get(history))
 }
 
 pub(crate) fn page_limit(params: &Params) -> ApiResult<i64> {
@@ -34,17 +32,6 @@ pub(crate) fn page_limit(params: &Params) -> ApiResult<i64> {
         ));
     }
     Ok(i64::from(limit))
-}
-
-// Keep the existing array response for clients deployed before the paginated
-// API.
-async fn legacy_history(
-    path: Path<FederationId>,
-    params: Query<Params>,
-    state: State<Services>,
-) -> ApiResult<Json<Vec<WalletV2OnChainTransaction>>> {
-    let Json(page) = history(path, params, state).await?;
-    Ok(Json(page.transactions))
 }
 
 async fn history(

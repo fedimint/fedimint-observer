@@ -1,9 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import type { FederationSummary } from '../types/api';
 import { Totals } from '../components/Totals';
 import { FederationRow } from '../components/FederationRow';
 import { Alert } from '../components/Alert';
+import { startAutoRefresh } from '../utils/autoRefresh';
+import {
+  DEFAULT_SORT_KEY,
+  SORT_OPTIONS,
+  defaultDirectionFor,
+  isSortKey,
+  sortFederations,
+  type SortDirection,
+  type SortKey,
+} from '../utils/sortFederations';
 
 export function Home() {
   const [federations, setFederations] = useState<FederationSummary[]>([]);
@@ -11,51 +22,77 @@ export function Home() {
   const [failed, setFailed] = useState(false);
   const [collapseOffline, setCollapseOffline] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  // The order lives in the URL, so it survives opening a federation and
+  // coming back, and can be shared. Defaults are left out of the URL.
+  const [params, setParams] = useSearchParams();
+  const requestedSort = params.get('sort');
+  const sortKey: SortKey = isSortKey(requestedSort) ? requestedSort : DEFAULT_SORT_KEY;
+  const requestedOrder = params.get('order');
+  const sortDirection: SortDirection = requestedOrder === 'asc' || requestedOrder === 'desc'
+    ? requestedOrder
+    : defaultDirectionFor(sortKey);
+  const setSort = (key: SortKey, direction: SortDirection) => setParams((previous) => {
+    const next = new URLSearchParams(previous);
+    if (key === DEFAULT_SORT_KEY) next.delete('sort'); else next.set('sort', key);
+    if (direction === defaultDirectionFor(key)) next.delete('order'); else next.set('order', direction);
+    return next;
+  }, { replace: true });
+
+  // When the shown list last loaded; set while a later refresh is failing
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
-    const loadFederations = (initial: boolean) => api.getFederations(signal)
-      .then((data) => {
+    let lastSuccess: number | null = null;
+    let inFlight = false;
+    const loadFederations = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const data = await api.getFederations(signal);
         if (signal.aborted) return;
-        // Order by assets under management, largest first
-        setFederations([...data].sort((a, b) => (b.deposits ?? -1) - (a.deposits ?? -1)));
+        setFederations(data);
+        lastSuccess = Date.now();
+        setUpdatedAt(lastSuccess);
+        setRefreshFailed(false);
         setFailed(false);
-        if (initial) setLoading(false);
-      })
-      .catch((err) => {
+        setLoading(false);
+      } catch (err) {
         if (signal.aborted) return;
         console.error('Failed to fetch federations:', err);
-        if (initial) {
+        if (lastSuccess === null) {
           setFailed(true);
           setLoading(false);
+        } else {
+          setRefreshFailed(true);
         }
-      });
-    loadFederations(true);
-    const refresh = window.setInterval(() => loadFederations(false), 60_000);
+      } finally {
+        inFlight = false;
+      }
+    };
+    // No polling in hidden tabs; showing one refreshes a list over a minute old
+    const stop = startAutoRefresh(() => { void loadFederations(); }, 60_000, { lastSuccessAt: () => lastSuccess });
     return () => {
-      window.clearInterval(refresh);
+      stop();
       controller.abort();
     };
   }, []);
 
-  const activeFederations = federations.filter((fed) => fed.health !== 'offline');
-  const offlineFederations = federations.filter((fed) => fed.health === 'offline');
-
-  // Filter federations based on search query
-  const filterFederations = (feds: FederationSummary[]) => {
-    if (!searchQuery.trim()) return feds;
-    
-    const query = searchQuery.toLowerCase();
-    return feds.filter((fed) => {
-      const name = fed.name?.toLowerCase() || '';
-      const invite = fed.invite?.toLowerCase() || '';
-      return name.includes(query) || invite.includes(query);
-    });
-  };
-
-  const filteredActiveFederations = filterFederations(activeFederations);
-  const filteredOfflineFederations = filterFederations(offlineFederations);
+  // Search, then order, both the active and the shut-down list
+  const [filteredActiveFederations, filteredOfflineFederations] = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const matching = query
+      ? federations.filter((fed) => (fed.name?.toLowerCase() ?? '').includes(query) || (fed.invite?.toLowerCase() ?? '').includes(query))
+      : federations;
+    const active: FederationSummary[] = [];
+    const offline: FederationSummary[] = [];
+    for (const fed of sortFederations(matching, sortKey, sortDirection)) {
+      (fed.health === 'offline' ? offline : active).push(fed);
+    }
+    return [active, offline];
+  }, [federations, searchQuery, sortKey, sortDirection]);
 
   // Compute global maxes across all federations for consistent chart scale
   const { globalMaxTransaction, globalMaxVolume } = useMemo(() => {
@@ -137,11 +174,54 @@ export function Home() {
       </div>
 
   <div className="relative overflow-x-auto bg-white shadow-md rounded-lg border border-gray-200 dark:bg-gray-800 dark:border-gray-700">
-    <div className="p-4 sm:p-5 text-base sm:text-lg font-semibold text-left rtl:text-right text-gray-900 bg-white dark:text-white dark:bg-gray-800">
-          <h1>Observed Federations</h1>
-          <p className="mt-1 text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
-            List of all active federations this instance is collecting statistics on
-          </p>
+    <div className="p-4 sm:p-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between bg-white dark:bg-gray-800">
+          <div className="text-base sm:text-lg font-semibold text-left rtl:text-right text-gray-900 dark:text-white">
+            <h1>Observed Federations</h1>
+            <p className="mt-1 text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
+              List of all active federations this instance is collecting statistics on
+            </p>
+            {refreshFailed && updatedAt !== null && (
+              <p role="status" className="mt-1 text-xs font-normal text-amber-700 dark:text-amber-400">
+                Could not refresh the list; showing data from {new Date(updatedAt).toLocaleTimeString()}. Retrying automatically.
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0 self-start">
+            <label htmlFor="federation-sort" className="text-xs sm:text-sm font-medium text-gray-500 dark:text-gray-400">
+              Sort by
+            </label>
+            <select
+              id="federation-sort"
+              value={sortKey}
+              // A new metric starts "best first"; the button then reverses it
+              onChange={(e) => {
+                const key = e.target.value as SortKey;
+                setSort(key, defaultDirectionFor(key));
+              }}
+              className="text-xs sm:text-sm rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-gray-900 focus:border-blue-500 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            >
+              {SORT_OPTIONS.map((option) => (
+                <option key={option.key} value={option.key}>{option.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setSort(sortKey, sortDirection === 'asc' ? 'desc' : 'asc')}
+              aria-label={`Sorted ${sortDirection === 'asc' ? 'ascending' : 'descending'}; reverse order`}
+              title={sortDirection === 'asc' ? 'Ascending' : 'Descending'}
+              className="rounded-lg border border-gray-300 bg-white p-1.5 text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+            >
+              <svg
+                aria-hidden="true"
+                className={`w-3 h-3 transition-transform ${sortDirection === 'asc' ? '' : 'rotate-180'}`}
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 10 6"
+              >
+                <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5 5 1 1 5" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-300 uppercase font-semibold grid-cols-3 gap-4 border-y border-gray-200 dark:border-gray-600">
           <div>Name</div>

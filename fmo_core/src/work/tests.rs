@@ -29,12 +29,16 @@ async fn postgres_commit_notifications_and_block_arrival() -> anyhow::Result<()>
         crate::runtime::worker_lease(&database, tasks.clone(), notifications.clone()).await?;
     let (mut writer, driver) = tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(driver);
+    // Everything v14 creates lands in a schema of this test's own, so the
+    // cleanup below cannot drop a real database's functions or triggers.
+    let schema = format!("fmo_work_test_{}", std::process::id());
     writer
-        .batch_execute(
-            "CREATE TEMP TABLE schema_version(version INTEGER);
-        CREATE TEMP TABLE session_time_repairs(federation_id BYTEA);
-        CREATE TEMP TABLE block_times(block_height INTEGER);",
-        )
+        .batch_execute(&format!(
+            "CREATE SCHEMA {schema}; SET search_path TO {schema};
+        CREATE TABLE schema_version(version INTEGER);
+        CREATE TABLE session_time_repairs(federation_id BYTEA);
+        CREATE TABLE block_times(block_height INTEGER);"
+        ))
         .await?;
     writer
         .batch_execute(include_str!("../../schema/v14.sql"))
@@ -62,7 +66,7 @@ async fn postgres_commit_notifications_and_block_arrival() -> anyhow::Result<()>
     tokio::time::timeout(Duration::from_secs(2), wakeup.changed()).await??;
     lease.simple_query("SELECT 1").await?;
     writer
-        .batch_execute("DROP FUNCTION notify_session_time_repair() CASCADE")
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await?;
     tasks.shutdown();
     driver.abort();

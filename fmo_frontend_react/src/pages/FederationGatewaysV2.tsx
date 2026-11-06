@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import type { ClientConfig, GatewayV2Registry, GatewayV2RoutingInfo, GatewayWindow } from '../types/api';
 import { Copyable } from '../components/Copyable';
 import { asBitcoin, shortMiddle } from '../utils/format';
 import { PageRequests } from '../utils/pageRequests';
+import { startAutoRefresh } from '../utils/autoRefresh';
+import { compareGatewayStatus, type GatewayPageHandoff } from '../utils/gateways';
 import { GatewayAvailabilityChart } from '../components/GatewayAvailabilityChart';
 
 const windows: GatewayWindow[] = ['24h', '7d', '30d', '90d'];
@@ -28,24 +30,35 @@ export function FederationGatewaysV2() {
   const [params, setParams] = useSearchParams();
   const selectedWindow = params.get('window');
   const timeWindow = windows.includes(selectedWindow as GatewayWindow) ? selectedWindow as GatewayWindow : '7d';
-  const [config, setConfig] = useState<ClientConfig | null>(null);
-  const [name, setName] = useState('Federation');
+  // From the federation page: its name and config, so neither is fetched again
+  const handoff = useLocation().state as GatewayPageHandoff | null;
+  const fromFederationPage = handoff?.id === id && handoff.config ? handoff : null;
+  const [config, setConfig] = useState<ClientConfig | null>(fromFederationPage?.config ?? null);
+  // Null while unknown, or when the federation has no name: never a made-up one
+  const [name, setName] = useState<string | null>(fromFederationPage?.name || null);
   const [error, setError] = useState(false);
   useEffect(() => {
+    if (fromFederationPage?.config) {
+      setConfig(fromFederationPage.config);
+      setName(fromFederationPage.name || null);
+      setError(false);
+      return;
+    }
+    // A direct link: the name is only in the full federation list
     const controller = new AbortController();
     Promise.all([api.getFederationConfig(id, controller.signal), api.getFederations(controller.signal).catch(() => [])])
       .then(([config, federations]) => {
         if (controller.signal.aborted) return;
         setConfig(config);
-        setName(federations.find((fed) => fed.id === id)?.name || 'Federation');
+        setName(federations.find((fed) => fed.id === id)?.name || null);
       }).catch(() => { if (!controller.signal.aborted) setError(true); });
     return () => controller.abort();
-  }, [id]);
+  }, [id, fromFederationPage]);
   const instances = Object.entries(config?.modules ?? {}).filter(([, module]) => module.kind === 'lnv2').map(([instance]) => Number(instance));
   return <div className="py-6 text-gray-900 dark:text-white">
-    <Link to={`/federations/${id}`} className="text-sm text-blue-600 hover:underline dark:text-blue-400">← Back to {name}</Link>
+    <Link to={`/federations/${id}`} className="text-sm text-blue-600 hover:underline dark:text-blue-400">← Back to {name ?? 'federation'}</Link>
     <div className="mb-6 mt-4 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-      <div><div className="flex flex-wrap items-center gap-3"><h1 className="text-2xl font-bold sm:text-3xl">Gateway Details</h1><span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">Lightning v2</span></div><p className={`mt-2 text-sm ${muted}`}>Gateway health, routing fees and observed contract activity for {name}.</p></div>
+      <div><div className="flex flex-wrap items-center gap-3"><h1 className="text-2xl font-bold sm:text-3xl">Gateway Details</h1><span className="rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">Lightning v2</span></div><p className={`mt-2 text-sm ${muted}`}>Gateway health, routing fees and observed contract activity for {name ?? 'this federation'}.</p></div>
       <div className="flex rounded-lg border border-gray-200 bg-white p-1 dark:border-gray-700 dark:bg-gray-800" role="group" aria-label="Gateway history window">
         {windows.map((window) => <button key={window} type="button" aria-pressed={timeWindow === window} onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.set('window', window); return next; })} className={`rounded-md px-4 py-2 text-xs font-semibold ${timeWindow === window ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700'}`}>{window.toUpperCase()}</button>)}
       </div>
@@ -72,24 +85,33 @@ function GatewayDirectory({ id, instance, timeWindow }: { id: string; instance: 
   const [sort, setSort] = useState('name');
   const [reload, setReload] = useState(0);
   const requests = useRef(new PageRequests());
+  const lastSuccess = useRef<number | null>(null);
+  const pageRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => pageRequest.current?.abort(), []);
   useEffect(() => {
+    // Paused while reading older gateways; "Try again" resumes
+    if (olderLoaded) return;
     const controller = new AbortController();
     const gate = requests.current;
     let inFlight = false;
     const refresh = async () => {
-      if (inFlight || document.visibilityState === 'hidden' || olderLoaded) return;
+      if (inFlight) return;
       const generation = gate.refresh();
       if (generation === null) return;
       inFlight = true;
       try {
         const data = await api.getGatewayV2Registry(id, instance, timeWindow, undefined, controller.signal);
-        if (!controller.signal.aborted && gate.acceptsRefresh(generation)) { setRegistry(data); setError(null); }
+        if (!controller.signal.aborted && gate.acceptsRefresh(generation)) {
+          lastSuccess.current = Date.now();
+          setRegistry(data);
+          setError(null);
+        }
       } catch (error) { if (!controller.signal.aborted && gate.acceptsRefresh(generation)) setError(error instanceof Error ? error.message : 'Could not refresh gateways'); }
       finally { inFlight = false; }
     };
-    void refresh();
-    const timer = window.setInterval(() => { void refresh(); }, 60_000);
-    return () => { window.clearInterval(timer); controller.abort(); gate.reset(); };
+    // A tab opened in the background loads when shown
+    const stop = startAutoRefresh(() => { void refresh(); }, 60_000, { lastSuccessAt: () => lastSuccess.current });
+    return () => { stop(); controller.abort(); };
   }, [id, instance, timeWindow, olderLoaded, reload]);
   const gateways = registry?.gateways ?? [];
   const totals = { online: 0, degraded: 0, offline: 0, unknown: 0, removed: 0 };
@@ -100,28 +122,43 @@ function GatewayDirectory({ id, instance, timeWindow }: { id: string; instance: 
   const medianLatency = latencies.length ? (latencies[Math.floor((latencies.length - 1) / 2)] + latencies[Math.floor(latencies.length / 2)]) / 2 : null;
   const query = search.trim().toLowerCase();
   const visible = gateways.filter((gateway) => (filter === 'all' ? gateway.registered : gateway.status === filter) && `${gatewayName(gateway)} ${gateway.routing_info?.lightning_public_key ?? ''} ${gateway.api_endpoint}`.toLowerCase().includes(query));
-  visible.sort((left, right) => sort === 'latency' ? (left.latency_ms ?? Infinity) - (right.latency_ms ?? Infinity) : sort === 'activity' ? (right.activity.incoming_contracts + right.activity.outgoing_contracts) - (left.activity.incoming_contracts + left.activity.outgoing_contracts) : sort === 'status' ? left.status.localeCompare(right.status) : gatewayName(left).localeCompare(gatewayName(right)));
+  visible.sort((left, right) => sort === 'latency' ? (left.latency_ms ?? Infinity) - (right.latency_ms ?? Infinity) : sort === 'activity' ? (right.activity.incoming_contracts + right.activity.outgoing_contracts) - (left.activity.incoming_contracts + left.activity.outgoing_contracts) : sort === 'status' ? compareGatewayStatus(left.status, right.status) || gatewayName(left).localeCompare(gatewayName(right)) : gatewayName(left).localeCompare(gatewayName(right)));
   const loadMore = async () => {
     if (!registry?.next_after || loadingMore) return;
     const generation = requests.current.beginPage();
     if (generation === null) return;
+    const controller = new AbortController();
+    pageRequest.current = controller;
     setLoadingMore(true);
     try {
-      const next = await api.getGatewayV2Registry(id, instance, timeWindow, registry.next_after);
-      if (!requests.current.finishPage(generation, true)) return;
-      setOlderLoaded(true);
-      setRegistry({ ...registry, next_after: next.next_after, gateways: [...registry.gateways, ...next.gateways] });
-      setLoadingMore(false);
-      setError(null);
+      const next = await api.getGatewayV2Registry(id, instance, timeWindow, registry.next_after, controller.signal);
+      if (requests.current.finishPage(generation, true)) {
+        setOlderLoaded(true);
+        setRegistry({ ...registry, next_after: next.next_after, gateways: [...registry.gateways, ...next.gateways] });
+        setError(null);
+      }
     } catch (error) {
       if (requests.current.finishPage(generation, false)) {
         setError(error instanceof Error ? error.message : 'Could not load more gateways');
+      }
+    } finally {
+      if (pageRequest.current === controller) {
+        pageRequest.current = null;
         setLoadingMore(false);
       }
     }
   };
+  const tryAgain = () => {
+    pageRequest.current?.abort();
+    pageRequest.current = null;
+    requests.current.reset();
+    lastSuccess.current = null;
+    setLoadingMore(false);
+    setOlderLoaded(false);
+    setReload((count) => count + 1);
+  };
   return <>
-    {error && <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{error}. <button type="button" className="underline" onClick={() => { requests.current.reset(); setLoadingMore(false); setOlderLoaded(false); setReload((count) => count + 1); }}>Try again</button></p>}
+    {error && <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{error}. <button type="button" className="underline" onClick={tryAgain}>Try again</button></p>}
     <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
       <Metric label="Gateways shown" value={registry ? gateways.filter((gateway) => gateway.registered).length.toLocaleString() : '—'} detail={registry?.next_after ? 'More gateways available below' : 'Registered with the federation'} />
       <Metric label="Online now" value={registry ? String(totals.online) : '—'} detail={`${totals.offline} offline · ${totals.unknown} unknown`} />
@@ -142,7 +179,7 @@ function GatewayDirectory({ id, instance, timeWindow }: { id: string; instance: 
       {registry?.next_after && <button type="button" disabled={loadingMore} onClick={() => { void loadMore(); }} className="m-4 rounded-lg bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50">{loadingMore ? 'Loading…' : 'Load more gateways'}</button>}
     </section>
     <p className={`mt-3 text-xs ${muted}`}>Online means the gateway answered a routing-info check and supports this federation. Contract counts describe public federation activity, not payment routing capacity.</p>
-    {olderLoaded && <button type="button" onClick={() => { requests.current.reset(); setLoadingMore(false); setOlderLoaded(false); }} className="mt-2 text-sm text-blue-600 dark:text-blue-400">Refresh all loaded results</button>}
+    {olderLoaded && <button type="button" onClick={tryAgain} className="mt-2 text-sm text-blue-600 dark:text-blue-400">Refresh all loaded results</button>}
   </>;
 }
 

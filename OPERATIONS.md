@@ -55,7 +55,7 @@ just run
 | `FO_WORKER_CONCURRENCY` | `4` | Concurrent ingestion/projection/backfill batches |
 | `FO_EXTERNAL_CONCURRENCY` | `8` | Concurrent metadata, Wallet v2, and enrichment operations |
 | `FO_HTTP_CONCURRENCY` | `128` | Concurrent application requests per process |
-| `FO_HEALTH_RETENTION_DAYS` | `90` | Raw guardian history retention; `0` disables pruning |
+| `FO_HEALTH_RETENTION_DAYS` | `90` | Raw guardian history and Lightning v2 gateway health retention; `0` disables pruning |
 
 Retention must be at least 31 days when enabled. Size the sum of the pools
 across all replicas below PostgreSQL's connection limit, leaving room for
@@ -150,17 +150,17 @@ backlog takes time to drain.
 
 ## Frontend delivery
 
-Serve `robots.txt`, `llms.txt` and `/.well-known/ai-catalog.json` as files, with
-a real `404` if one is absent, so the SPA fallback does not answer them with
-HTML. Use `Cache-Control: no-cache` for HTML and long-lived immutable caching
-for hashed `/assets/` files. Nix store files share timestamps, so disable
-mtime-based conditional responses for HTML to avoid a false `304` between two
-builds. For Nginx:
+Serve `robots.txt` and the generated `llms.txt` as files. Return a real `404`
+when either is absent so the SPA fallback does not serve HTML. The build uses
+its API base URL in `llms.txt`; pass an absolute public URL for deployments.
+Use `Cache-Control: no-cache` for HTML and long-lived immutable caching for
+hashed `/assets/` files. Nix store files share
+timestamps, so disable mtime-based conditional responses for HTML to avoid a
+false `304` between two builds. For Nginx:
 
 ```nginx
 location = /robots.txt { try_files $uri =404; }
 location = /llms.txt { try_files $uri =404; }
-location = /.well-known/ai-catalog.json { try_files $uri =404; }
 location = /index.html {
     add_header Cache-Control "no-cache" always;
     etag off;

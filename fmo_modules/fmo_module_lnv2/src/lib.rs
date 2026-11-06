@@ -13,6 +13,7 @@ mod bounded_iroh;
 mod gateways;
 mod probes;
 mod public_http;
+mod retention;
 
 pub struct LnV2Observer;
 
@@ -42,6 +43,10 @@ impl ObserverModule for LnV2Observer {
             federation_id,
             config,
         )))
+    }
+    fn task(&self, services: &fmo_core::module::Services) -> Option<fmo_core::module::Task> {
+        let days = services.health_retention_days()?;
+        Some(Box::pin(retention::run(services.clone(), days)))
     }
 
     fn kind(&self) -> ModuleKind {

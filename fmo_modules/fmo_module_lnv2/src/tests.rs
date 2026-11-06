@@ -2,6 +2,48 @@ use fedimint_core::core::IntoDynInstance;
 
 use super::*;
 
+#[tokio::test]
+async fn early_http_close_is_unreachable() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        drop(socket);
+    });
+    let error = reqwest::Client::new()
+        .get(format!("http://{address}/"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        public_http::classify_send_error(error),
+        probes::ProbeError::Unreachable(_)
+    ));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_http_response_is_bad_response() {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket.write_all(b"HTTP/1.1 xyz\r\n\r\n").await.unwrap();
+    });
+    let error = reqwest::Client::new()
+        .get(format!("http://{address}/"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        public_http::classify_send_error(error),
+        probes::ProbeError::BadResponse(_)
+    ));
+    server.await.unwrap();
+}
+
 #[test]
 fn lightning_time_vote_keeps_its_session_timestamp_behavior() {
     let module = LnV2Observer;

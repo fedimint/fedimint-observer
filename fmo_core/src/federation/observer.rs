@@ -58,6 +58,15 @@ const CORE_MIGRATIONS: &[&str] = &[
     include_str!("../../schema/v13.sql"),
     include_str!("../../schema/v14.sql"),
 ];
+/// The `CREATE OR REPLACE` section of v14 that workers re-apply at startup
+pub(crate) fn session_time_repair_batching_sql() -> &'static str {
+    CORE_MIGRATIONS[14]
+        .split_once("-- BEGIN SESSION TIME REPAIR BATCHING")
+        .and_then(|(_, rest)| rest.split_once("-- END SESSION TIME REPAIR BATCHING"))
+        .expect("v14 marks its repair batching section")
+        .0
+}
+
 const NO_ACTIVITY: FederationActivity = FederationActivity {
     num_transactions: 0,
     amount_transferred: Amount::ZERO,
@@ -71,6 +80,8 @@ pub struct FederationObserver {
     pub(crate) work_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) external_io: Arc<tokio::sync::Semaphore>,
     pub(crate) work_notifications: crate::work::WorkNotifications,
+    /// `FO_HEALTH_RETENTION_DAYS`; zero keeps health history indefinitely
+    pub(crate) health_retention_days: u32,
     admin_auth: String,
     /// Shared so requests reuse its connections to the mempool instance
     esplora: esplora_client::AsyncClient,
@@ -122,6 +133,7 @@ impl FederationObserver {
             work_budget: Arc::new(tokio::sync::Semaphore::new(options.worker_concurrency)),
             external_io: Arc::new(tokio::sync::Semaphore::new(options.external_concurrency)),
             work_notifications,
+            health_retention_days: options.health_retention_days,
             admin_auth: admin_auth.to_owned(),
             esplora,
             task_group,
@@ -144,7 +156,6 @@ impl FederationObserver {
                 version == CORE_MIGRATIONS.len() as i32 - 1,
                 "Start the worker to migrate the database before API replicas"
             );
-            slf.ensure_session_time_repair_schema().await?;
             return Ok(slf);
         }
         // The dedicated worker lease serializes startup migrations as well as
@@ -354,14 +365,6 @@ impl FederationObserver {
         .await
     }
 
-    async fn ensure_session_time_repair_schema(&self) -> anyhow::Result<()> {
-        ensure!(
-            self.has_session_time_repair_schema().await?,
-            "The v13 schema needs the session time repair update; start the collector first"
-        );
-        Ok(())
-    }
-
     async fn setup_schema(&self) -> anyhow::Result<()> {
         self.connection()
             .await?
@@ -438,6 +441,16 @@ impl FederationObserver {
                 .await?;
             tx.batch_execute(sql).await?;
             tx.commit().await?;
+        }
+
+        // The repair batching section was added to v14 after some databases
+        // had applied it. Re-applying it is idempotent and brings them up to
+        // date; databases migrated through v14 below already have it.
+        if maybe_schema_version.is_some_and(|version| version >= 14) {
+            self.connection()
+                .await?
+                .batch_execute(session_time_repair_batching_sql())
+                .await?;
         }
 
         for (index, sql) in CORE_MIGRATIONS.iter().enumerate() {

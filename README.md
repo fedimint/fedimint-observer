@@ -95,9 +95,8 @@ I currently run the public instance at https://observer.fedimint.org using the f
     virtualHosts."observer.fedimint.org" = {
       enableACME = true;
       forceSSL = true;
-      # Built for the API under /api on the same host (fmo_frontend_react_default
-      # calls http://localhost:3000/api from the visitor's browser)
-      root = fmo.fmo_frontend_react "/api";
+      # Pass the public API URL so llms.txt contains absolute links.
+      root = fmo.fmo_frontend_react "https://observer.fedimint.org/api";
       locations."/" = {
         extraConfig = ''
           try_files $uri $uri/ /index.html;

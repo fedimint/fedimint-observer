@@ -2,10 +2,42 @@
 //! registry must not turn the observer into a client for private HTTP services.
 use std::net::{IpAddr, SocketAddr};
 
-use anyhow::{ensure, Context};
+use anyhow::{anyhow, ensure, Context};
 use fedimint_core::config::FederationId;
 use fedimint_core::util::SafeUrl;
 use fedimint_lnv2_common::gateway_api::RoutingInfo;
+
+use crate::probes::ProbeError;
+
+pub(crate) fn classify_send_error(error: reqwest::Error) -> ProbeError {
+    // reqwest does not mark an EOF before HTTP headers as a connect error.
+    // Hyper reports it as an incomplete message, which still means that the
+    // gateway gave no response to this probe.
+    let mut cause = std::error::Error::source(&error);
+    while let Some(source) = cause {
+        let incomplete = source
+            .downcast_ref::<hyper::Error>()
+            .is_some_and(hyper::Error::is_incomplete_message);
+        let disconnected = source.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            )
+        });
+        if incomplete || disconnected {
+            return ProbeError::unreachable(error);
+        }
+        cause = source.source();
+    }
+    if error.is_connect() || error.is_timeout() {
+        ProbeError::unreachable(error)
+    } else {
+        ProbeError::bad_response(error)
+    }
+}
 
 /// IPv4 blocks a probe must not reach: the IANA IPv4 Special-Purpose Address
 /// Registry entries (RFC 6890 and updates), multicast and reserved space.
@@ -106,6 +138,9 @@ impl Target {
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
+            // An address that drops packets fails here, not after the full
+            // request timeout, so it holds a probe slot for seconds.
+            .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(20))
             .resolve_to_addrs(host, &addresses)
             .build()?;
@@ -115,32 +150,37 @@ impl Target {
             client,
         })
     }
+    /// Connection failures and timeouts before a response are `Unreachable`;
+    /// anything after the gateway answered is a `BadResponse`.
     pub(crate) async fn routing_info(
         &self,
         fed: &FederationId,
-    ) -> anyhow::Result<Option<RoutingInfo>> {
+    ) -> Result<Option<RoutingInfo>, ProbeError> {
         let mut response = self
             .client
             .post(self.url.clone())
             .json(fed)
             .send()
-            .await?
-            .error_for_status()?;
+            .await
+            .map_err(classify_send_error)?
+            .error_for_status()
+            .map_err(ProbeError::bad_response)?;
         const MAX_BYTES: usize = super::bounded_iroh::MAX_RESPONSE_BYTES;
-        ensure!(
-            response
-                .content_length()
-                .is_none_or(|length| length <= MAX_BYTES as u64),
-            "Gateway routing response is too large"
-        );
+        let too_large =
+            || ProbeError::bad_response(anyhow!("Gateway routing response is too large"));
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_BYTES as u64)
+        {
+            return Err(too_large());
+        }
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            ensure!(
-                body.len() + chunk.len() <= MAX_BYTES,
-                "Gateway routing response is too large"
-            );
+        while let Some(chunk) = response.chunk().await.map_err(ProbeError::bad_response)? {
+            if body.len() + chunk.len() > MAX_BYTES {
+                return Err(too_large());
+            }
             body.extend_from_slice(&chunk);
         }
-        Ok(serde_json::from_slice(&body)?)
+        serde_json::from_slice(&body).map_err(ProbeError::bad_response)
     }
 }

@@ -265,6 +265,7 @@ async fn store_chain(
         end_index,
         &delta.iter().map(|item| item.index).collect::<Vec<_>>(),
     )?;
+    let msat = |sat: u64| sat.checked_mul(1000).context("Wallet amount overflow");
     let mut changed = false;
     for batch in delta.chunks(100) {
         let data = batch
@@ -273,9 +274,9 @@ async fn store_chain(
                 Ok(WalletV2OnChainTransaction {
                     index: item.index,
                     txid: item.txid.to_string(),
-                    input_msat: u64::try_from(deposit_amount(item.input.to_sat(), 0)?)?,
-                    output_msat: u64::try_from(deposit_amount(item.output.to_sat(), 0)?)?,
-                    fee_msat: u64::try_from(deposit_amount(item.fee.to_sat(), 0)?)?,
+                    input_msat: msat(item.input.to_sat())?,
+                    output_msat: msat(item.output.to_sat())?,
+                    fee_msat: msat(item.fee.to_sat())?,
                     vbytes: item.vbytes,
                     created: item.created,
                 })

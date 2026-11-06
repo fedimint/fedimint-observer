@@ -17,6 +17,7 @@ import { Badge } from '../components/Badge';
 import { Alert } from '../components/Alert';
 import { Copyable } from '../components/Copyable';
 import { WalletV2Panel } from '../components/WalletV2Panel';
+import type { GatewayPageHandoff } from '../utils/gateways';
 import { guardianThreshold, parseConfig, type FederationConfig } from '../utils/config';
 import { asBitcoin, MSATS_PER_BTC, shortMiddle } from '../utils/format';
 
@@ -75,6 +76,9 @@ export function FederationDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'activity' | 'utxos' | 'assets' | 'config'>('activity');
+  // Once opened, the wallet panel stays mounted so switching tabs keeps its
+  // history instead of fetching it again.
+  const [assetsOpened, setAssetsOpened] = useState(false);
   // UTXOs load the first time their tab opens, and are only ever shown there
   const [utxosRequested, setUtxosRequested] = useState(false);
   const [utxosLoading, setUtxosLoading] = useState(true);
@@ -214,6 +218,7 @@ export function FederationDetail() {
     setUtxoGuardians([]);
     setUtxosLoading(true);
     setActiveTab('activity');
+    setAssetsOpened(false);
 
     // Every request below needs only the id, so none waits for another; only the
     // invite fallback waits for the federation list.
@@ -562,7 +567,7 @@ export function FederationDetail() {
                 </div>
               )}
               {id && hasLightningV2 && (
-                <Link to={`/federations/${id}/gateways/v2`} className="inline-flex w-full items-center justify-center rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-700">
+                <Link to={`/federations/${id}/gateways/v2`} state={{ id, name: federation?.name ?? null, config: config?.raw } satisfies GatewayPageHandoff} className="inline-flex w-full items-center justify-center rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-700">
                   Lightning v2 Gateway Details
                 </Link>
               )}
@@ -674,7 +679,7 @@ export function FederationDetail() {
             )}
             {hasWalletV2 && (
               <button
-                onClick={() => setActiveTab('assets')}
+                onClick={() => { setActiveTab('assets'); setAssetsOpened(true); }}
                 className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
                   activeTab === 'assets'
                     ? 'border-blue-500 text-blue-600 dark:text-blue-400'
@@ -812,8 +817,10 @@ export function FederationDetail() {
               </div>
             </>
           )}
-          {activeTab === 'assets' && hasWalletV2 && (
-            <WalletV2Panel id={id!} modules={config?.raw.modules ?? {}} />
+          {assetsOpened && hasWalletV2 && (
+            <div hidden={activeTab !== 'assets'}>
+              <WalletV2Panel id={id!} modules={config?.raw.modules ?? {}} active={activeTab === 'assets'} />
+            </div>
           )}
           {activeTab === 'utxos' && (
             <>

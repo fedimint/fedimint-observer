@@ -89,17 +89,7 @@ export const api = {
     if (after !== undefined) query.set('after', after);
     const response = await fetch(`${BASE_URL}/federations/${id}/gateways/v2?${query}`, { signal });
     if (!response.ok) throw new Error(`Could not fetch gateway registrations (${response.status})`);
-    const data: GatewayV2Registry = await response.json();
-    // Cached registry-only responses may briefly survive a backend/frontend rollout.
-    return { ...data, activity_caught_up: data.activity_caught_up ?? false, window: data.window ?? window, gateways: data.gateways.map((gateway) => ({
-      ...gateway, status: gateway.status ?? (gateway.registered ? 'unknown' : 'removed'),
-      routing_info: gateway.routing_info ?? null, routing_observed_at: gateway.routing_observed_at ?? null,
-      probed_at: gateway.probed_at ?? null, reachable: gateway.reachable ?? null,
-      federation_supported: gateway.federation_supported ?? null, latency_ms: gateway.latency_ms ?? null,
-      samples: gateway.samples ?? 0, online_samples: gateway.online_samples ?? 0,
-      avg_latency_ms: gateway.avg_latency_ms ?? null, availability: gateway.availability ?? [],
-      activity: gateway.activity ?? { incoming_contracts: 0, outgoing_contracts: 0, incoming_msat: 0, outgoing_msat: 0, outgoing_claimed: 0, outgoing_refunded: 0, outgoing_cancelled: 0 },
-    })) };
+    return response.json();
   },
 
   async getFederationUtxos(id: string, signal?: AbortSignal): Promise<FederationUtxosResponse> {

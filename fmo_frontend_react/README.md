@@ -29,6 +29,7 @@ by hand; keep them in sync when an endpoint changes.
 ## Nix build
 
 `nix build .#fmo_frontend_react_default` builds against
-`http://localhost:3000/api`; deployments build `fmo_frontend_react "/api"` (see
-the root README). After changing `package-lock.json`, update `npmDepsHash` in
+`http://localhost:3000/api`; deployments pass their absolute public API URL to
+`fmo_frontend_react` so `llms.txt` contains absolute links (see the root README).
+After changing `package-lock.json`, update `npmDepsHash` in
 `flake.nix`: `nix run nixpkgs#prefetch-npm-deps -- fmo_frontend_react/package-lock.json`.

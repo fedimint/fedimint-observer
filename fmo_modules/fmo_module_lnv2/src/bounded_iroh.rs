@@ -2,12 +2,15 @@
 //! failed targets. Guardian/session transports retain their upstream limits.
 use std::time::Duration;
 
-use anyhow::{ensure, Context};
+use anyhow::{anyhow, ensure, Context};
 use fedimint_core::config::FederationId;
 use fedimint_core::module::{IrohGatewayRequest, IrohGatewayResponse, FEDIMINT_GATEWAY_ALPN};
 use fedimint_core::util::SafeUrl;
 use fedimint_lnv2_common::gateway_api::RoutingInfo;
-use futures::FutureExt;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
+
+use crate::probes::ProbeError;
 
 pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
@@ -17,11 +20,15 @@ pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub(crate) async fn routing_info(
     url: &SafeUrl,
     fed: &FederationId,
-) -> anyhow::Result<(Option<RoutingInfo>, Duration)> {
-    let host = url.host_str().context("Missing Iroh identity")?;
+) -> Result<(Option<RoutingInfo>, Duration), ProbeError> {
+    // An invalid identity or a local bind failure says nothing about the gateway.
+    let host = url
+        .host_str()
+        .context("Missing Iroh identity")
+        .map_err(ProbeError::not_probed)?;
     let next_only = url.path() == "/v1";
-    let stable_id: iroh::NodeId = host.parse()?;
-    let next_id: iroh_next::EndpointId = host.parse()?;
+    let stable_id: iroh::NodeId = host.parse().map_err(ProbeError::not_probed)?;
+    let next_id: iroh_next::EndpointId = host.parse().map_err(ProbeError::not_probed)?;
     let (stable, next) = tokio::time::timeout(Duration::from_secs(5), async {
         let stable = if next_only {
             None
@@ -43,28 +50,44 @@ pub(crate) async fn routing_info(
             .await?;
         anyhow::Ok((stable, next))
     })
-    .await??;
+    .await
+    .context("Binding local Iroh endpoints timed out")
+    .and_then(|bound| bound)
+    .map_err(ProbeError::not_probed)?;
     let request = serde_json::to_vec(&IrohGatewayRequest {
         route: "/routing_info".to_owned(),
-        params: Some(serde_json::to_value(fed)?),
+        params: Some(serde_json::to_value(fed).map_err(ProbeError::not_probed)?),
         password: None,
-    })?;
+    })
+    .map_err(ProbeError::not_probed)?;
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(Duration::from_secs(20), async {
-        let next_request = request_next(&next, next_id.into(), &request).boxed();
+        let mut attempts = FuturesUnordered::new();
+        attempts.push(request_next(&next, next_id.into(), &request).boxed());
         if let Some(stable) = &stable {
-            let stable_request = request_stable(stable, stable_id.into(), &request).boxed();
-            futures::future::select_ok(vec![stable_request, next_request])
-                .await
-                .map(|(response, _)| response)
-        } else {
-            next_request.await
+            attempts.push(request_stable(stable, stable_id.into(), &request).boxed());
         }
+        // The first answer wins; if both fail, report the attempt that got
+        // furthest, so one transport's answer is not hidden by the other's
+        // failure.
+        let mut failure: Option<ProbeError> = None;
+        while let Some(attempt) = attempts.next().await {
+            match attempt {
+                Ok(info) => return Ok(info),
+                Err(error) => {
+                    failure = Some(match failure {
+                        Some(previous) => previous.furthest(error),
+                        None => error,
+                    });
+                }
+            }
+        }
+        Err(failure.unwrap_or_else(|| ProbeError::not_probed(anyhow!("No Iroh transport"))))
     })
     .await;
     let elapsed = started.elapsed();
     // Close on success, invalid/oversized responses, timeout and failed dials.
-    // Cleanup remains inside the external-I/O concurrency budget.
+    // Cleanup remains inside the probe concurrency budget.
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(
             async {
@@ -77,7 +100,7 @@ pub(crate) async fn routing_info(
     })
     .await;
     result
-        .context("Gateway probe timed out")?
+        .map_err(|_| ProbeError::unreachable(anyhow!("Gateway probe timed out")))?
         .map(|info| (info, elapsed))
 }
 
@@ -85,14 +108,21 @@ pub(crate) async fn request_stable(
     endpoint: &iroh::Endpoint,
     target: iroh::NodeAddr,
     request: &[u8],
-) -> anyhow::Result<Option<RoutingInfo>> {
-    let connection = endpoint.connect(target, FEDIMINT_GATEWAY_ALPN).await?;
-    let (mut send, mut recv) = connection.open_bi().await?;
-    send.write_all(request).await?;
-    send.finish()?;
-    let result = recv.read_to_end(MAX_RESPONSE_BYTES).await;
+) -> Result<Option<RoutingInfo>, ProbeError> {
+    let connection = endpoint
+        .connect(target, FEDIMINT_GATEWAY_ALPN)
+        .await
+        .map_err(ProbeError::unreachable)?;
+    // Connected: from here on the gateway is reachable.
+    let result = async {
+        let (mut send, mut recv) = connection.open_bi().await?;
+        send.write_all(request).await?;
+        send.finish()?;
+        anyhow::Ok(recv.read_to_end(MAX_RESPONSE_BYTES).await?)
+    }
+    .await;
     connection.close(0u32.into(), b"probe completed");
-    decode(&result?)
+    decode(&result.map_err(ProbeError::bad_response)?).map_err(ProbeError::bad_response)
 }
 
 fn decode(bytes: &[u8]) -> anyhow::Result<Option<RoutingInfo>> {
@@ -109,12 +139,19 @@ pub(crate) async fn request_next(
     endpoint: &iroh_next::Endpoint,
     target: iroh_next::EndpointAddr,
     request: &[u8],
-) -> anyhow::Result<Option<RoutingInfo>> {
-    let connection = endpoint.connect(target, FEDIMINT_GATEWAY_ALPN).await?;
-    let (mut send, mut recv) = connection.open_bi().await?;
-    send.write_all(request).await?;
-    send.finish()?;
-    let result = recv.read_to_end(MAX_RESPONSE_BYTES).await;
+) -> Result<Option<RoutingInfo>, ProbeError> {
+    let connection = endpoint
+        .connect(target, FEDIMINT_GATEWAY_ALPN)
+        .await
+        .map_err(ProbeError::unreachable)?;
+    // Connected: from here on the gateway is reachable.
+    let result = async {
+        let (mut send, mut recv) = connection.open_bi().await?;
+        send.write_all(request).await?;
+        send.finish()?;
+        anyhow::Ok(recv.read_to_end(MAX_RESPONSE_BYTES).await?)
+    }
+    .await;
     connection.close(0u32.into(), b"probe completed");
-    decode(&result?)
+    decode(&result.map_err(ProbeError::bad_response)?).map_err(ProbeError::bad_response)
 }

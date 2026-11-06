@@ -4,6 +4,7 @@ import { publishNostrEvent } from '../services/nostr';
 import { Copyable } from '../components/Copyable';
 import type { FederationHealth } from '../types/api';
 import { parseConfig, type FederationConfig } from '../utils/config';
+import { LookupCache } from '../utils/lookupCache';
 
 interface NostrFederation {
   id: string;
@@ -28,18 +29,23 @@ function federationName(meta: Record<string, unknown>): string | null {
   return name ? String(name) : null;
 }
 
-// Gives up after the timeout, or as soon as `signal` aborts
-async function fetchFederationName(invite: string, signal: AbortSignal): Promise<string | null> {
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  const timeout = setTimeout(abort, NAME_LOOKUP_TIMEOUT_MS);
-  signal.addEventListener('abort', abort);
-  try {
-    return federationName(await api.getFederationMetaByInvite(invite, controller.signal));
-  } finally {
-    clearTimeout(timeout);
-    signal.removeEventListener('abort', abort);
-  }
+// Each lookup makes the server ask the federation's guardians, and names
+// rarely change, so they are remembered for the session instead of fetched on
+// every visit.
+const federationNames = new LookupCache<string | null>();
+
+// Gives up after the timeout. It is not tied to one visit of the page: a lookup
+// still running when the page closes completes into the cache for the next.
+function fetchFederationName(invite: string): Promise<string | null> {
+  return federationNames.get(invite, async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), NAME_LOOKUP_TIMEOUT_MS);
+    try {
+      return federationName(await api.getFederationMetaByInvite(invite, controller.signal));
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
 }
 
 // Looks up the names a few at a time and hands them to `onNames` in batches
@@ -62,7 +68,7 @@ async function lookUpNames(
     while (next < federations.length && !signal.aborted) {
       const fed = federations[next++];
       try {
-        const name = await fetchFederationName(fed.invite, signal);
+        const name = await fetchFederationName(fed.invite);
         if (name) {
           pending.set(fed.id, name);
           flushTimer ??= setTimeout(flush, NAME_BATCH_MS);
@@ -149,27 +155,13 @@ export function Nostr() {
         ]);
         if (signal.aborted) return;
 
-        // Create a map of federation IDs to names from the main list
-        const nameMap = new Map(
-          mainFederations.map(fed => [fed.id, fed.name])
-        );
+        const observed = new Map(mainFederations.map(fed => [fed.id, fed]));
+        setObservedFederationIds(new Set(observed.keys()));
 
-        // Create a map of federation IDs to health status
-        const healthMap = new Map(
-          mainFederations.map(fed => [fed.id, fed.health])
-        );
-
-        // Store IDs of federations that are being observed
-        const observedIds = new Set(mainFederations.map(fed => fed.id));
-        setObservedFederationIds(observedIds);
-
-        // Convert the nostr object to an array
-        const nostrFeds = Object.entries(nostrData).map(([id, invite]) => ({
-          id,
-          name: nameMap.get(id) || null,
-          invite,
-          health: healthMap.get(id),
-        }));
+        const nostrFeds = Object.entries(nostrData).map(([id, invite]) => {
+          const federation = observed.get(id);
+          return { id, name: federation?.name || null, invite, health: federation?.health };
+        });
 
         setFederations(nostrFeds);
         setLoading(false); // Stop loading immediately - show table with IDs
