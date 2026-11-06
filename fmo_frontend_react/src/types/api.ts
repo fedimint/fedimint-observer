@@ -75,6 +75,9 @@ export interface GatewayV2Registry {
       incoming_msat: number; outgoing_msat: number;
       outgoing_claimed: number; outgoing_refunded: number; outgoing_cancelled: number;
     };
+    /** Module keys are self-reported and unverified; contested keys credit no endpoint */
+    attribution: 'self_reported' | 'contested' | 'none';
+    contested_keys: number;
   }[];
 }
 

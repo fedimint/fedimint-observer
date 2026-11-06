@@ -13,6 +13,48 @@ pub(crate) const SAVE_PROBE_SQL:&str =
      routing_observed_at=CASE WHEN $7::jsonb IS NOT NULL THEN now() ELSE routing_observed_at END
      WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3 AND registered";
 
+/// Module keys an endpoint may hold for activity attribution. Keys are
+/// self-reported, so an endpoint must not accumulate every key it ever named.
+pub(crate) const MAX_KEYS_PER_ENDPOINT: i64 = 8;
+
+pub(crate) const PRUNE_KEYS_SQL: &str = "DELETE FROM fmo_lnv2.gateway_keys
+     WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3
+       AND module_public_key NOT IN (
+         SELECT module_public_key FROM fmo_lnv2.gateway_keys
+         WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3
+         ORDER BY last_claimed DESC,module_public_key LIMIT $4)";
+
+/// Seconds until the next probe or retention deadline, by the database clock;
+/// negative when overdue, NULL when there is none (wait for a notification).
+pub(crate) const NEXT_PROBE_SQL: &str =
+    "SELECT EXTRACT(EPOCH FROM min(deadline)-now())::float8 FROM (
+        SELECT min(COALESCE(probed_at+interval '5 minutes',now())) AS deadline
+        FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND registered
+        UNION ALL SELECT min(hour)+interval '90 days' FROM fmo_lnv2.gateway_health_hourly
+     ) due";
+
+/// Characters of a gateway's self-reported alias that are stored and served.
+/// A Lightning node alias is at most 32 bytes; the reply may carry up to the
+/// response limit, which the public API would otherwise return for every
+/// gateway.
+pub(crate) const MAX_ALIAS_CHARS: usize = 64;
+
+/// The routing info to store: every other field has a fixed size, and the
+/// alias is cut to `MAX_ALIAS_CHARS` without control characters (PostgreSQL
+/// JSONB rejects NUL, which would fail the probe's write on every attempt).
+pub(crate) fn bounded_routing(
+    mut info: fedimint_lnv2_common::gateway_api::RoutingInfo,
+) -> serde_json::Result<serde_json::Value> {
+    if let Some(alias) = &mut info.lightning_alias {
+        *alias = alias
+            .chars()
+            .filter(|character| !character.is_control())
+            .take(MAX_ALIAS_CHARS)
+            .collect();
+    }
+    serde_json::to_value(info)
+}
+
 pub(crate) enum Observation {
     Unreachable,
     Reachable {
@@ -55,8 +97,20 @@ pub(crate) async fn save(
             .and_then(serde_json::Value::as_str)
         {
             tx.execute(
-                "INSERT INTO fmo_lnv2.gateway_keys VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+                // clock_timestamp, not now(): claims order correctly even
+                // within one transaction.
+                "INSERT INTO fmo_lnv2.gateway_keys(federation_id,module_instance_id,api_endpoint,module_public_key,last_claimed)
+                 VALUES($1,$2,$3,$4,clock_timestamp())
+                 ON CONFLICT(federation_id,module_instance_id,api_endpoint,module_public_key)
+                 DO UPDATE SET last_claimed=clock_timestamp()",
                 &[&fed, &i32::from(instance), &url, &key],
+            )
+            .await?;
+            // Rotation keeps the most recently claimed keys: the current one
+            // always stays attributed and the least recently claimed drops off.
+            tx.execute(
+                PRUNE_KEYS_SQL,
+                &[&fed, &i32::from(instance), &url, &MAX_KEYS_PER_ENDPOINT],
             )
             .await?;
         }
@@ -109,17 +163,18 @@ pub(crate) async fn run(
             tokio::time::sleep(Duration::from_secs(10)).await;
             continue;
         }
-        let deadline: Option<chrono::DateTime<chrono::Utc>> = services.connection().await?.query_one(
-            "SELECT min(deadline) FROM (
-                SELECT min(COALESCE(probed_at+interval '5 minutes',now())) AS deadline
-                FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND registered
-                UNION ALL SELECT min(hour)+interval '90 days' FROM fmo_lnv2.gateway_health_hourly
-             ) due", &[&bytes,&i32::from(instance)],
-        ).await?.get(0);
-        match deadline {
-            Some(at) => tokio::select! {
+        // The wait is measured against the database clock that the due-work
+        // queries use; an app clock ahead of it would otherwise wake early and spin.
+        let wait: Option<f64> = services
+            .connection()
+            .await?
+            .query_one(NEXT_PROBE_SQL, &[&bytes, &i32::from(instance)])
+            .await?
+            .get(0);
+        match wait {
+            Some(seconds) => tokio::select! {
                 result = wakeup.changed() => { result?; }
-                _ = tokio::time::sleep((at-chrono::Utc::now()).to_std().unwrap_or_default()) => {}
+                _ = tokio::time::sleep(Services::wait_for_deadline(seconds)) => {}
             },
             None => {
                 wakeup.changed().await?;
@@ -158,17 +213,23 @@ async fn probe(
             }
         }
     };
-    let started = Instant::now();
+    // Latency starts at the request on both transports: DNS for HTTPS and
+    // local endpoint setup for Iroh happen before it. Connection handshakes count.
     let result = match target {
-        Some(target) => target.routing_info(&fed).await,
+        Some(target) => {
+            let started = Instant::now();
+            target
+                .routing_info(&fed)
+                .await
+                .map(|info| (info, started.elapsed()))
+        }
         None => super::bounded_iroh::routing_info(&endpoint, &fed).await,
     };
-    let elapsed = i32::try_from(started.elapsed().as_millis())?;
     drop(permit);
     let observation = match result {
-        Ok(info) => Observation::Reachable {
-            latency: elapsed,
-            routing: info.map(serde_json::to_value).transpose()?,
+        Ok((info, elapsed)) => Observation::Reachable {
+            latency: i32::try_from(elapsed.as_millis())?,
+            routing: info.map(bounded_routing).transpose()?,
         },
         Err(_) => Observation::Unreachable,
     };

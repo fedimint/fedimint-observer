@@ -131,7 +131,25 @@ async fn postgres_deposit_replay_and_instance_pagination() -> anyhow::Result<()>
     )
     .await?;
     let enqueue = "INSERT INTO fmo_walletv2.deposit_jobs(federation_id,module_instance_id,txid,in_index,session_index,output_index,fee_sat) VALUES($1,3,$2,0,7,5,250)";
+    // No jobs: the wait stays NULL, so the worker awaits a notification
+    // instead of polling (SQL GREATEST(0, NULL) would have returned 0).
+    async fn wait(
+        tx: &deadpool_postgres::Transaction<'_>,
+        fed: &[u8],
+    ) -> Result<Option<f64>, tokio_postgres::Error> {
+        tx.query_one(collector::NEXT_DEPOSIT_RETRY_SQL, &[&fed, &3i32])
+            .await
+            .map(|row| row.get(0))
+    }
+    assert_eq!(wait(&tx, &fed).await?, None);
     tx.execute(enqueue, &[&fed, &txid]).await?;
+    // A due job reports a non-positive delay, clamped to an immediate wake.
+    let due = wait(&tx, &fed).await?.expect("a job is queued");
+    assert!(due <= 0.0);
+    assert_eq!(
+        fmo_core::module::Services::wait_for_deadline(due),
+        std::time::Duration::ZERO
+    );
     let claimed = tx
         .query(collector::CLAIM_DEPOSITS_SQL, &[&fed, &3i32])
         .await?;

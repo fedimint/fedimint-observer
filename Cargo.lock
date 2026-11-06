@@ -2696,7 +2696,6 @@ dependencies = [
  "fedimint-api-client",
  "fedimint-connectors",
  "fedimint-core 0.12.0",
- "fedimint-ln-common",
  "fedimint-meta-client",
  "fedimint-wallet-common",
  "fmo_api_types",

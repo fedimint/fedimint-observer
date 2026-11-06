@@ -339,6 +339,12 @@ pub(crate) async fn apply_deposit(
     Ok(())
 }
 
+/// Seconds until the next deposit job is due, by the database clock; negative
+/// when overdue, NULL when there are no jobs (wait for a notification).
+pub(crate) const NEXT_DEPOSIT_RETRY_SQL: &str =
+    "SELECT EXTRACT(EPOCH FROM min(retry_at)-now())::float8 FROM fmo_walletv2.deposit_jobs
+     WHERE federation_id=$1 AND module_instance_id=$2";
+
 async fn enrich_loop(
     services: Services,
     fed: FederationId,
@@ -357,14 +363,21 @@ async fn enrich_loop(
                 continue;
             }
         }
-        let deadline: Option<chrono::DateTime<chrono::Utc>> = services.connection().await?.query_one(
-            "SELECT min(retry_at) FROM fmo_walletv2.deposit_jobs WHERE federation_id=$1 AND module_instance_id=$2",
-            &[&fed.consensus_encode_to_vec(),&i32::from(instance)],
-        ).await?.get(0);
-        match deadline {
-            Some(at) => tokio::select! {
+        // Measured against the database clock that claims jobs (`retry_at<=now()`);
+        // an app clock ahead of it would otherwise wake early and spin.
+        let wait: Option<f64> = services
+            .connection()
+            .await?
+            .query_one(
+                NEXT_DEPOSIT_RETRY_SQL,
+                &[&fed.consensus_encode_to_vec(), &i32::from(instance)],
+            )
+            .await?
+            .get(0);
+        match wait {
+            Some(seconds) => tokio::select! {
                 result = wakeup.changed() => { result?; }
-                _ = tokio::time::sleep((at-chrono::Utc::now()).to_std().unwrap_or_default()) => {}
+                _ = tokio::time::sleep(Services::wait_for_deadline(seconds)) => {}
             },
             None => {
                 wakeup.changed().await?;

@@ -47,6 +47,8 @@ In there you can run a variety of `just` commands (to be called as `just <COMMAN
 
 ## Deployment
 
+See [OPERATIONS.md](OPERATIONS.md) for running, upgrading and monitoring the observer: process layout, tuning limits, the recommended egress firewall, and reverse proxy settings.
+
 I currently run the public instance at https://observer.fedimint.org using the following nix config:
 
 ```nix

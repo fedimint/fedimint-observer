@@ -319,6 +319,14 @@ pub struct GatewayV2Info {
     pub avg_latency_ms: Option<f64>,
     pub availability: Vec<GatewayV2AvailabilityBucket>,
     pub activity: GatewayV2Activity,
+    /// How `activity` is attributed. Gateways self-report their module key
+    /// and the observer cannot verify ownership: `self_reported` credits
+    /// contracts under keys this endpoint alone claims, `contested` means some
+    /// of its keys are also claimed by another registered endpoint and credit
+    /// neither, `none` means no key has been reported yet.
+    pub attribution: String,
+    /// Keys this endpoint claims that another registered endpoint also claims
+    pub contested_keys: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

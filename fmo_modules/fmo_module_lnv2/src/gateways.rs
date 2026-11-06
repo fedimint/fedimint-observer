@@ -8,7 +8,7 @@ use anyhow::Context;
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, DurationRound, Utc};
 use fedimint_api_client::api::FederationApiExt;
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::encoding::Encodable;
@@ -16,7 +16,7 @@ use fedimint_core::module::ApiRequestErased;
 use fedimint_core::util::SafeUrl;
 use fedimint_lnv2_common::endpoint_constants::GATEWAYS_ENDPOINT;
 use fmo_api_types::{GatewayV2Info as Gateway, GatewayV2Registry as Registry};
-use fmo_core::module::{federation_api, ApiError, ApiResult, Services};
+use fmo_core::module::{federation_api, ApiError, ApiResult, DbTransaction, Services};
 use futures::{stream, StreamExt};
 use serde::Deserialize;
 
@@ -37,14 +37,24 @@ struct HealthTotals {
     latency_samples: u64,
 }
 
-pub(crate) fn window_seconds(window: &str) -> Option<i64> {
+/// Bucket count and whole hours per bucket. Health is stored hourly, so a
+/// bucket narrower than an hour, or not hour-aligned, would show false gaps.
+pub(crate) fn window_buckets(window: &str) -> Option<(i32, i64)> {
     match window {
-        "24h" => Some(86400),
-        "7d" => Some(7 * 86400),
-        "30d" => Some(30 * 86400),
-        "90d" => Some(90 * 86400),
+        "24h" => Some((24, 1)),
+        "7d" => Some((28, 6)),
+        "30d" => Some((30, 24)),
+        "90d" => Some((30, 72)),
         _ => None,
     }
+}
+
+/// Start of the first bucket: the window ends with the current, partial hour.
+pub(crate) fn window_start(now: DateTime<Utc>, buckets: i32, hours: i64) -> DateTime<Utc> {
+    let hour = now
+        .duration_trunc(chrono::Duration::hours(1))
+        .expect("truncating the current time to an hour cannot overflow");
+    hour - chrono::Duration::hours(i64::from(buckets) * hours - 1)
 }
 
 pub(crate) const REGISTRY_SQL: &str = include_str!("../schema/gateway_overview.sql");
@@ -81,9 +91,9 @@ async fn registry(
         }
     };
     let window = params.window.as_deref().unwrap_or("7d");
-    let seconds = window_seconds(window)
+    let (bucket_count, bucket_hours) = window_buckets(window)
         .ok_or_else(|| ApiError::bad_request("window must be 24h, 7d, 30d or 90d"))?;
-    let since = Utc::now() - chrono::Duration::seconds(seconds);
+    let since = window_start(Utc::now(), bucket_count, bucket_hours);
     let limit = params.limit.unwrap_or(100);
     if !(1..=100).contains(&limit) {
         return Err(ApiError::bad_request("limit must be 1..100"));
@@ -107,7 +117,8 @@ async fn registry(
                 &params.after,
                 &(i64::from(limit) + 1),
                 &since,
-                &(seconds as f64 / 30.0),
+                &((bucket_hours * 3600) as f64),
+                &bucket_count,
             ],
         )
         .await?;
@@ -119,11 +130,11 @@ async fn registry(
             let online_samples = totals.iter().map(|bucket| bucket.online_samples).sum();
             let latency_sum: u64 = totals.iter().map(|bucket| bucket.latency_sum_ms).sum();
             let latency_count: u64 = totals.iter().map(|bucket| bucket.latency_samples).sum();
-            let availability = (0..30)
+            let availability = (0..bucket_count)
                 .map(|index| {
                     let bucket = totals.iter().find(|bucket| bucket.bucket == index);
                     fmo_api_types::GatewayV2AvailabilityBucket {
-                        start: since + chrono::Duration::seconds(seconds * i64::from(index) / 30),
+                        start: since + chrono::Duration::hours(bucket_hours * i64::from(index)),
                         samples: bucket.map_or(0, |bucket| bucket.samples),
                         online_samples: bucket.map_or(0, |bucket| bucket.online_samples),
                     }
@@ -161,6 +172,8 @@ async fn registry(
                 },
                 availability,
                 activity: serde_json::from_value(row.get(12))?,
+                attribution: attribution(row.get(13), row.get(14)).to_owned(),
+                contested_keys: u64::try_from(row.get::<_, i64>(14))?,
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -193,6 +206,16 @@ async fn registry(
     }))
 }
 
+pub(crate) fn attribution(claimed_keys: i64, contested_keys: i64) -> &'static str {
+    if contested_keys > 0 {
+        "contested"
+    } else if claimed_keys > 0 {
+        "self_reported"
+    } else {
+        "none"
+    }
+}
+
 pub(crate) fn complete_registry(successful: usize, total: usize) -> bool {
     total > 0 && successful == total
 }
@@ -201,6 +224,14 @@ pub(crate) fn complete_registry(successful: usize, total: usize) -> bool {
 // PostgreSQL's B-tree tuple limit, including the federation and other columns.
 pub(crate) const MAX_ENDPOINT_BYTES: usize = 1024;
 
+/// Distinct gateways one guardian may announce per poll. Each becomes a stored
+/// row and a recurring outbound probe, so a guardian must not set the volume.
+pub(crate) const MAX_URLS_PER_GUARDIAN: usize = 256;
+/// Registered endpoints kept per federation module instance; see `admit`.
+pub(crate) const MAX_ACTIVE_GATEWAYS: i64 = 1024;
+/// Retired endpoints kept for history per federation module instance.
+pub(crate) const MAX_RETIRED_GATEWAYS: i64 = 1024;
+
 pub(crate) fn bounded_registrations(
     mut responses: Vec<(u16, Vec<String>)>,
 ) -> (BTreeMap<String, Vec<u16>>, usize) {
@@ -208,16 +239,125 @@ pub(crate) fn bounded_registrations(
     for (peer, urls) in &mut responses {
         let original = urls.len();
         urls.retain(|url| url.len() <= MAX_ENDPOINT_BYTES);
-        if urls.len() != original {
+        let oversized = original - urls.len();
+        // Deterministic truncation, so a list over the limit keeps the same
+        // subset each poll instead of churning stored endpoints.
+        urls.sort_unstable();
+        urls.dedup();
+        let excess = urls.len().saturating_sub(MAX_URLS_PER_GUARDIAN);
+        urls.truncate(MAX_URLS_PER_GUARDIAN);
+        if oversized > 0 || excess > 0 {
             tracing::warn!(
                 peer,
-                skipped = original - urls.len(),
-                "Oversized gateway identities skipped; registry coverage is incomplete"
+                oversized,
+                excess,
+                "Gateway identities skipped; registry coverage is incomplete"
             );
         }
-        complete += usize::from(urls.len() == original);
+        complete += usize::from(oversized == 0 && excess == 0);
     }
     (merge_registrations(responses), complete)
+}
+
+/// Announced endpoints in admission order: more announcing guardians first, so
+/// one guardian's announcements cannot crowd out gateways others agree on.
+pub(crate) fn admission_order(
+    registrations: BTreeMap<String, Vec<u16>>,
+) -> Vec<(String, Vec<u16>)> {
+    let mut ordered: Vec<_> = registrations.into_iter().collect();
+    // Stable sort keeps URL order among equally announced endpoints.
+    ordered.sort_by_key(|(_, peers)| std::cmp::Reverse(peers.len()));
+    ordered
+}
+
+/// Frees one active slot for an endpoint announced by `$4` guardians: retires
+/// the registered endpoint with the fewest announcers below that, among those
+/// not announced in this poll (`$3`).
+pub(crate) const EVICT_SQL: &str = "UPDATE fmo_lnv2.gateways SET registered=false
+     WHERE (federation_id,module_instance_id,api_endpoint) IN (
+         SELECT federation_id,module_instance_id,api_endpoint FROM fmo_lnv2.gateways
+         WHERE federation_id=$1 AND module_instance_id=$2 AND registered
+           AND NOT(api_endpoint=ANY($3::text[]))
+           AND jsonb_array_length(announcing_guardians)<$4
+         ORDER BY jsonb_array_length(announcing_guardians),last_seen,api_endpoint
+         LIMIT 1)";
+
+/// Retires registered endpoints beyond `$3`, keeping the strongest guardian
+/// agreement, then the most recently announced (as schema v2 does).
+pub(crate) const TRIM_ACTIVE_SQL: &str =
+    "UPDATE fmo_lnv2.gateways g SET registered=false FROM (
+         SELECT api_endpoint,row_number() OVER (
+             ORDER BY jsonb_array_length(announcing_guardians) DESC,last_seen DESC,api_endpoint) AS rank
+         FROM fmo_lnv2.gateways
+         WHERE federation_id=$1 AND module_instance_id=$2 AND registered
+     ) r
+     WHERE g.federation_id=$1 AND g.module_instance_id=$2 AND g.api_endpoint=r.api_endpoint AND r.rank>$3";
+
+pub(crate) const PRUNE_RETIRED_SQL: &str =
+    "DELETE FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND NOT registered
+       AND api_endpoint NOT IN (
+         SELECT api_endpoint FROM fmo_lnv2.gateways
+         WHERE federation_id=$1 AND module_instance_id=$2 AND NOT registered
+         ORDER BY last_seen DESC,api_endpoint LIMIT $3)";
+
+/// Stores this poll's announcements within `MAX_ACTIVE_GATEWAYS`. Endpoints
+/// already registered are always refreshed. Otherwise a guardian that keeps its
+/// polls incomplete, so nothing is retired, could fill the registry with
+/// changing URLs. At capacity, a new endpoint displaces only one announced by
+/// fewer guardians that is absent from this poll. Returns how many were
+/// skipped.
+pub(crate) async fn admit(
+    tx: &DbTransaction<'_>,
+    fed: &[u8],
+    instance: u16,
+    announced: &[String],
+    registrations: BTreeMap<String, Vec<u16>>,
+) -> anyhow::Result<usize> {
+    let instance = i32::from(instance);
+    // A registry already over capacity (stored before the limit, or under a
+    // larger one) shrinks to it first; admission below only keeps it there.
+    tx.execute(TRIM_ACTIVE_SQL, &[&fed, &instance, &MAX_ACTIVE_GATEWAYS])
+        .await?;
+    let mut active: i64 = tx
+        .query_one(
+            "SELECT count(*) FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND registered",
+            &[&fed, &instance],
+        )
+        .await?
+        .get(0);
+    let mut skipped = 0;
+    for (url, peers) in admission_order(registrations) {
+        let registered: Option<bool> = tx
+            .query_opt(
+                "SELECT registered FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3",
+                &[&fed, &instance, &url],
+            )
+            .await?
+            .map(|row| row.get(0));
+        if registered != Some(true) {
+            if active < MAX_ACTIVE_GATEWAYS {
+                active += 1;
+            } else if tx
+                .execute(
+                    EVICT_SQL,
+                    &[&fed, &instance, &announced, &i32::try_from(peers.len())?],
+                )
+                .await?
+                == 0
+            {
+                skipped += 1;
+                continue;
+            }
+        }
+        tx.execute(
+            "INSERT INTO fmo_lnv2.gateways(federation_id,module_instance_id,api_endpoint,announcing_guardians)
+             VALUES($1,$2,$3,$4) ON CONFLICT(federation_id,module_instance_id,api_endpoint)
+             DO UPDATE SET last_seen=now(),registered=true,announcing_guardians=$4",
+            &[&fed, &instance, &url, &serde_json::to_value(peers)?],
+        )
+        .await?;
+    }
+    Ok(skipped)
 }
 
 pub(crate) fn merge_registrations(
@@ -321,20 +461,21 @@ async fn poll_instance(
                     &[&bytes,&i32::from(instance),&(successful as i32),&(config.global.api_endpoints.len() as i32)],
                 ).await?;
                 // A partial response cannot establish that an endpoint was removed.
+                let urls = registrations.keys().cloned().collect::<Vec<_>>();
                 if complete_registry(successful, config.global.api_endpoints.len()) {
-                    let urls = registrations.keys().cloned().collect::<Vec<_>>();
                     tx.execute("UPDATE fmo_lnv2.gateways SET registered=false WHERE federation_id=$1 AND module_instance_id=$2 AND registered AND NOT(api_endpoint=ANY($3::text[]))",&[&bytes,&i32::from(instance),&urls]).await?;
                 }
-                for (url, peers) in registrations {
-                    tx.execute(
-                        "INSERT INTO fmo_lnv2.gateways(federation_id,module_instance_id,api_endpoint,announcing_guardians)
-                         VALUES($1,$2,$3,$4) ON CONFLICT(federation_id,module_instance_id,api_endpoint)
-                         DO UPDATE SET last_seen=now(),registered=true,announcing_guardians=$4",
-                        &[&bytes,&i32::from(instance),&url,&serde_json::to_value(peers)?],
-                    ).await?;
+                let skipped = admit(&tx, &bytes, instance, &urls, registrations).await?;
+                if skipped > 0 {
+                    tracing::warn!(%fed,instance,skipped,"Gateway registry is at capacity; new endpoints announced by fewer guardians were not stored");
                 }
-                // Bound retired registry storage; active registrations remain.
+                // Bound retired registry storage by age and count; active registrations remain.
                 tx.execute("DELETE FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND NOT registered AND last_seen<now()-interval '90 days'",&[&bytes,&i32::from(instance)]).await?;
+                tx.execute(
+                    PRUNE_RETIRED_SQL,
+                    &[&bytes, &i32::from(instance), &MAX_RETIRED_GATEWAYS],
+                )
+                .await?;
                 tx.execute(
                     "SELECT pg_notify('fmo_work',$1)",
                     &[&format!("lnv2:{fed}:{instance}")],

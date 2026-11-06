@@ -10,7 +10,6 @@ description = "Module-agnostic core of Fedimint Observer: fetching, storage, API
 fedimint-api-client = { workspace = true }
 fedimint-connectors = { workspace = true }
 fedimint-core = { workspace = true }
-fedimint-ln-common = { workspace = true }
 fedimint-meta-client = { workspace = true }
 fedimint-wallet-common = { workspace = true }
 

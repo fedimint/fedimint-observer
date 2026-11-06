@@ -117,6 +117,15 @@ impl Services {
     pub fn work_notifications(&self, topic: &str) -> tokio::sync::watch::Receiver<u64> {
         self.0.work_notifications.subscribe(topic)
     }
+    /// How long to wait for a deadline `seconds` away by the database clock,
+    /// as `EXTRACT(EPOCH FROM deadline-now())` returns it. Clamp here, not
+    /// with SQL `GREATEST(0, ...)`, which ignores NULL and turns an empty queue
+    /// (no deadline: wait for a notification) into a zero wait. Past deadlines
+    /// wait zero; a value that is not a duration falls back to a minute.
+    pub fn wait_for_deadline(seconds: f64) -> std::time::Duration {
+        std::time::Duration::try_from_secs_f64(seconds.max(0.0))
+            .unwrap_or(std::time::Duration::from_secs(60))
+    }
     /// A process-wide budget for bounded background calls to external services.
     pub async fn external_io_permit(&self) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
         Ok(self.0.external_io.clone().acquire_owned().await?)

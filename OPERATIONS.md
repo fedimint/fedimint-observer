@@ -1,56 +1,48 @@
-# Running the observer with bounded resources
+# Operating the observer
 
-For local development, start PostgreSQL only if it is stopped. In the repository
-root, export the variables from `.env` before running the server:
+What an operator needs to deploy, upgrade and monitor the observer. How the
+code works is documented in the code and in `CLAUDE.md`.
 
-```sh
-source scripts/pg_dev/env.sh
-set -a
-source .env
-set +a
-just run
-```
-
-The server reads `FO_DATABASE` and `FO_ADMIN_AUTH` from its environment.
-`source .env` alone does not export those variables to `cargo run`. A database
-already at the earlier v13 schema receives the additive session time repair
-update when the collector starts.
+## Processes
 
 Run one collector instance and any number of API instances against the same
 PostgreSQL database. The default instance collects data and serves HTTP. Set
-`FO_API_ONLY=true` on additional API instances. They do not run migrations,
-collectors, projection, retention, or administrative writes.
+`FO_API_ONLY=true` on additional API instances: they do not run migrations,
+collectors, projection, retention, or administrative writes. Route
+administrative requests to the collector.
 
-The collector holds a dedicated PostgreSQL advisory lock for its lifetime. A
-second collector exits rather than duplicate work. Loss of that connection
-cancels the collector's tasks and stops its server. A heartbeat runs every five
-seconds with a five second deadline to detect a silent connection failure. A process manager should
-restart it. This is single active ownership, not automatic standby election.
-Use a direct database connection or session pooling; transaction pooling cannot
-preserve a session advisory lock. The lease connection also listens for
-committed queue and registry changes. Budget one extra database connection
-for it.
+The collector holds a PostgreSQL advisory lock on a dedicated connection for its
+lifetime. A second collector exits rather than duplicate work, and losing that
+connection stops the collector, so a process manager should restart it. This is
+single active ownership, not automatic standby election. Use a direct database
+connection or session pooling (transaction pooling cannot keep a session lock),
+and budget one extra database connection for it.
+
+The server reads its settings from the environment and does not load `.env`
+itself. For local development:
+
+```sh
+source scripts/pg_dev/env.sh
+set -a; source .env; set +a
+just run
+```
 
 ## Upgrade
 
-1. Take a database backup and verify a restore in an isolated database. For
-   production, use PostgreSQL backups/WAL archiving to separate storage with a
-   defined recovery point and recovery time. The development backup script is
-   not an off-host disaster recovery system.
-2. Stop the existing collector. Start the updated collector to apply core schema
-   v14 and the module migrations. Core v11 or newer is supported;
-   older populated databases need the previous release's migrations first.
-3. Allow time for the session counter backfill and new indexes to finish.
-   Migrations run transactionally with no statement deadline and a 30 second
-   lock deadline. Version 13 also schedules one session history repair per
-   existing federation; monitor the repair queue as it drains. The indexes are
-   regular builds: plan a maintenance window on a large database, rather than
-   assuming zero downtime.
-4. Check `/ready`, then start API replicas with the same binary/module set.
-   Deploy the matching frontend: balances and guardian block heights are now
-   nullable. Route administrative requests to the collector.
-5. Check snapshot collection and projection positions before directing traffic.
-   Downgrading the binary after migration is refused; roll back by restoring a
+1. Take a database backup and verify a restore in an isolated database.
+2. Stop the existing collector and start the updated one. It applies the core
+   schema (currently v14) and the module migrations. Populated databases upgrade
+   from core v11 or newer; older ones need the previous release's migrations
+   first.
+3. Allow time for backfills and index builds. Migrations run transactionally
+   with no statement deadline and a 30 second lock deadline, and the indexes are
+   regular builds: plan a maintenance window on a large database. Some module
+   migrations reset only their own projector cursor to backfill from stored
+   sessions (Wallet v2 deposits, Lightning v2 contract activity); the gateway
+   API reports `activity_caught_up` once that replay has finished.
+4. Check `/ready`, then start API replicas with the same binary and module set,
+   and deploy the matching frontend.
+5. Downgrading the binary after migration is refused. Roll back by restoring a
    verified backup, or ship a forward fix.
 
 ## Limits
@@ -65,110 +57,80 @@ for it.
 | `FO_HTTP_CONCURRENCY` | `128` | Concurrent application requests per process |
 | `FO_HEALTH_RETENTION_DAYS` | `90` | Raw guardian history retention; `0` disables pruning |
 
-Retention must be at least 31 days when enabled. Pruning deletes at most 5,000
-raw samples per minute and preserves each guardian's latest sample. Hourly
-rollups are retained. This bounds routine growth, but a large existing backlog
-can take time to drain. Alert on disk usage and monitor autovacuum/bloat.
-
-API connections have a 5 second statement deadline and 2 second pool wait;
-background connections have a 120 second statement deadline and 10 second
-pool wait. Both have 5 second lock and 60 second idle transaction deadlines.
-These settings override URL `options`. Size the sum of pools across all
-replicas below PostgreSQL's connection limit, leaving room for maintenance.
-Use `sslmode=require` for remote databases and configure a trusted system CA.
-The native TLS connector verifies certificates and hostnames; `require` prevents
-plaintext fallback. This driver accepts `disable`, `prefer`, and `require`, not
-libpq's `verify-full` spelling. Local Unix sockets also work. The container
-includes system CA certificates.
+Retention must be at least 31 days when enabled. Size the sum of the pools
+across all replicas below PostgreSQL's connection limit, leaving room for
+maintenance. Use `sslmode=require` for remote databases with a trusted system
+CA; the driver accepts `disable`, `prefer`, and `require`, not libpq's
+`verify-full` spelling.
 
 Application requests have a 30 second deadline. Overload returns `503` with
-`Retry-After`; a request deadline returns `504`. Config inspector requests also
-have a separate concurrency limit of four. `/health`, `/live`, `/ready`, and
-`/metrics` bypass admission. Put public TLS termination, per-client rate limits,
-and access controls for `/metrics` and administrative paths at the reverse
-proxy. Concurrency limits do not replace network egress policy for untrusted
-federation URLs or public inspector endpoints.
+`Retry-After`; a request deadline returns `504`. `/health`, `/live`, `/ready`,
+and `/metrics` bypass admission. Put public TLS termination, per-client rate
+limits, and access controls for `/metrics` and administrative paths at the
+reverse proxy.
 
-## Latency and consistency
+Lightning v2 gateway data comes from guardians and gateways and is bounded:
+256 gateway URLs per guardian per poll, 1,024 registered and 1,024 retired
+gateways per federation module instance, and 90 days of probe history. Contract
+activity is attributed by the module key a gateway reports about itself, which
+the observer cannot verify; a key claimed by more than one gateway is shown as
+contested and credited to neither.
 
-* Federation summaries and observed federation metadata use database snapshots,
-  with no guardian HTTP/RPC on the request path. Metadata refreshes every five
-  minutes after each pass; consensus fields take priority over external
-  overrides, then configured fields. Failed sources preserve their last value.
-* Wallet v2 balance collection normally waits one minute after each poll and
-  backs off to 15 minutes after failures, plus an instance-specific offset.
-  History collection also backs off when unchanged or failing. The collector
-  retains the fetched chain; 20 entries is the default API page size. History
-  is marked stale after 30 minutes and balances after five minutes. Stored
-  history remains readable during failures. Before the first collection, the
-  history has no observation timestamp and is marked stale; the legacy route
-  returns an empty array. Stale aggregate assets use `null`. Successful empty
-  wallets have a zero balance.
-* Wallet v1 projection enqueues durable Bitcoin enrichment in the same database
-  transaction as the signatures and cursor. A separate worker fetches Bitcoin
-  transactions with a 30 second deadline, at most four at once, and retries with
-  backoff. It holds no database connection during the fetch. A two minute lease
-  recovers interrupted jobs; clean resets invalidate old job IDs. Derived
-  withdrawals/UTXOs can lag the projector while enrichment is pending.
-* Session and transaction lists default to 100 results and accept `limit=1..500`.
-  Continue with `after=<last session index>` or `after=<last transaction ID>`.
-  Ordering is ascending by cursor, and response shapes are unchanged. Clients
-  that relied on downloading the entire list must now paginate.
-* Block-height votes can be stored before their block timestamps arrive. The
-  collector checks durable timestamp repair jobs every minute and rebuilds the
-  affected session history and daily activity once the timestamp is available.
-* Session and transaction counts use incremental database read models. Session
-  history is append-only: direct SQL deletion requires rebuilding its counter.
-* Guardian latency measures a timed status RPC after a warm-up request. Missing
-  Wallet v1 block height no longer makes Wallet v2 guardians appear offline.
-  Latest health older than five minutes is not reported as currently online.
-* The detail page fetches expensive UTXO comparisons only when the Assets tab is
-  opened and does not repeat the whole page load when module detection finishes.
+## Egress policy
 
-Successful federation GET responses permit ten seconds of cache reuse plus
-thirty seconds of stale-while-revalidate. Gzip is available. Upstream Wallet v2
-currently supplies its entire transaction chain per history poll. The fetched
-chain is retained; API pagination bounds response size, not retained storage or
-the upstream payload. Wallet v1 UTXO comparison still performs bounded remote
-checks on a cold cache. These paths,
-gateway aggregation, full view refreshes, and long historical backfills remain
-candidates for profiling at production volume.
+Gateway endpoints come from guardians, and their Iroh addresses from discovery
+records the gateway operator publishes. HTTPS probes are pinned to public
+addresses in code; Iroh probes are not, so a published record can direct QUIC
+handshake packets to private addresses. The handshake only completes with the
+named node key, so nothing is read back, but the packets are still sent. The
+public config inspector also connects to guardian URLs from user-supplied invite
+codes. Enforce this at the network layer: run the observer as a dedicated user,
+container or network namespace and drop its outbound traffic to non-public
+destinations, allowing first the few internal services it needs. With nftables,
+for example:
 
-Session batches are bounded by count, not bytes; live collection can buffer 32
-sessions per federation. The enrichment and timestamp repair queues have no
-global size limit. Large replays can repeatedly rebuild federation activity,
-so measure the resulting database work and queue growth before setting capacity.
-
-Use bounded ranges for administrative backfills. Each batch publishes restored
-rows and read models atomically; cancellation rolls back the current batch.
-Previously completed batches remain committed and can be safely replayed.
-Module reset locks its cursor against active projection, including resets to
-the same numeric position.
-
-## Verification and monitoring
-
-```sh
-nix develop -c cargo test --workspace --locked
-cd fmo_frontend_react
-npm ci
-npm run lint
-npm run build
+```
+table inet fmo_egress {
+  chain output {
+    type filter hook output priority 0; policy accept;
+    meta skuid != "fmo" accept
+    # Replies on connections already allowed, including API responses to a
+    # reverse proxy on loopback. Only new outbound connections are restricted.
+    ct state established,related accept
+    ip daddr 10.0.0.53 udp dport 53 accept   # resolver
+    ip daddr 10.0.0.53 tcp dport 53 accept
+    ip daddr 10.0.0.20 tcp dport 5432 accept # PostgreSQL
+    oifname "lo" tcp dport 5432 accept       # or a local PostgreSQL
+    ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16,
+               172.16.0.0/12, 192.0.0.0/24, 192.0.2.0/24, 192.88.99.0/24,
+               192.168.0.0/16, 198.18.0.0/15, 198.51.100.0/24, 203.0.113.0/24,
+               224.0.0.0/4, 240.0.0.0/4 } drop
+    ip6 daddr != 2000::/3 drop
+    ip6 daddr { 2001::/23, 2001:db8::/32, 2002::/16, 3fff::/20 } drop
+  }
+}
 ```
 
-With a disposable local PostgreSQL instance and `createdb`, `dropdb`, and
-`psql` on `PATH`, run `fmo_core/tests/run-session-time-repair.sh`. It creates
-and drops a separate database, applies the core migrations, and checks populated
-v11 upgrades, counts, wallet totals, delayed block timestamps, activity
-correction, and rollback recovery. Set `PGHOST`,
-`PGPORT`, and `PGUSER` to the test instance before running it.
+The `ct state` rule must come before the destination drops: the observer's
+replies to a reverse proxy (for example Nginx on `127.0.0.1`) are outbound
+packets from the observer's user, and without it they would hit the
+`127.0.0.0/8` drop. A new connection to a private address is still dropped on
+its first packet, so it never becomes established. Replace the example
+addresses with your resolver and database, and add any other internal
+dependency (a self-hosted mempool instance, metrics push) before the drop
+rules. These ranges match the HTTPS policy in
+`fmo_modules/fmo_module_lnv2/src/public_http.rs`. Check the rules after enabling
+them: probes should keep succeeding for public gateways, the observer should
+still reach its database and resolver, and the API should still answer through
+the proxy.
 
-HTTP unit tests check overload, probe availability, deadlines, and permit release.
+## Monitoring
 
-`/live` (and legacy `/health`) is liveness. `/ready` checks the database and local
-worker ownership; it does not assert that every federation is synchronized.
-`/metrics` exposes HTTP request/error/rejection counters, a latency histogram,
-pool sizes/availability/waiters, and local worker health. Requests receive an
-`x-request-id`; unexpected internal errors are logged and sanitized for clients.
+`/live` (and legacy `/health`) is liveness. `/ready` checks the database and
+local worker ownership; it does not assert that every federation is
+synchronized. `/metrics` exposes HTTP request, error and rejection counters, a
+latency histogram, pool usage, and local worker health. Responses carry an
+`x-request-id`.
 
 Monitor snapshot ages, queue backlog, and module lag alongside HTTP percentiles:
 
@@ -176,129 +138,28 @@ Monitor snapshot ages, queue backlog, and module lag alongside HTTP percentiles:
 SELECT kind, max(now() - observed_at) AS oldest FROM federation_observations GROUP BY kind;
 SELECT count(*) AS pending_timestamp_repairs FROM session_time_repairs;
 SELECT count(*) AS pending, min(retry_at) AS next_retry, max(attempts) FROM fmo_wallet.enrichment_jobs;
+SELECT count(*) AS pending, min(retry_at) AS next_retry FROM fmo_walletv2.deposit_jobs;
 SELECT c.module_kind, encode(c.federation_id, 'hex') AS federation,
        s.session_count - c.next_session AS sessions_behind, c.updated_at
 FROM module_cursors c JOIN federation_session_counts s USING (federation_id);
 ```
 
-Before setting a production capacity or latency SLO, load-test a restored,
-representative database with cold and warm caches, an enrichment backlog,
-unreachable guardians, and several API replicas. Measure p50/p95/p99 latency,
-rejections, pool waits, projection lag, database CPU/I/O, and recovery after
-collector termination. Unit and integration tests establish invariants; they
-do not establish a production throughput figure or disaster-recovery guarantee.
-
-## Wallet v2 and Lightning v2
-
-The module migrations add `fmo_walletv2` history, balance snapshots and durable
-input enrichment jobs, and `fmo_lnv2` gateway registrations. The first Wallet v2
-upgrade resets only its projector cursor to discover deposit output indices in
-stored sessions. Other module cursors and core session ingestion continue.
-Deposit jobs query the guardians for the tracked output value, subtract the
-receive fee, and update the input amount and daily volume once, transactionally.
-Inspect `fmo_walletv2.deposit_jobs` for retry backlog; `retry_at` backs off on
-remote failure. Enrichment drains bounded batches independently of balance
-polling; the history API exposes `accounting_pending` while jobs remain.
-Take a private database backup before upgrading the collector.
-
-`GET /federations/:id/wallet-v2/history` accepts `module_instance_id`, `before`
-(exclusive transaction index) and `limit` (1–100, default 20). It returns
-transactions, `next_before`, balance and history observation timestamps, and
-separate stale flags. With several Wallet v2 instances, an instance id is
-required. The existing `/wallet-v2/on-chain` array response remains available.
-History and balances are retained across failed polls; fresh aggregate assets
-require a fresh observation from every configured wallet instance, and inherit
-the oldest component's timestamp.
-
-Wallet balance polling starts at one minute and backs off up to 15 minutes on
-failure, with an instance-specific offset. Unchanged history polling also backs
-off up to 15 minutes; newly projected wallet activity requests an earlier poll.
-The Fedimint v0.12 transaction-chain endpoint still returns the entire chain.
-The observer persists new entries in batches of 100, skips already published
-indices, and serves bounded pages,
-but reducing transfer size per poll requires an upstream range/cursor endpoint.
-A completed import publishes its highest index so API readers do not see a
-partly imported initial history.
-
-`GET /federations/:id/gateways/v2` accepts `module_instance_id`, `after` (exclusive
-endpoint URL), `limit` (1–100), and `window` (`24h`, `7d`, `30d`, `90d`). It returns
-registry membership and guardian coverage, plus node routing metadata, latest
-probe status/latency, hourly availability buckets, and attributed contract activity.
-Gateway identities longer than 1,024 UTF-8 bytes are skipped before database
-writes. A guardian response containing one counts as incomplete; valid entries
-from that response are still retained. Only a complete guardian poll can mark
-an endpoint removed. Partial or failed polls preserve previous registrations. Removed entries are kept for 90 days.
-The frontend exposes a separate Lightning v2 gateway page for federations that
-have that module. A separate worker probes registered endpoints every five
-minutes using short-lived Iroh 0.35/1.0 transports or a public-address-pinned
-HTTPS client. Both transports cap response reads at one MiB before decoding.
-Iroh endpoints and connections are closed after each probe, including failures;
-no gateway-target connection pool is retained. Requests have deadlines and
-shared concurrency limits. Iroh latency includes establishing the probe
-connection. HTTPS redirects, credentials, and private/special-use addresses
-are rejected. Policy/DNS skips leave status unknown and do not add
-failed-probe samples. Database connections are released before external I/O.
-
-The `fmo_lnv2` v1 migration adds probe/routing metadata, 90-day hourly availability
-rollups, historical gateway keys, and contract activity/resolution projections.
-It resets only the Lightning v2 projector to backfill public contract history.
-The API reports `activity_caught_up` until that replay reaches the current session.
-Contract funding is attributed through the gateway module key: outgoing claim
-keys and incoming refund keys. Old keys remain attributable after rotation.
-Counts cover contracts funded in the selected window and their observed outcomes;
-they are not a claim about Lightning payment success or liquidity.
-
-Online status requires a fresh successful `routing_info` reply supporting this
-federation. A reachable gateway without federation support is degraded; a failed
-check is offline; a missing/stale check is unknown. Failed checks retain the last
-valid alias, node key, and fee metadata with its own observation timestamp.
-Probe success rates and availability strips use only samples collected by this
-observer, with unobserved periods shown as gaps. V1 history is never copied into v2.
-
-Run the database regression test against an empty, isolated database by setting
-`FMO_WALLETV2_TEST_DATABASE` to its PostgreSQL URL and running
-`cargo test -p fmo_module_walletv2 postgres_deposit_replay_and_instance_pagination -- --ignored`.
-The test rolls back all fixtures and does not use `FO_DATABASE`.
-
-For the gateway database regression, set `FMO_LNV2_TEST_DATABASE` to an empty
-isolated database and run
-`cargo test -p fmo_module_lnv2 postgres_probe_history_and_activity -- --ignored`.
-Both database regressions run in CI. A separate ignored read-only Iroh smoke test
-accepts `FMO_LNV2_LIVE_FEDERATION` and `FMO_LNV2_LIVE_GATEWAY` and can be run with
-`cargo test -p fmo_module_lnv2 public_gateway_routing_info -- --ignored --nocapture`.
-
-Internal deposit, repair and gateway-probe workers drain durable work at startup.
-PostgreSQL commit notifications wake them for new jobs, registry changes and
-block-time arrivals; retry/probe deadlines come from database timestamps. The
-collector lease connection carries notifications and stops workers if lost.
-Receivers mark their generation before reading the queue, retaining notifications
-that race a query. Idle workers do not scan on a fixed interval; failures retain
-a bounded retry delay. External guardian and gateway sampling still uses its
-configured cadence and backoff.
+Also alert on disk usage: raw guardian samples are pruned gradually, so a large
+backlog takes time to drain.
 
 ## Frontend delivery
 
-The frontend build includes `robots.txt`, `llms.txt` and
-`/.well-known/ai-catalog.json`. Serve these as files, with a real `404` if one
-is absent; the SPA fallback must not turn a missing text/JSON document into
-HTML with status `200`. The catalog declares no autonomous agents; public
-monitoring pages and data links are documented in `llms.txt`.
-
-For Nginx, add exact discovery-file locations alongside the SPA route:
+Serve `robots.txt`, `llms.txt` and `/.well-known/ai-catalog.json` as files, with
+a real `404` if one is absent, so the SPA fallback does not answer them with
+HTML. Use `Cache-Control: no-cache` for HTML and long-lived immutable caching
+for hashed `/assets/` files. Nix store files share timestamps, so disable
+mtime-based conditional responses for HTML to avoid a false `304` between two
+builds. For Nginx:
 
 ```nginx
 location = /robots.txt { try_files $uri =404; }
 location = /llms.txt { try_files $uri =404; }
 location = /.well-known/ai-catalog.json { try_files $uri =404; }
-```
-
-Use `Cache-Control: no-cache` for HTML so browsers revalidate deployments while
-remaining eligible for back/forward caching. Keep hashed `/assets/` files on
-long-lived immutable caching. Nix store files share timestamps, so disable
-mtime-based conditional responses for HTML to avoid a false `304` when two
-builds produce an index of the same size. Replace existing matching locations:
-
-```nginx
 location = /index.html {
     add_header Cache-Control "no-cache" always;
     etag off;
@@ -312,12 +173,28 @@ location / {
 }
 ```
 
-Validate changes with `nginx -t` before reloading. Keep `/api/` proxy routing and
-its cache policy separate. Missing API/static resources should not fall back
-to the React index.
+Keep `/api/` proxy routing and its cache policy separate, and validate with
+`nginx -t` before reloading.
 
-Homepage mini charts and the Lightning v2 availability chart render directly
-with HTML/SVG. ECharts remains lazy-loaded for detailed charts on other routes.
-Availability line segments preserve unobserved gaps. To reproduce a frontend
-performance audit, use a clean browser profile with extensions disabled; report
-local preview scores separately from deployed, throttled measurements.
+## Tests
+
+```sh
+nix develop -c cargo test --workspace --locked
+cd fmo_frontend_react && npm ci && npm run lint && npm run build
+```
+
+The database regressions are ignored by default and run in CI. Each needs an
+empty, isolated database, rolls back its fixtures, and does not use
+`FO_DATABASE`:
+
+| Variable | Command |
+| --- | --- |
+| `FMO_WORK_TEST_DATABASE` | `cargo test -p fmo_core postgres_ -- --ignored` |
+| `FMO_WALLETV2_TEST_DATABASE` | `cargo test -p fmo_module_walletv2 postgres_ -- --ignored` |
+| `FMO_LNV2_TEST_DATABASE` | `cargo test -p fmo_module_lnv2 postgres_ -- --ignored` |
+
+`fmo_core/tests/run-session-time-repair.sh` creates and drops its own database
+to check upgrades from v11; set `PGHOST`, `PGPORT`, and `PGUSER` to a disposable
+instance first. A read-only Iroh smoke test takes `FMO_LNV2_LIVE_FEDERATION` and
+`FMO_LNV2_LIVE_GATEWAY`:
+`cargo test -p fmo_module_lnv2 public_gateway_routing_info -- --ignored --nocapture`.

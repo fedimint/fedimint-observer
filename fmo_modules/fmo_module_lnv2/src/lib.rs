@@ -22,6 +22,7 @@ impl ObserverModule for LnV2Observer {
         &[
             include_str!("../schema/v0.sql"),
             include_str!("../schema/v1.sql"),
+            include_str!("../schema/v2.sql"),
         ]
     }
     fn federation_routes(&self) -> Option<axum::Router<fmo_core::module::Services>> {

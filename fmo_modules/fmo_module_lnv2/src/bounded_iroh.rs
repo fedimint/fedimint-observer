@@ -11,10 +11,13 @@ use futures::FutureExt;
 
 pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
+/// Also returns the request latency. It excludes binding the local endpoints,
+/// as HTTPS latency excludes DNS; it includes address discovery and the QUIC
+/// handshake, as HTTPS latency includes the TCP and TLS handshakes.
 pub(crate) async fn routing_info(
     url: &SafeUrl,
     fed: &FederationId,
-) -> anyhow::Result<Option<RoutingInfo>> {
+) -> anyhow::Result<(Option<RoutingInfo>, Duration)> {
     let host = url.host_str().context("Missing Iroh identity")?;
     let next_only = url.path() == "/v1";
     let stable_id: iroh::NodeId = host.parse()?;
@@ -46,6 +49,7 @@ pub(crate) async fn routing_info(
         params: Some(serde_json::to_value(fed)?),
         password: None,
     })?;
+    let started = std::time::Instant::now();
     let result = tokio::time::timeout(Duration::from_secs(20), async {
         let next_request = request_next(&next, next_id.into(), &request).boxed();
         if let Some(stable) = &stable {
@@ -58,6 +62,7 @@ pub(crate) async fn routing_info(
         }
     })
     .await;
+    let elapsed = started.elapsed();
     // Close on success, invalid/oversized responses, timeout and failed dials.
     // Cleanup remains inside the external-I/O concurrency budget.
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
@@ -71,7 +76,9 @@ pub(crate) async fn routing_info(
         );
     })
     .await;
-    result.context("Gateway probe timed out")?
+    result
+        .context("Gateway probe timed out")?
+        .map(|info| (info, elapsed))
 }
 
 pub(crate) async fn request_stable(
