@@ -19,3 +19,14 @@ tracing = "0.1.40"
 serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4.38", features = ["serde"] }
 fmo_api_types = { path = "../../fmo_api_types" }
+fedimint-ln-common = { workspace = true }
+
+[dev-dependencies]
+deadpool-postgres = "0.14.0"
+tokio-postgres = { version = "0.7.11", features = ["with-serde_json-1", "with-chrono-0_4"] }
+fedimint-connectors = { workspace = true }
+
+[dependencies.reqwest]
+version = "0.12.2"
+default-features = false
+features = ["json", "rustls-tls"]

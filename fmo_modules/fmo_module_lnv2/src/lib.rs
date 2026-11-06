@@ -8,14 +8,20 @@ use fedimint_lnv2_common::{
 };
 use fmo_core::module::{details_json, InputSummary, ObserverModule, OutputSummary};
 
+mod activity;
 mod gateways;
+mod probes;
+mod public_http;
 
 pub struct LnV2Observer;
 
 #[async_trait]
 impl ObserverModule for LnV2Observer {
     fn migrations(&self) -> &'static [&'static str] {
-        &[include_str!("../schema/v0.sql")]
+        &[
+            include_str!("../schema/v0.sql"),
+            include_str!("../schema/v1.sql"),
+        ]
     }
     fn federation_routes(&self) -> Option<axum::Router<fmo_core::module::Services>> {
         Some(gateways::routes())
@@ -78,6 +84,45 @@ impl ObserverModule for LnV2Observer {
             details: details_json::<LightningOutput>(value, output, "Lnv2 output"),
             ..Default::default()
         })
+    }
+    async fn process_output(
+        &self,
+        ctx: &fmo_core::module::ProcessCtx<'_>,
+        meta: &fmo_core::module::ItemMeta,
+        output: &DynOutput,
+        _summary: &OutputSummary,
+    ) -> anyhow::Result<()> {
+        activity::output(ctx, meta, output).await
+    }
+    async fn process_input(
+        &self,
+        ctx: &fmo_core::module::ProcessCtx<'_>,
+        meta: &fmo_core::module::ItemMeta,
+        input: &DynInput,
+        _summary: &InputSummary,
+    ) -> anyhow::Result<()> {
+        activity::input(ctx, meta, input).await
+    }
+    async fn reset_federation(
+        &self,
+        ctx: &fmo_core::module::ProcessCtx<'_>,
+        fed: fedimint_core::config::FederationId,
+    ) -> anyhow::Result<()> {
+        use fedimint_core::encoding::Encodable;
+        let bytes = fed.consensus_encode_to_vec();
+        ctx.dbtx
+            .execute(
+                "DELETE FROM fmo_lnv2.contract_activity WHERE federation_id=$1",
+                &[&bytes],
+            )
+            .await?;
+        ctx.dbtx
+            .execute(
+                "DELETE FROM fmo_lnv2.contract_resolutions WHERE federation_id=$1",
+                &[&bytes],
+            )
+            .await?;
+        Ok(())
     }
     fn summarize_ci(&self, ci: &DynModuleConsensusItem) -> Option<serde_json::Value> {
         let value = ci.as_any();

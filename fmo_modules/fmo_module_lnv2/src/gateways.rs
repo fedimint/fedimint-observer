@@ -25,7 +25,29 @@ struct Params {
     module_instance_id: Option<u16>,
     after: Option<String>,
     limit: Option<u16>,
+    window: Option<String>,
 }
+
+#[derive(Deserialize)]
+struct HealthTotals {
+    bucket: i32,
+    samples: u64,
+    online_samples: u64,
+    latency_sum_ms: u64,
+    latency_samples: u64,
+}
+
+pub(crate) fn window_seconds(window: &str) -> Option<i64> {
+    match window {
+        "24h" => Some(86400),
+        "7d" => Some(7 * 86400),
+        "30d" => Some(30 * 86400),
+        "90d" => Some(90 * 86400),
+        _ => None,
+    }
+}
+
+pub(crate) const REGISTRY_SQL: &str = include_str!("../schema/gateway_overview.sql");
 
 pub(crate) fn instances(config: &ClientConfig) -> Vec<u16> {
     config
@@ -58,6 +80,10 @@ async fn registry(
             ))
         }
     };
+    let window = params.window.as_deref().unwrap_or("7d");
+    let seconds = window_seconds(window)
+        .ok_or_else(|| ApiError::bad_request("window must be 24h, 7d, 30d or 90d"))?;
+    let since = Utc::now() - chrono::Duration::seconds(seconds);
     let limit = params.limit.unwrap_or(100);
     if !(1..=100).contains(&limit) {
         return Err(ApiError::bad_request("limit must be 1..100"));
@@ -72,20 +98,69 @@ async fn registry(
         )
         .await?;
     let observed_at: Option<DateTime<Utc>> = poll.as_ref().map(|row| row.get(0));
-    let rows = connection.query(
-        "SELECT api_endpoint,announcing_guardians,registered,first_seen,last_seen FROM fmo_lnv2.gateways
-         WHERE federation_id=$1 AND module_instance_id=$2 AND ($3::text IS NULL OR api_endpoint > $3)
-         ORDER BY api_endpoint LIMIT $4", &[&bytes,&i32::from(instance),&params.after,&(i64::from(limit)+1)],
-    ).await?;
+    let rows = connection
+        .query(
+            REGISTRY_SQL,
+            &[
+                &bytes,
+                &i32::from(instance),
+                &params.after,
+                &(i64::from(limit) + 1),
+                &since,
+                &(seconds as f64 / 30.0),
+            ],
+        )
+        .await?;
     let mut gateways = rows
         .iter()
         .map(|row| {
+            let totals: Vec<HealthTotals> = serde_json::from_value(row.get(11))?;
+            let samples = totals.iter().map(|bucket| bucket.samples).sum();
+            let online_samples = totals.iter().map(|bucket| bucket.online_samples).sum();
+            let latency_sum: u64 = totals.iter().map(|bucket| bucket.latency_sum_ms).sum();
+            let latency_count: u64 = totals.iter().map(|bucket| bucket.latency_samples).sum();
+            let availability = (0..30)
+                .map(|index| {
+                    let bucket = totals.iter().find(|bucket| bucket.bucket == index);
+                    fmo_api_types::GatewayV2AvailabilityBucket {
+                        start: since + chrono::Duration::seconds(seconds * i64::from(index) / 30),
+                        samples: bucket.map_or(0, |bucket| bucket.samples),
+                        online_samples: bucket.map_or(0, |bucket| bucket.online_samples),
+                    }
+                })
+                .collect();
+            let registered = row.get(2);
+            let probed_at = row.get(7);
+            let reachable = row.get(8);
+            let federation_supported = row.get(9);
             Ok(Gateway {
                 api_endpoint: row.get(0),
                 announcing_guardians: serde_json::from_value(row.get(1))?,
-                registered: row.get(2),
+                registered,
                 first_seen: row.get(3),
                 last_seen: row.get(4),
+                routing_info: row.get(5),
+                routing_observed_at: row.get(6),
+                probed_at,
+                reachable,
+                federation_supported,
+                latency_ms: row.get(10),
+                status: super::probes::status(
+                    registered,
+                    probed_at,
+                    reachable,
+                    federation_supported,
+                )
+                .to_owned(),
+                samples,
+                online_samples,
+                avg_latency_ms: if latency_count > 0 {
+                    Some(latency_sum as f64 / latency_count as f64)
+                } else {
+                    None
+                },
+                availability,
+                activity: serde_json::from_value(row.get(12))?,
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -96,7 +171,13 @@ async fn registry(
     } else {
         None
     };
+    let activity_caught_up:bool=connection.query_one(
+        "SELECT COALESCE((SELECT next_session FROM module_cursors WHERE federation_id=$1 AND module_kind='lnv2'),0)
+         >=COALESCE((SELECT MAX(session_index)::bigint+1 FROM sessions WHERE federation_id=$1),0)", &[&bytes],
+    ).await?.get(0);
     Ok(Json(Registry {
+        activity_caught_up,
+        window: window.to_owned(),
         module_instance_id: instance,
         observed_at,
         stale: observed_at
@@ -139,11 +220,17 @@ pub(crate) async fn run(
     fed: FederationId,
     config: ClientConfig,
 ) -> anyhow::Result<()> {
-    futures::future::try_join_all(
-        instances(&config)
-            .into_iter()
-            .map(|instance| poll_instance(services.clone(), fed, config.clone(), instance)),
-    )
+    futures::future::try_join_all(instances(&config).into_iter().map(|instance| {
+        let services = services.clone();
+        let config = config.clone();
+        async move {
+            tokio::try_join!(
+                poll_instance(services.clone(), fed, config, instance),
+                super::probes::run(services, fed, instance)
+            )?;
+            anyhow::Ok(())
+        }
+    }))
     .await?;
     Ok(())
 }

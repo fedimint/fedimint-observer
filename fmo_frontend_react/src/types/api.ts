@@ -33,7 +33,20 @@ export interface WalletV2History {
   accounting_pending: boolean;
 }
 
+export interface GatewayV2RoutingInfo {
+  lightning_public_key: string;
+  lightning_alias?: string | null;
+  module_public_key: string;
+  send_fee_minimum: { base: number; parts_per_million: number };
+  send_fee_default: { base: number; parts_per_million: number };
+  receive_fee: { base: number; parts_per_million: number };
+  expiration_delta_minimum: number;
+  expiration_delta_default: number;
+}
+
 export interface GatewayV2Registry {
+  activity_caught_up: boolean;
+  window: GatewayWindow;
   module_instance_id: number;
   observed_at: string | null;
   stale: boolean;
@@ -46,6 +59,22 @@ export interface GatewayV2Registry {
     registered: boolean;
     first_seen: string;
     last_seen: string;
+    status: 'online' | 'degraded' | 'offline' | 'unknown' | 'removed';
+    routing_info: GatewayV2RoutingInfo | null;
+    routing_observed_at: string | null;
+    probed_at: string | null;
+    reachable: boolean | null;
+    federation_supported: boolean | null;
+    latency_ms: number | null;
+    samples: number;
+    online_samples: number;
+    avg_latency_ms: number | null;
+    availability: { start: string; samples: number; online_samples: number }[];
+    activity: {
+      incoming_contracts: number; outgoing_contracts: number;
+      incoming_msat: number; outgoing_msat: number;
+      outgoing_claimed: number; outgoing_refunded: number; outgoing_cancelled: number;
+    };
   }[];
 }
 

@@ -302,15 +302,29 @@ pub struct GatewayOverview {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayV2Info {
+    pub status: String,
     pub api_endpoint: String,
     pub announcing_guardians: Vec<u16>,
     pub registered: bool,
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
+    pub routing_info: Option<serde_json::Value>,
+    pub routing_observed_at: Option<DateTime<Utc>>,
+    pub probed_at: Option<DateTime<Utc>>,
+    pub reachable: Option<bool>,
+    pub federation_supported: Option<bool>,
+    pub latency_ms: Option<i32>,
+    pub samples: u64,
+    pub online_samples: u64,
+    pub avg_latency_ms: Option<f64>,
+    pub availability: Vec<GatewayV2AvailabilityBucket>,
+    pub activity: GatewayV2Activity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayV2Registry {
+    pub activity_caught_up: bool,
+    pub window: String,
     pub module_instance_id: u16,
     pub observed_at: Option<DateTime<Utc>>,
     pub stale: bool,
@@ -318,4 +332,21 @@ pub struct GatewayV2Registry {
     pub total_guardians: i32,
     pub gateways: Vec<GatewayV2Info>,
     pub next_after: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayV2AvailabilityBucket {
+    pub start: DateTime<Utc>,
+    pub samples: u64,
+    pub online_samples: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayV2Activity {
+    pub incoming_contracts: u64,
+    pub outgoing_contracts: u64,
+    pub incoming_msat: u64,
+    pub outgoing_msat: u64,
+    pub outgoing_claimed: u64,
+    pub outgoing_refunded: u64,
+    pub outgoing_cancelled: u64,
 }

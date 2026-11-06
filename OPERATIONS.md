@@ -213,15 +213,43 @@ A completed import publishes its highest index so API readers do not see a
 partly imported initial history.
 
 `GET /federations/:id/gateways/v2` accepts `module_instance_id`, `after` (exclusive
-endpoint URL) and `limit` (1–100). It returns Lightning v2 registry membership,
-which guardians announced each URL, observation time, and guardian coverage.
+endpoint URL), `limit` (1–100), and `window` (`24h`, `7d`, `30d`, `90d`). It returns
+registry membership and guardian coverage, plus node routing metadata, latest
+probe status/latency, hourly availability buckets, and attributed contract activity.
 Only a complete guardian poll can mark an endpoint removed. Partial or failed
 polls preserve previous registrations. Removed entries are kept for 90 days.
 The frontend exposes a separate Lightning v2 gateway page for federations that
-have that module. Registry membership is not a probe of gateway reachability,
-Lightning liquidity, or payment success; no v1 uptime metrics are synthesized.
+have that module. A separate worker probes registered endpoints every five
+minutes using the official Iroh gateway connection or a public-address-pinned
+HTTPS client. Requests have deadlines, shared concurrency limits, and a one MiB
+HTTPS response bound. HTTPS redirects, credentials, and private/special-use
+addresses are rejected. Policy/DNS skips leave status unknown and do not add
+failed-probe samples. Database connections are released before external I/O.
+
+The `fmo_lnv2` v1 migration adds probe/routing metadata, 90-day hourly availability
+rollups, historical gateway keys, and contract activity/resolution projections.
+It resets only the Lightning v2 projector to backfill public contract history.
+The API reports `activity_caught_up` until that replay reaches the current session.
+Contract funding is attributed through the gateway module key: outgoing claim
+keys and incoming refund keys. Old keys remain attributable after rotation.
+Counts cover contracts funded in the selected window and their observed outcomes;
+they are not a claim about Lightning payment success or liquidity.
+
+Online status requires a fresh successful `routing_info` reply supporting this
+federation. A reachable gateway without federation support is degraded; a failed
+check is offline; a missing/stale check is unknown. Failed checks retain the last
+valid alias, node key, and fee metadata with its own observation timestamp.
+Probe success rates and availability strips use only samples collected by this
+observer, with unobserved periods shown as gaps. V1 history is never copied into v2.
 
 Run the database regression test against an empty, isolated database by setting
 `FMO_WALLETV2_TEST_DATABASE` to its PostgreSQL URL and running
 `cargo test -p fmo_module_walletv2 postgres_deposit_replay_and_instance_pagination -- --ignored`.
 The test rolls back all fixtures and does not use `FO_DATABASE`.
+
+For the gateway database regression, set `FMO_LNV2_TEST_DATABASE` to an empty
+isolated database and run
+`cargo test -p fmo_module_lnv2 postgres_probe_history_and_activity -- --ignored`.
+Both database regressions run in CI. A separate ignored read-only Iroh smoke test
+accepts `FMO_LNV2_LIVE_FEDERATION` and `FMO_LNV2_LIVE_GATEWAY` and can be run with
+`cargo test -p fmo_module_lnv2 public_gateway_routing_info -- --ignored --nocapture`.
