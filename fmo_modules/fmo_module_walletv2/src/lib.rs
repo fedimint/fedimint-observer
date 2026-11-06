@@ -102,6 +102,15 @@ impl ObserverModule for WalletV2Observer {
               &i32::try_from(meta.session_index)?, &i64::try_from(input.output_index)?,
               &i64::try_from(input.fee.to_sat())?],
         ).await?;
+        ctx.dbtx
+            .execute(
+                "SELECT pg_notify('fmo_work',$1)",
+                &[&format!(
+                    "walletv2:{}:{}",
+                    meta.federation_id, meta.module_instance_id
+                )],
+            )
+            .await?;
         mark_history_dirty(ctx, meta).await?;
         Ok(())
     }

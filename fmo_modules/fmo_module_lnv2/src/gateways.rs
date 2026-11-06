@@ -197,6 +197,29 @@ pub(crate) fn complete_registry(successful: usize, total: usize) -> bool {
     total > 0 && successful == total
 }
 
+// All gateway foreign/primary keys include this identity. Keep well below
+// PostgreSQL's B-tree tuple limit, including the federation and other columns.
+pub(crate) const MAX_ENDPOINT_BYTES: usize = 1024;
+
+pub(crate) fn bounded_registrations(
+    mut responses: Vec<(u16, Vec<String>)>,
+) -> (BTreeMap<String, Vec<u16>>, usize) {
+    let mut complete = 0;
+    for (peer, urls) in &mut responses {
+        let original = urls.len();
+        urls.retain(|url| url.len() <= MAX_ENDPOINT_BYTES);
+        if urls.len() != original {
+            tracing::warn!(
+                peer,
+                skipped = original - urls.len(),
+                "Oversized gateway identities skipped; registry coverage is incomplete"
+            );
+        }
+        complete += usize::from(urls.len() == original);
+    }
+    (merge_registrations(responses), complete)
+}
+
 pub(crate) fn merge_registrations(
     responses: Vec<(u16, Vec<String>)>,
 ) -> BTreeMap<String, Vec<u16>> {
@@ -286,8 +309,9 @@ async fn poll_instance(
         .await;
         match result {
             Ok(Ok(responses)) => {
-                let successful = responses.len();
-                let registrations = merge_registrations(responses);
+                // Validate before opening a transaction. Truncated guardian
+                // responses cannot prove any previously known gateway retired.
+                let (registrations, successful) = bounded_registrations(responses);
                 let mut connection = services.connection().await?;
                 let tx = connection.transaction().await?;
                 tx.execute(
@@ -311,6 +335,11 @@ async fn poll_instance(
                 }
                 // Bound retired registry storage; active registrations remain.
                 tx.execute("DELETE FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND NOT registered AND last_seen<now()-interval '90 days'",&[&bytes,&i32::from(instance)]).await?;
+                tx.execute(
+                    "SELECT pg_notify('fmo_work',$1)",
+                    &[&format!("lnv2:{fed}:{instance}")],
+                )
+                .await?;
                 tx.commit().await?;
                 failures = 0;
             }

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import type { EChartsOption } from 'echarts';
 import { api } from '../services/api';
@@ -6,6 +6,7 @@ import type { ClientConfig, GatewayV2Registry, GatewayV2RoutingInfo, GatewayWind
 import { Copyable } from '../components/Copyable';
 import { useTheme } from '../hooks/useTheme';
 import { asBitcoin, shortMiddle } from '../utils/format';
+import { PageRequests } from '../utils/pageRequests';
 
 const TrendChart = lazy(() => import('../components/UptimeTrendChart').then((module) => ({ default: module.UptimeTrendChart })));
 const windows: GatewayWindow[] = ['24h', '7d', '30d', '90d'];
@@ -59,7 +60,7 @@ function GatewayModules({ id, instances, timeWindow }: { id: string; instances: 
   const [instance, setInstance] = useState(instances[0]);
   return <>
     {instances.length > 1 && <label className="mb-4 block text-sm">Lightning module <select value={instance} onChange={(event) => setInstance(Number(event.target.value))} className="ml-2 rounded-lg border border-gray-300 bg-white p-2 dark:border-gray-600 dark:bg-gray-800">{instances.map((id) => <option key={id} value={id}>Lightning #{id}</option>)}</select></label>}
-    <GatewayDirectory key={`${instance}:${timeWindow}`} id={id} instance={instance} timeWindow={timeWindow} />
+    <GatewayDirectory key={`${id}:${instance}:${timeWindow}`} id={id} instance={instance} timeWindow={timeWindow} />
   </>;
 }
 
@@ -72,21 +73,25 @@ function GatewayDirectory({ id, instance, timeWindow }: { id: string; instance: 
   const [filter, setFilter] = useState<Status | 'all'>('all');
   const [sort, setSort] = useState('name');
   const [reload, setReload] = useState(0);
+  const requests = useRef(new PageRequests());
   useEffect(() => {
     const controller = new AbortController();
+    const gate = requests.current;
     let inFlight = false;
     const refresh = async () => {
       if (inFlight || document.visibilityState === 'hidden' || olderLoaded) return;
+      const generation = gate.refresh();
+      if (generation === null) return;
       inFlight = true;
       try {
         const data = await api.getGatewayV2Registry(id, instance, timeWindow, undefined, controller.signal);
-        if (!controller.signal.aborted) { setRegistry(data); setError(null); }
-      } catch (error) { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : 'Could not refresh gateways'); }
+        if (!controller.signal.aborted && gate.acceptsRefresh(generation)) { setRegistry(data); setError(null); }
+      } catch (error) { if (!controller.signal.aborted && gate.acceptsRefresh(generation)) setError(error instanceof Error ? error.message : 'Could not refresh gateways'); }
       finally { inFlight = false; }
     };
     void refresh();
     const timer = window.setInterval(() => { void refresh(); }, 60_000);
-    return () => { window.clearInterval(timer); controller.abort(); };
+    return () => { window.clearInterval(timer); controller.abort(); gate.reset(); };
   }, [id, instance, timeWindow, olderLoaded, reload]);
   const gateways = registry?.gateways ?? [];
   const totals = { online: 0, degraded: 0, offline: 0, unknown: 0, removed: 0 };
@@ -100,16 +105,25 @@ function GatewayDirectory({ id, instance, timeWindow }: { id: string; instance: 
   visible.sort((left, right) => sort === 'latency' ? (left.latency_ms ?? Infinity) - (right.latency_ms ?? Infinity) : sort === 'activity' ? (right.activity.incoming_contracts + right.activity.outgoing_contracts) - (left.activity.incoming_contracts + left.activity.outgoing_contracts) : sort === 'status' ? left.status.localeCompare(right.status) : gatewayName(left).localeCompare(gatewayName(right)));
   const loadMore = async () => {
     if (!registry?.next_after || loadingMore) return;
+    const generation = requests.current.beginPage();
+    if (generation === null) return;
     setLoadingMore(true);
     try {
       const next = await api.getGatewayV2Registry(id, instance, timeWindow, registry.next_after);
+      if (!requests.current.finishPage(generation, true)) return;
       setOlderLoaded(true);
-      setRegistry((previous) => previous && ({ ...previous, next_after: next.next_after, gateways: [...previous.gateways, ...next.gateways] }));
-    } catch (error) { setError(error instanceof Error ? error.message : 'Could not load more gateways'); }
-    finally { setLoadingMore(false); }
+      setRegistry({ ...registry, next_after: next.next_after, gateways: [...registry.gateways, ...next.gateways] });
+      setLoadingMore(false);
+      setError(null);
+    } catch (error) {
+      if (requests.current.finishPage(generation, false)) {
+        setError(error instanceof Error ? error.message : 'Could not load more gateways');
+        setLoadingMore(false);
+      }
+    }
   };
   return <>
-    {error && <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{error}. <button type="button" className="underline" onClick={() => { setOlderLoaded(false); setReload((count) => count + 1); }}>Try again</button></p>}
+    {error && <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{error}. <button type="button" className="underline" onClick={() => { requests.current.reset(); setLoadingMore(false); setOlderLoaded(false); setReload((count) => count + 1); }}>Try again</button></p>}
     <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
       <Metric label="Gateways shown" value={registry ? gateways.filter((gateway) => gateway.registered).length.toLocaleString() : '—'} detail={registry?.next_after ? 'More gateways available below' : 'Registered with the federation'} />
       <Metric label="Online now" value={registry ? String(totals.online) : '—'} detail={`${totals.offline} offline · ${totals.unknown} unknown`} />
@@ -130,7 +144,7 @@ function GatewayDirectory({ id, instance, timeWindow }: { id: string; instance: 
       {registry?.next_after && <button type="button" disabled={loadingMore} onClick={() => { void loadMore(); }} className="m-4 rounded-lg bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-50">{loadingMore ? 'Loading…' : 'Load more gateways'}</button>}
     </section>
     <p className={`mt-3 text-xs ${muted}`}>Online means the gateway answered a routing-info check and supports this federation. Contract counts describe public federation activity, not payment routing capacity.</p>
-    {olderLoaded && <button type="button" onClick={() => setOlderLoaded(false)} className="mt-2 text-sm text-blue-600 dark:text-blue-400">Refresh all loaded results</button>}
+    {olderLoaded && <button type="button" onClick={() => { requests.current.reset(); setLoadingMore(false); setOlderLoaded(false); }} className="mt-2 text-sm text-blue-600 dark:text-blue-400">Refresh all loaded results</button>}
   </>;
 }
 

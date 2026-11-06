@@ -40,21 +40,9 @@ fn partial_registry_polls_do_not_remove_existing_gateways() {
 #[tokio::test]
 #[ignore = "read-only smoke test requires explicit public federation and gateway environment variables"]
 async fn public_gateway_routing_info() -> anyhow::Result<()> {
-    use fedimint_lnv2_common::gateway_api::{GatewayConnection, RealGatewayConnection};
     let fed = std::env::var("FMO_LNV2_LIVE_FEDERATION")?.parse()?;
     let endpoint = std::env::var("FMO_LNV2_LIVE_GATEWAY")?.parse()?;
-    let connectors = fedimint_connectors::ConnectorRegistry::build_from_client_env()?
-        .bind()
-        .await?;
-    let connection = RealGatewayConnection {
-        api: fedimint_ln_common::client::GatewayApi::new(None, connectors),
-    };
-    let info = tokio::time::timeout(
-        std::time::Duration::from_secs(40),
-        connection.routing_info(endpoint, &fed),
-    )
-    .await?
-    .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    let info = bounded_iroh::routing_info(&endpoint, &fed).await?;
     anyhow::ensure!(
         info.is_some(),
         "Gateway does not report routing support for this federation"
@@ -146,34 +134,26 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
         &[&fed],
     )
     .await?;
-    tx.execute("INSERT INTO fmo_lnv2.gateways(federation_id,module_instance_id,api_endpoint,announcing_guardians) VALUES($1,0,$2,'[1,2]'::jsonb)",&[&fed,&url]).await?;
+    let oversized = format!("https://large.example/{}", "x".repeat(8192));
+    let (bounded, complete) =
+        gateways::bounded_registrations(vec![(0, vec![url.to_owned(), oversized])]);
+    assert_eq!(complete, 0);
+    for endpoint in bounded.keys() {
+        tx.execute("INSERT INTO fmo_lnv2.gateways(federation_id,module_instance_id,api_endpoint,announcing_guardians) VALUES($1,0,$2,'[1,2]'::jsonb)",&[&fed,&endpoint]).await?;
+    }
     let info = serde_json::json!({"lightning_alias":"Test node","module_public_key":"key-one"});
     probes::save(
         &tx,
         &fed,
         0,
         url,
-        probes::Observation {
-            reachable: true,
-            supported: Some(true),
-            latency: Some(40),
+        probes::Observation::Reachable {
+            latency: 40,
             routing: Some(info.clone()),
         },
     )
     .await?;
-    probes::save(
-        &tx,
-        &fed,
-        0,
-        url,
-        probes::Observation {
-            reachable: false,
-            supported: None,
-            latency: None,
-            routing: None,
-        },
-    )
-    .await?;
+    probes::save(&tx, &fed, 0, url, probes::Observation::Unreachable).await?;
     let state = tx
         .query_one("SELECT routing_info,reachable FROM fmo_lnv2.gateways", &[])
         .await?;
@@ -216,10 +196,8 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
         &fed,
         0,
         url,
-        probes::Observation {
-            reachable: true,
-            supported: Some(true),
-            latency: Some(60),
+        probes::Observation::Reachable {
+            latency: 60,
             routing: Some(serde_json::json!({"module_public_key":"key-two"})),
         },
     )
@@ -253,10 +231,8 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
         &fed,
         0,
         url,
-        probes::Observation {
-            reachable: true,
-            supported: Some(true),
-            latency: Some(1),
+        probes::Observation::Reachable {
+            latency: 1,
             routing: None,
         },
     )
@@ -296,4 +272,126 @@ fn public_https_probes_reject_private_and_special_use_addresses() {
     assert!(public_http::public_ip(
         "2606:4700:4700::1111".parse().unwrap()
     ));
+}
+
+#[test]
+fn oversized_gateway_identity_keeps_valid_entries_and_incomplete_coverage() {
+    let oversized = format!("https://gateway.example/{}", "abcdef0123456789".repeat(400));
+    let _: fedimint_core::util::SafeUrl = oversized.parse().expect("valid URL");
+    let normal = "https://normal.example/".to_owned();
+    let (registrations, complete) = gateways::bounded_registrations(vec![
+        (0, vec![oversized, normal.clone()]),
+        (1, vec![normal.clone()]),
+    ]);
+    assert_eq!(registrations.len(), 1);
+    assert_eq!(registrations[&normal], vec![0, 1]);
+    assert_eq!(complete, 1);
+    assert!(!gateways::complete_registry(complete, 2));
+}
+
+// Use real local QUIC streams, rather than checking a constant after allocating
+// a complete malicious response in the client.
+#[tokio::test]
+async fn iroh_read_limit_and_distinct_target_cleanup() -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    use fedimint_core::module::FEDIMINT_GATEWAY_ALPN;
+    for oversized in [false, true] {
+        for _ in 0..4 {
+            let server = iroh::Endpoint::builder()
+                .relay_mode(iroh::RelayMode::Disabled)
+                .alpns(vec![FEDIMINT_GATEWAY_ALPN.to_vec()])
+                .bind()
+                .await?;
+            let client = iroh::Endpoint::builder()
+                .relay_mode(iroh::RelayMode::Disabled)
+                .bind()
+                .await?;
+            let target = server.node_addr().await?;
+            let server_task = tokio::spawn({
+                let server = server.clone();
+                async move {
+                    let connection = server.accept().await.context("missing connection")?.await?;
+                    let (mut send, mut recv) = connection.accept_bi().await?;
+                    recv.read_to_end(4096).await?;
+                    let response = if oversized {
+                        vec![b'x'; bounded_iroh::MAX_RESPONSE_BYTES + 1]
+                    } else {
+                        br#"{"status":200,"body":null}"#.to_vec()
+                    };
+                    // A capped reader can stop the sender before all bytes arrive.
+                    let _ = send.write_all(&response).await;
+                    let _ = send.finish();
+                    tokio::time::timeout(Duration::from_secs(5), connection.closed()).await?;
+                    anyhow::Ok(())
+                }
+            });
+            let response = tokio::time::timeout(
+                Duration::from_secs(5),
+                bounded_iroh::request_stable(&client, target, b"{}"),
+            )
+            .await?;
+            if oversized {
+                assert!(response.is_err());
+                assert!(format!("{:#}", response.unwrap_err())
+                    .to_lowercase()
+                    .contains("long"));
+            } else {
+                assert!(response?.is_none());
+            }
+            // Each target has a distinct identity. No pool or live endpoint
+            // survives the request, including oversized responses.
+            server_task.await??;
+            client.close().await;
+            assert!(client.is_closed());
+            server.close().await;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn iroh_next_read_limit_closes_connection() -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    use fedimint_core::module::FEDIMINT_GATEWAY_ALPN;
+    use iroh_next::endpoint::presets::Minimal;
+    let server = iroh_next::Endpoint::builder(Minimal)
+        .relay_mode(iroh_next::RelayMode::Disabled)
+        .alpns(vec![FEDIMINT_GATEWAY_ALPN.to_vec()])
+        .bind()
+        .await?;
+    let client = iroh_next::Endpoint::builder(Minimal)
+        .relay_mode(iroh_next::RelayMode::Disabled)
+        .bind()
+        .await?;
+    let target = server.addr();
+    let server_task = tokio::spawn({
+        let server = server.clone();
+        async move {
+            let connection = server.accept().await.context("missing connection")?.await?;
+            let (mut send, mut recv) = connection.accept_bi().await?;
+            recv.read_to_end(4096).await?;
+            let _ = send
+                .write_all(&vec![b'x'; bounded_iroh::MAX_RESPONSE_BYTES + 1])
+                .await;
+            let _ = send.finish();
+            tokio::time::timeout(Duration::from_secs(5), connection.closed()).await?;
+            anyhow::Ok(())
+        }
+    });
+    let response = tokio::time::timeout(
+        Duration::from_secs(5),
+        bounded_iroh::request_next(&client, target, b"{}"),
+    )
+    .await?;
+    assert!(response.is_err());
+    assert!(format!("{:#}", response.unwrap_err())
+        .to_lowercase()
+        .contains("long"));
+    server_task.await??;
+    client.close().await;
+    assert!(client.is_closed());
+    server.close().await;
+    Ok(())
 }

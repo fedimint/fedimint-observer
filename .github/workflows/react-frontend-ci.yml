@@ -45,7 +45,7 @@ jobs:
 
     - name: Test configuration parsing
       working-directory: ./fmo_frontend_react
-      run: npm run test:config
+      run: npm run test:config && npm run test:pagination
 
     - name: Build production bundle
       working-directory: ./fmo_frontend_react

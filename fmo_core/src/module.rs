@@ -110,6 +110,13 @@ pub struct ProcessCtx<'a> {
 pub struct Services(FederationObserver);
 
 impl Services {
+    /// Subscribe before reading durable work. Mark the generation with
+    /// `borrow_and_update` before each query, then await `changed` or the next
+    /// database retry deadline. Notifications committed during the query
+    /// persist.
+    pub fn work_notifications(&self, topic: &str) -> tokio::sync::watch::Receiver<u64> {
+        self.0.work_notifications.subscribe(topic)
+    }
     /// A process-wide budget for bounded background calls to external services.
     pub async fn external_io_permit(&self) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
         Ok(self.0.external_io.clone().acquire_owned().await?)

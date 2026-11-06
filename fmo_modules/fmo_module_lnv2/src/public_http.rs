@@ -97,7 +97,7 @@ impl Target {
             .send()
             .await?
             .error_for_status()?;
-        const MAX_BYTES: usize = 1024 * 1024;
+        const MAX_BYTES: usize = super::bounded_iroh::MAX_RESPONSE_BYTES;
         ensure!(
             response
                 .content_length()

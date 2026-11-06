@@ -27,7 +27,9 @@ cancels the collector's tasks and stops its server. A heartbeat runs every five
 seconds with a five second deadline to detect a silent connection failure. A process manager should
 restart it. This is single active ownership, not automatic standby election.
 Use a direct database connection or session pooling; transaction pooling cannot
-preserve a session advisory lock. Budget one extra database connection for it.
+preserve a session advisory lock. The lease connection also listens for
+committed queue and registry changes. Budget one extra database connection
+for it.
 
 ## Upgrade
 
@@ -36,7 +38,7 @@ preserve a session advisory lock. Budget one extra database connection for it.
    defined recovery point and recovery time. The development backup script is
    not an off-host disaster recovery system.
 2. Stop the existing collector. Start the updated collector to apply core schema
-   v13 and the wallet enrichment migration. Core v11 or newer is supported;
+   v14 and the module migrations. Core v11 or newer is supported;
    older populated databases need the previous release's migrations first.
 3. Allow time for the session counter backfill and new indexes to finish.
    Migrations run transactionally with no statement deadline and a 30 second
@@ -93,10 +95,15 @@ federation URLs or public inspector endpoints.
   with no guardian HTTP/RPC on the request path. Metadata refreshes every five
   minutes after each pass; consensus fields take priority over external
   overrides, then configured fields. Failed sources preserve their last value.
-* Wallet v2 balances and the latest 20 on-chain operations refresh in the
-  background every minute after each poll. After five minutes without success,
-  balance responses use `null` and history returns `503`. Successful empty
-  wallets still have a zero balance. A new collector needs its first poll.
+* Wallet v2 balance collection normally waits one minute after each poll and
+  backs off to 15 minutes after failures, plus an instance-specific offset.
+  History collection also backs off when unchanged or failing. The collector
+  retains the fetched chain; 20 entries is the default API page size. History
+  is marked stale after 30 minutes and balances after five minutes. Stored
+  history remains readable during failures. Before the first collection, the
+  history has no observation timestamp and is marked stale; the legacy route
+  returns an empty array. Stale aggregate assets use `null`. Successful empty
+  wallets have a zero balance.
 * Wallet v1 projection enqueues durable Bitcoin enrichment in the same database
   transaction as the signatures and cursor. A separate worker fetches Bitcoin
   transactions with a 30 second deadline, at most four at once, and retries with
@@ -120,9 +127,10 @@ federation URLs or public inspector endpoints.
 
 Successful federation GET responses permit ten seconds of cache reuse plus
 thirty seconds of stale-while-revalidate. Gzip is available. Upstream Wallet v2
-currently supplies its entire transaction chain per poll; persisting only 20
-rows bounds public responses, not that upstream payload. Wallet v1 UTXO
-comparison still performs bounded remote checks on a cold cache. These paths,
+currently supplies its entire transaction chain per history poll. The fetched
+chain is retained; API pagination bounds response size, not retained storage or
+the upstream payload. Wallet v1 UTXO comparison still performs bounded remote
+checks on a cold cache. These paths,
 gateway aggregation, full view refreshes, and long historical backfills remain
 candidates for profiling at production volume.
 
@@ -216,14 +224,19 @@ partly imported initial history.
 endpoint URL), `limit` (1–100), and `window` (`24h`, `7d`, `30d`, `90d`). It returns
 registry membership and guardian coverage, plus node routing metadata, latest
 probe status/latency, hourly availability buckets, and attributed contract activity.
-Only a complete guardian poll can mark an endpoint removed. Partial or failed
-polls preserve previous registrations. Removed entries are kept for 90 days.
+Gateway identities longer than 1,024 UTF-8 bytes are skipped before database
+writes. A guardian response containing one counts as incomplete; valid entries
+from that response are still retained. Only a complete guardian poll can mark
+an endpoint removed. Partial or failed polls preserve previous registrations. Removed entries are kept for 90 days.
 The frontend exposes a separate Lightning v2 gateway page for federations that
 have that module. A separate worker probes registered endpoints every five
-minutes using the official Iroh gateway connection or a public-address-pinned
-HTTPS client. Requests have deadlines, shared concurrency limits, and a one MiB
-HTTPS response bound. HTTPS redirects, credentials, and private/special-use
-addresses are rejected. Policy/DNS skips leave status unknown and do not add
+minutes using short-lived Iroh 0.35/1.0 transports or a public-address-pinned
+HTTPS client. Both transports cap response reads at one MiB before decoding.
+Iroh endpoints and connections are closed after each probe, including failures;
+no gateway-target connection pool is retained. Requests have deadlines and
+shared concurrency limits. Iroh latency includes establishing the probe
+connection. HTTPS redirects, credentials, and private/special-use addresses
+are rejected. Policy/DNS skips leave status unknown and do not add
 failed-probe samples. Database connections are released before external I/O.
 
 The `fmo_lnv2` v1 migration adds probe/routing metadata, 90-day hourly availability
@@ -253,3 +266,12 @@ isolated database and run
 Both database regressions run in CI. A separate ignored read-only Iroh smoke test
 accepts `FMO_LNV2_LIVE_FEDERATION` and `FMO_LNV2_LIVE_GATEWAY` and can be run with
 `cargo test -p fmo_module_lnv2 public_gateway_routing_info -- --ignored --nocapture`.
+
+Internal deposit, repair and gateway-probe workers drain durable work at startup.
+PostgreSQL commit notifications wake them for new jobs, registry changes and
+block-time arrivals; retry/probe deadlines come from database timestamps. The
+collector lease connection carries notifications and stops workers if lost.
+Receivers mark their generation before reading the queue, retaining notifications
+that race a query. Idle workers do not scan on a fixed interval; failures retain
+a bounded retry delay. External guardian and gateway sampling still uses its
+configured cadence and backoff.

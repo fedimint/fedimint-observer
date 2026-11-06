@@ -56,7 +56,9 @@ jobs:
       - name: Test v2 migrations, accounting replay and instance pagination
         env:
           FMO_WALLETV2_TEST_DATABASE: postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/observer_v2_test
+          FMO_WORK_TEST_DATABASE: postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/observer_v2_test
           FMO_LNV2_TEST_DATABASE: postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/observer_v2_test
         run: |
+          nix develop -c cargo test -p fmo_core postgres_commit_notifications_and_block_arrival -- --ignored
           nix develop -c cargo test -p fmo_module_walletv2 postgres_deposit_replay_and_instance_pagination -- --ignored
           nix develop -c cargo test -p fmo_module_lnv2 postgres_probe_history_and_activity -- --ignored

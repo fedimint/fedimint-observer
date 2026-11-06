@@ -4,8 +4,6 @@ use anyhow::Context;
 use fedimint_core::config::FederationId;
 use fedimint_core::encoding::Encodable;
 use fedimint_core::util::SafeUrl;
-use fedimint_ln_common::client::GatewayApi;
-use fedimint_lnv2_common::gateway_api::{GatewayConnection, RealGatewayConnection};
 use fmo_core::module::{DbTransaction, Services};
 use futures::{stream, StreamExt};
 
@@ -15,11 +13,12 @@ pub(crate) const SAVE_PROBE_SQL:&str =
      routing_observed_at=CASE WHEN $7::jsonb IS NOT NULL THEN now() ELSE routing_observed_at END
      WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3 AND registered";
 
-pub(crate) struct Observation {
-    pub reachable: bool,
-    pub supported: Option<bool>,
-    pub latency: Option<i32>,
-    pub routing: Option<serde_json::Value>,
+pub(crate) enum Observation {
+    Unreachable,
+    Reachable {
+        latency: i32,
+        routing: Option<serde_json::Value>,
+    },
 }
 
 pub(crate) async fn save(
@@ -29,12 +28,12 @@ pub(crate) async fn save(
     url: &str,
     observation: Observation,
 ) -> anyhow::Result<()> {
-    let Observation {
-        reachable,
-        supported,
-        latency,
-        routing,
-    } = observation;
+    let (reachable, supported, latency, routing) = match observation {
+        Observation::Unreachable => (false, None, None, None),
+        Observation::Reachable { latency, routing } => {
+            (true, Some(routing.is_some()), Some(latency), routing)
+        }
+    };
     let updated = tx
         .execute(
             SAVE_PROBE_SQL,
@@ -81,25 +80,24 @@ pub(crate) async fn run(
     fed: FederationId,
     instance: u16,
 ) -> anyhow::Result<()> {
-    let connection = RealGatewayConnection {
-        api: GatewayApi::new(None, services.connectors().clone()),
-    };
+    let mut wakeup = services.work_notifications(&format!("lnv2:{fed}:{instance}"));
     let bytes = fed.consensus_encode_to_vec();
     loop {
+        wakeup.borrow_and_update();
         let rows=services.connection().await?.query(
             "SELECT api_endpoint FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2
              AND registered AND (probed_at IS NULL OR probed_at<now()-interval '5 minutes')
              ORDER BY probed_at NULLS FIRST,api_endpoint LIMIT 100",&[&bytes,&i32::from(instance)],
         ).await?;
-        let any = !rows.is_empty();
-        stream::iter(rows).map(|row| {
+        let errors = stream::iter(rows).map(|row| {
             let services=services.clone();
-            let connection=&connection;
             async move {
                 let url:String=row.get(0);
-                if let Err(error)=probe(&services,connection,fed,instance,&url).await {
+                if let Err(error)=probe(&services,fed,instance,&url).await {
                     tracing::warn!(%fed,instance,%error,"Gateway probe could not be recorded; keeping previous observation");
+                    return true;
                 }
+                false
             }
         }).buffer_unordered(4).collect::<Vec<_>>().await;
         services.connection().await?.execute(
@@ -107,13 +105,31 @@ pub(crate) async fn run(
              (SELECT federation_id,module_instance_id,api_endpoint,hour FROM fmo_lnv2.gateway_health_hourly
               WHERE hour<now()-interval '90 days' ORDER BY hour LIMIT 1000 FOR UPDATE SKIP LOCKED)",&[],
         ).await?;
-        tokio::time::sleep(Duration::from_secs(if any { 5 } else { 30 })).await;
+        if errors.iter().any(|error| *error) {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            continue;
+        }
+        let deadline: Option<chrono::DateTime<chrono::Utc>> = services.connection().await?.query_one(
+            "SELECT min(deadline) FROM (
+                SELECT min(COALESCE(probed_at+interval '5 minutes',now())) AS deadline
+                FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND registered
+                UNION ALL SELECT min(hour)+interval '90 days' FROM fmo_lnv2.gateway_health_hourly
+             ) due", &[&bytes,&i32::from(instance)],
+        ).await?.get(0);
+        match deadline {
+            Some(at) => tokio::select! {
+                result = wakeup.changed() => { result?; }
+                _ = tokio::time::sleep((at-chrono::Utc::now()).to_std().unwrap_or_default()) => {}
+            },
+            None => {
+                wakeup.changed().await?;
+            }
+        }
     }
 }
 
 async fn probe(
     services: &Services,
-    connection: &RealGatewayConnection,
     fed: FederationId,
     instance: u16,
     url: &str,
@@ -143,26 +159,18 @@ async fn probe(
         }
     };
     let started = Instant::now();
-    let result = tokio::time::timeout(Duration::from_secs(20), async {
-        match target {
-            Some(target) => target.routing_info(&fed).await,
-            None => connection
-                .routing_info(endpoint, &fed)
-                .await
-                .map_err(anyhow::Error::from),
-        }
-    })
-    .await;
+    let result = match target {
+        Some(target) => target.routing_info(&fed).await,
+        None => super::bounded_iroh::routing_info(&endpoint, &fed).await,
+    };
     let elapsed = i32::try_from(started.elapsed().as_millis())?;
     drop(permit);
-    let (reachable, supported, latency, routing) = match result {
-        Ok(Ok(info)) => (
-            true,
-            Some(info.is_some()),
-            Some(elapsed),
-            info.map(serde_json::to_value).transpose()?,
-        ),
-        _ => (false, None, None, None),
+    let observation = match result {
+        Ok(info) => Observation::Reachable {
+            latency: elapsed,
+            routing: info.map(serde_json::to_value).transpose()?,
+        },
+        Err(_) => Observation::Unreachable,
     };
     let mut db = services.connection().await?;
     let tx = db.transaction().await?;
@@ -171,12 +179,7 @@ async fn probe(
         &fed.consensus_encode_to_vec(),
         instance,
         url,
-        Observation {
-            reachable,
-            supported,
-            latency,
-            routing,
-        },
+        observation,
     )
     .await?;
     tx.commit().await?;

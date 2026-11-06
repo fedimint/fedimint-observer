@@ -82,20 +82,39 @@ pub(crate) fn pool(
 pub(crate) async fn worker_lease(
     database: &str,
     tasks: fedimint_core::task::TaskGroup,
+    notifications: crate::work::WorkNotifications,
 ) -> anyhow::Result<Arc<tokio_postgres::Client>> {
     let mut config: tokio_postgres::Config = database.parse()?;
     config.connect_timeout(Duration::from_secs(10));
-    let (client, connection) =
+    let (client, mut connection) =
         tokio::time::timeout(Duration::from_secs(10), config.connect(tls()?))
             .await
             .context("Worker lease connection timed out")??;
     let connection_tasks = tasks.clone();
     tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            tracing::error!(%error, "Worker lease connection lost");
+        loop {
+            match futures::future::poll_fn(|cx| connection.poll_message(cx)).await {
+                Some(Ok(tokio_postgres::AsyncMessage::Notification(message))) => {
+                    if message.channel() == "fmo_work" {
+                        notifications.notify(message.payload());
+                    }
+                }
+                Some(Ok(_)) => {}
+                Some(Err(error)) => {
+                    tracing::error!(%error, "Worker lease connection lost");
+                    break;
+                }
+                None => break,
+            }
         }
         connection_tasks.shutdown();
     });
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        client.batch_execute("LISTEN fmo_work"),
+    )
+    .await
+    .context("Worker notification subscription timed out")??;
     let row = tokio::time::timeout(
         Duration::from_secs(10),
         client.query_one("SELECT pg_try_advisory_lock(1718447973, 1)", &[]),

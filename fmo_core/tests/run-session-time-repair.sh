@@ -46,10 +46,11 @@ DO $$ BEGIN
     IF NOT EXISTS (SELECT FROM federation_totals WHERE federation_id = '\x03' AND tx_count = 1 AND tx_volume_msat = 1000 AND wallet_in_msat = 1000 AND wallet_out_msat = 400) THEN RAISE EXCEPTION 'v11 transaction count or wallet totals changed'; END IF;
 END $$;
 SQL
+psql -X -q -v ON_ERROR_STOP=1 -1 -d "$db" -f "$root/fmo_core/schema/v14.sql" >/dev/null
 psql -X -q -v ON_ERROR_STOP=1 -1 -d "$db" -f "$root/fmo_core/tests/session_time_repair.sql" >/dev/null
-# Also exercise a fresh database using v13 as a single migration.
+# Also exercise a fresh database through the notification migration.
 createdb "$fresh_db"
-for version in {0..13}; do
+for version in {0..14}; do
     psql -X -q -v ON_ERROR_STOP=1 -1 -d "$fresh_db" -f "$root/fmo_core/schema/v${version}.sql" >/dev/null
 done
 psql -X -q -v ON_ERROR_STOP=1 -1 -d "$fresh_db" -f "$root/fmo_core/tests/session_time_repair.sql" >/dev/null

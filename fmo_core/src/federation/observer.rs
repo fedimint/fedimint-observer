@@ -56,6 +56,7 @@ const CORE_MIGRATIONS: &[&str] = &[
     include_str!("../../schema/v11.sql"),
     include_str!("../../schema/v12.sql"),
     include_str!("../../schema/v13.sql"),
+    include_str!("../../schema/v14.sql"),
 ];
 const NO_ACTIVITY: FederationActivity = FederationActivity {
     num_transactions: 0,
@@ -69,6 +70,7 @@ pub struct FederationObserver {
     worker_lease: Option<Arc<tokio_postgres::Client>>,
     pub(crate) work_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) external_io: Arc<tokio::sync::Semaphore>,
+    pub(crate) work_notifications: crate::work::WorkNotifications,
     admin_auth: String,
     /// Shared so requests reuse its connections to the mempool instance
     esplora: esplora_client::AsyncClient,
@@ -94,10 +96,18 @@ impl FederationObserver {
         let connection_pool = crate::runtime::pool(database, options.worker_db_connections, true)?;
         let api_pool = crate::runtime::pool(database, options.api_db_connections, false)?;
         let task_group = TaskGroup::default();
+        let work_notifications = crate::work::WorkNotifications::default();
         let worker_lease = if options.api_only {
             None
         } else {
-            Some(crate::runtime::worker_lease(database, task_group.clone()).await?)
+            Some(
+                crate::runtime::worker_lease(
+                    database,
+                    task_group.clone(),
+                    work_notifications.clone(),
+                )
+                .await?,
+            )
         };
 
         let connectors = ConnectorRegistry::build_from_client_env()?.bind().await?;
@@ -111,6 +121,7 @@ impl FederationObserver {
             worker_lease,
             work_budget: Arc::new(tokio::sync::Semaphore::new(options.worker_concurrency)),
             external_io: Arc::new(tokio::sync::Semaphore::new(options.external_concurrency)),
+            work_notifications,
             admin_auth: admin_auth.to_owned(),
             esplora,
             task_group,
@@ -412,6 +423,23 @@ impl FederationObserver {
             );
         }
 
+        // Earlier v13 databases predate the repair section. The collector
+        // lease makes this additive update safe to apply exactly once.
+        if maybe_schema_version.is_some_and(|version| version >= 13)
+            && !self.has_session_time_repair_schema().await?
+        {
+            let sql = CORE_MIGRATIONS[13]
+                .split_once("-- BEGIN SESSION TIME REPAIR")
+                .expect("v13 repair section is present")
+                .1;
+            let mut connection = self.connection().await?;
+            let tx = connection.transaction().await?;
+            tx.batch_execute("SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '30s'")
+                .await?;
+            tx.batch_execute(sql).await?;
+            tx.commit().await?;
+        }
+
         for (index, sql) in CORE_MIGRATIONS.iter().enumerate() {
             if maybe_schema_version.is_none_or(|schema_version| index > schema_version) {
                 let mut conn = self.connection().await?;
@@ -425,21 +453,6 @@ impl FederationObserver {
                 transaction.batch_execute(sql).await?;
                 transaction.commit().await?;
             }
-        }
-
-        // Earlier v13 databases predate the repair section. The collector
-        // lease makes this additive update safe to apply exactly once.
-        if !self.has_session_time_repair_schema().await? {
-            let sql = CORE_MIGRATIONS[13]
-                .split_once("-- BEGIN SESSION TIME REPAIR")
-                .expect("v13 repair section is present")
-                .1;
-            let mut connection = self.connection().await?;
-            let tx = connection.transaction().await?;
-            tx.batch_execute("SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '30s'")
-                .await?;
-            tx.batch_execute(sql).await?;
-            tx.commit().await?;
         }
 
         if query_value::<i64>(
@@ -763,7 +776,10 @@ impl FederationObserver {
     /// A repair is committed with deletion of its durable request, so a crash
     /// or database error leaves it available for the next attempt.
     async fn repair_session_times(self) -> anyhow::Result<()> {
+        let mut wakeup = self.work_notifications.subscribe("session-time-repair");
         loop {
+            // Mark the generation before querying, retaining commits racing the query.
+            wakeup.borrow_and_update();
             let permit = self.work_budget.acquire().await?;
             let connection = self.connection().await?;
             let repaired: bool = connection
@@ -775,7 +791,7 @@ impl FederationObserver {
             if repaired {
                 continue;
             }
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            wakeup.changed().await?;
         }
     }
 

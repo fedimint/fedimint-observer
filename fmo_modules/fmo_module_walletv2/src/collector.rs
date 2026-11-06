@@ -345,16 +345,31 @@ async fn enrich_loop(
     config: ClientConfig,
     instance: u16,
 ) -> anyhow::Result<()> {
+    let mut wakeup = services.work_notifications(&format!("walletv2:{fed}:{instance}"));
     loop {
-        let delay = match enrich_deposits(&services, fed, &config, instance).await {
-            Ok(true) => 1,
-            Ok(false) => 30,
+        wakeup.borrow_and_update();
+        match enrich_deposits(&services, fed, &config, instance).await {
+            Ok(true) => continue,
+            Ok(false) => {}
             Err(error) => {
                 tracing::warn!(%fed,instance,%error,"Wallet deposit enrichment will retry");
-                10
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
             }
-        };
-        tokio::time::sleep(Duration::from_secs(delay)).await;
+        }
+        let deadline: Option<chrono::DateTime<chrono::Utc>> = services.connection().await?.query_one(
+            "SELECT min(retry_at) FROM fmo_walletv2.deposit_jobs WHERE federation_id=$1 AND module_instance_id=$2",
+            &[&fed.consensus_encode_to_vec(),&i32::from(instance)],
+        ).await?.get(0);
+        match deadline {
+            Some(at) => tokio::select! {
+                result = wakeup.changed() => { result?; }
+                _ = tokio::time::sleep((at-chrono::Utc::now()).to_std().unwrap_or_default()) => {}
+            },
+            None => {
+                wakeup.changed().await?;
+            }
+        }
     }
 }
 

@@ -9,6 +9,7 @@ use fedimint_lnv2_common::{
 use fmo_core::module::{details_json, InputSummary, ObserverModule, OutputSummary};
 
 mod activity;
+mod bounded_iroh;
 mod gateways;
 mod probes;
 mod public_http;
