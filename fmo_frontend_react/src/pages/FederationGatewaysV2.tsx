@@ -1,14 +1,12 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import type { EChartsOption } from 'echarts';
 import { api } from '../services/api';
 import type { ClientConfig, GatewayV2Registry, GatewayV2RoutingInfo, GatewayWindow } from '../types/api';
 import { Copyable } from '../components/Copyable';
-import { useTheme } from '../hooks/useTheme';
 import { asBitcoin, shortMiddle } from '../utils/format';
 import { PageRequests } from '../utils/pageRequests';
+import { GatewayAvailabilityChart } from '../components/GatewayAvailabilityChart';
 
-const TrendChart = lazy(() => import('../components/UptimeTrendChart').then((module) => ({ default: module.UptimeTrendChart })));
 const windows: GatewayWindow[] = ['24h', '7d', '30d', '90d'];
 type Gateway = GatewayV2Registry['gateways'][number];
 type Status = Gateway['status'];
@@ -153,22 +151,13 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
 }
 
 function AvailabilityTrend({ gateways, timeWindow }: { gateways: Gateway[]; timeWindow: GatewayWindow }) {
-  const { isDark } = useTheme();
   const buckets = useMemo(() => Array.from({ length: 30 }, (_, index) => ({
     start: gateways[0]?.availability[index]?.start,
     samples: gateways.reduce((sum, gateway) => sum + (gateway.availability[index]?.samples ?? 0), 0),
     online: gateways.reduce((sum, gateway) => sum + (gateway.availability[index]?.online_samples ?? 0), 0),
   })), [gateways]);
   const hasSamples = buckets.some((bucket) => bucket.samples > 0);
-  const option = useMemo<EChartsOption>(() => ({
-    animation: false,
-    grid: { left: 42, right: 20, top: 15, bottom: 30 },
-    tooltip: { trigger: 'axis', valueFormatter: (value) => value === null ? 'No observations' : `${Number(value).toFixed(1)}%` },
-    xAxis: { type: 'category', data: buckets.map((bucket) => bucket.start ? new Date(bucket.start).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' }) : ''), axisLabel: { color: isDark ? '#9ca3af' : '#6b7280', fontSize: 10 } },
-    yAxis: { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%', color: isDark ? '#9ca3af' : '#6b7280', fontSize: 10 }, splitLine: { lineStyle: { color: isDark ? '#374151' : '#e5e7eb', type: 'dashed' } } },
-    series: [{ name: 'Successful gateway checks', type: 'line', data: buckets.map((bucket) => bucket.samples ? bucket.online / bucket.samples * 100 : null), connectNulls: false, symbol: 'circle', symbolSize: 5, lineStyle: { color: '#6366f1', width: 2 }, itemStyle: { color: '#6366f1' }, areaStyle: { color: 'rgba(99,102,241,0.10)' } }],
-  }), [buckets, isDark]);
-  return <section className={`${panel} mb-4 p-4 sm:p-5`}><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h2 className="text-base font-semibold">Gateway availability trend ({timeWindow.toUpperCase()})</h2><span className={`text-xs ${muted}`}>Historical API checks · gaps mean no observation</span></div>{hasSamples ? <Suspense fallback={<p className={`flex h-[210px] items-center justify-center text-sm ${muted}`}>Loading chart…</p>}><TrendChart option={option} /></Suspense> : <div className={`flex h-[210px] flex-col items-center justify-center gap-2 text-center text-sm ${muted}`}><span>No probe history yet</span><span className="text-xs">Availability will appear as gateway checks are recorded.</span></div>}</section>;
+  return <section className={`${panel} mb-4 p-4 sm:p-5`}><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h2 className="text-base font-semibold">Gateway availability trend ({timeWindow.toUpperCase()})</h2><span className={`text-xs ${muted}`}>Historical API checks · gaps mean no observation</span></div>{hasSamples ? <GatewayAvailabilityChart buckets={buckets} /> : <div className={`flex h-[210px] flex-col items-center justify-center gap-2 text-center text-sm ${muted}`}><span>No probe history yet</span><span className="text-xs">Availability will appear as gateway checks are recorded.</span></div>}</section>;
 }
 
 function GatewayRow({ gateway, timeWindow }: { gateway: Gateway; timeWindow: GatewayWindow }) {

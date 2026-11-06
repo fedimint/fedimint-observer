@@ -104,6 +104,7 @@ export function Home() {
           </div>
           <input
             type="text"
+            aria-label="Search federations by name or invite code"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="block w-full p-4 pl-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-800 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
@@ -111,6 +112,8 @@ export function Home() {
           />
           {searchQuery && (
             <button
+              type="button"
+              aria-label="Clear federation search"
               onClick={() => setSearchQuery('')}
               className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
             >
@@ -135,20 +138,25 @@ export function Home() {
 
   <div className="relative overflow-x-auto bg-white shadow-md rounded-lg border border-gray-200 dark:bg-gray-800 dark:border-gray-700">
     <div className="p-4 sm:p-5 text-base sm:text-lg font-semibold text-left rtl:text-right text-gray-900 bg-white dark:text-white dark:bg-gray-800">
-          Observed Federations
+          <h1>Observed Federations</h1>
           <p className="mt-1 text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
             List of all active federations this instance is collecting statistics on
           </p>
         </div>
-        <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-400 uppercase font-semibold grid-cols-3 gap-4 border-y border-gray-200 dark:border-gray-600">
+        <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-300 uppercase font-semibold grid-cols-3 gap-4 border-y border-gray-200 dark:border-gray-600">
           <div>Name</div>
           <div>Total Assets</div>
           <div>Activity Charts (7d)</div>
         </div>
   <div className="divide-y divide-gray-200 dark:divide-gray-700">
           {loading ? (
-            <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
-              Loading...
+            <div role="status" aria-label="Loading federations">
+              <span className="sr-only">Loading federations…</span>
+              {Array.from({ length: 6 }, (_, index) => <div key={index} aria-hidden="true" className="grid h-32 grid-cols-2 items-center gap-4 border-t border-gray-200 px-3 py-4 dark:border-gray-700 sm:px-6 md:h-[88px] md:grid-cols-3 xl:h-24">
+                <div className="h-4 w-32 max-w-full rounded-sm bg-gray-200 dark:bg-gray-700" />
+                <div className="h-4 w-24 max-w-full rounded-sm bg-gray-200 dark:bg-gray-700" />
+                <div className="h-10 rounded-sm bg-gray-100 dark:bg-gray-700 md:h-14 xl:h-16" />
+              </div>)}
             </div>
           ) : failed ? (
             loadError
@@ -175,8 +183,11 @@ export function Home() {
       </div>
 
   <div className="relative overflow-x-auto bg-white shadow-md rounded-lg border border-gray-200 dark:bg-gray-800 dark:border-gray-700 mt-6">
-        <div
-          className="p-4 sm:p-5 text-base sm:text-lg font-semibold text-left rtl:text-right text-gray-900 bg-white dark:text-white dark:bg-gray-800 cursor-pointer"
+        <button
+          type="button"
+          aria-expanded={!collapseOffline}
+          aria-controls="shut-down-federations"
+          className="w-full p-4 sm:p-5 text-base sm:text-lg font-semibold text-left rtl:text-right text-gray-900 bg-white dark:text-white dark:bg-gray-800"
           onClick={() => setCollapseOffline(!collapseOffline)}
         >
           <svg
@@ -194,13 +205,14 @@ export function Home() {
             />
           </svg>
           <span>Shut Down Federations</span>
-          <p className="mt-1 text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
+          <span className="mt-1 block text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
             List of federations that have ceased operations but were observed in the past
-          </p>
-        </div>
+          </span>
+        </button>
+        <div id="shut-down-federations" hidden={collapseOffline}>
         {!collapseOffline && (
           <>
-            <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-400 uppercase font-semibold grid-cols-3 gap-4 border-y border-gray-200 dark:border-gray-600">
+            <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-300 uppercase font-semibold grid-cols-3 gap-4 border-y border-gray-200 dark:border-gray-600">
               <div>Name</div>
               <div>Total Assets</div>
               <div>Activity Charts (7d)</div>
@@ -233,6 +245,7 @@ export function Home() {
             </div>
           </>
         )}
+        </div>
       </div>
     </div>
   );

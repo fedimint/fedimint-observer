@@ -125,7 +125,8 @@
               installPhase = ''
                 runHook preInstall
                 mkdir -p $out
-                cp -r dist/* $out/
+                # Include discovery documents under .well-known as well.
+                cp -r dist/. $out/
                 # Copy index.html to 404.html for client-side routing (as done in CI)
                 cp $out/index.html $out/404.html
                 runHook postInstall

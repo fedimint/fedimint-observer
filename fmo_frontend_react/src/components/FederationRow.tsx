@@ -1,10 +1,9 @@
-import { lazy, memo, Suspense, useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import type { FederationActivity, FederationHealth } from '../types/api';
 import { Badge } from './Badge';
 import { asBitcoin } from '../utils/format';
-
-const CombinedMiniChart = lazy(() => import('./MiniChart').then((m) => ({ default: m.CombinedMiniChart })));
+import { CombinedMiniChart } from './MiniChart';
 
 interface FederationRowProps {
   id: string;
@@ -23,7 +22,7 @@ const HEALTH_MESSAGES = {
   offline: 'All guardians are offline',
 } as const;
 
-// Module level, so the chart's memoized options survive a re-render
+// Stable formatter references across row renders.
 const formatTransaction = (value: number) => Math.round(value).toString();
 const formatVolume = (msats: number) => asBitcoin(msats, 8);
 
@@ -63,7 +62,7 @@ export const FederationRow = memo(function FederationRow({
       <div className="grid grid-cols-[1.5fr_1fr] gap-3 items-start md:grid-cols-3">
         {/* Name */}
         <div className="font-medium text-gray-900 dark:text-white min-w-0">
-          <span className="text-[10px] uppercase text-gray-600 dark:text-gray-400 block mb-1 md:hidden">Name</span>
+          <span className="text-[10px] uppercase text-gray-600 dark:text-gray-300 block mb-1 md:hidden">Name</span>
           <div className="flex items-center gap-1.5">
             <span className="font-medium text-gray-900 dark:text-white wrap-break-word">
               {name}
@@ -79,24 +78,22 @@ export const FederationRow = memo(function FederationRow({
 
         {/* Total Assets */}
         <div className="text-right md:text-left">
-          <span className="text-[10px] uppercase text-gray-600 dark:text-gray-400 block mb-1 md:hidden">Total Assets</span>
+          <span className="text-[10px] uppercase text-gray-600 dark:text-gray-300 block mb-1 md:hidden">Total Assets</span>
           <span className="text-gray-900 dark:text-white whitespace-nowrap md:whitespace-normal">{totalAssets === null ? 'Awaiting balance' : asBitcoin(totalAssets, 6)}</span>
         </div>
 
         {/* Activity Charts (7d) */}
         <div className="col-span-2 md:col-span-1">
-          <span className="text-[10px] uppercase text-gray-600 dark:text-gray-400 block mb-1 md:hidden">Activity (7d)</span>
-          <Suspense fallback={<div className="w-full h-12 bg-transparent" /> }>
-            <CombinedMiniChart
-              transactionData={transactionData}
-              volumeData={volumeData}
-              dates={dates}
-              formatTransaction={formatTransaction}
-              formatVolume={formatVolume}
-              maxTransaction={maxTransaction}
-              maxVolume={maxVolume}
-            />
-          </Suspense>
+          <span className="text-[10px] uppercase text-gray-600 dark:text-gray-300 block mb-1 md:hidden">Activity (7d)</span>
+          <CombinedMiniChart
+            transactionData={transactionData}
+            volumeData={volumeData}
+            dates={dates}
+            formatTransaction={formatTransaction}
+            formatVolume={formatVolume}
+            maxTransaction={maxTransaction}
+            maxVolume={maxVolume}
+          />
         </div>
       </div>
     </Link>

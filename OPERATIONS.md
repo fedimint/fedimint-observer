@@ -275,3 +275,49 @@ Receivers mark their generation before reading the queue, retaining notification
 that race a query. Idle workers do not scan on a fixed interval; failures retain
 a bounded retry delay. External guardian and gateway sampling still uses its
 configured cadence and backoff.
+
+## Frontend delivery
+
+The frontend build includes `robots.txt`, `llms.txt` and
+`/.well-known/ai-catalog.json`. Serve these as files, with a real `404` if one
+is absent; the SPA fallback must not turn a missing text/JSON document into
+HTML with status `200`. The catalog declares no autonomous agents; public
+monitoring pages and data links are documented in `llms.txt`.
+
+For Nginx, add exact discovery-file locations alongside the SPA route:
+
+```nginx
+location = /robots.txt { try_files $uri =404; }
+location = /llms.txt { try_files $uri =404; }
+location = /.well-known/ai-catalog.json { try_files $uri =404; }
+```
+
+Use `Cache-Control: no-cache` for HTML so browsers revalidate deployments while
+remaining eligible for back/forward caching. Keep hashed `/assets/` files on
+long-lived immutable caching. Nix store files share timestamps, so disable
+mtime-based conditional responses for HTML to avoid a false `304` when two
+builds produce an index of the same size. Replace existing matching locations:
+
+```nginx
+location = /index.html {
+    add_header Cache-Control "no-cache" always;
+    etag off;
+    if_modified_since off;
+}
+location / {
+    add_header Cache-Control "no-cache" always;
+    etag off;
+    if_modified_since off;
+    try_files $uri $uri/ /index.html;
+}
+```
+
+Validate changes with `nginx -t` before reloading. Keep `/api/` proxy routing and
+its cache policy separate. Missing API/static resources should not fall back
+to the React index.
+
+Homepage mini charts and the Lightning v2 availability chart render directly
+with HTML/SVG. ECharts remains lazy-loaded for detailed charts on other routes.
+Availability line segments preserve unobserved gaps. To reproduce a frontend
+performance audit, use a clean browser profile with extensions disabled; report
+local preview scores separately from deployed, throttled measurements.

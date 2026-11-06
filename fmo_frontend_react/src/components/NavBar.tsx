@@ -15,7 +15,7 @@ export function NavBar({ theme, onToggleTheme }: NavBarProps) {
     <nav className="bg-white border-gray-200 dark:bg-gray-900">
       <div className="max-w-(--breakpoint-xl) flex flex-wrap items-center justify-between mx-auto p-4">
         <Link to="/" className="flex items-center space-x-2 sm:space-x-3 rtl:space-x-reverse">
-          <img src="/fedimint.png" className="h-6 sm:h-8" alt="Fedimint Logo" />
+          <img src="/fedimint.png" width="128" height="125" className="h-6 w-auto shrink-0 sm:h-8" alt="Fedimint Logo" />
           <span className="self-center text-sm sm:text-lg md:text-2xl font-semibold whitespace-nowrap dark:text-white">
             Fedimint Observer
           </span>
@@ -44,6 +44,7 @@ export function NavBar({ theme, onToggleTheme }: NavBarProps) {
           
           <a
             href="https://github.com/elsirion/fedimint-observer/"
+            aria-label="Fedimint Observer source on GitHub"
             className="inline-flex items-center justify-center h-9 px-3 text-xs font-medium text-gray-900 bg-gray-100 border border-gray-300 rounded-lg focus:outline-hidden hover:bg-gray-200 hover:text-blue-700 focus:z-10 focus:ring-2 focus:ring-gray-300 dark:focus:ring-gray-500 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-600 dark:hover:text-white dark:hover:bg-gray-700"
           >
             <svg
