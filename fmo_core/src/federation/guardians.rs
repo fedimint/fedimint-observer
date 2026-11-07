@@ -244,20 +244,23 @@ impl FederationObserver {
              SELECT
                 g.guardian_id,
                 latest.block_height,
-                CASE WHEN latest.time >= (now() AT TIME ZONE 'UTC') - INTERVAL '5 minutes'
-                    THEN (latest.status -> 'federation' ->> 'session_count')::integer END AS session_count,
+                (latest.status -> 'federation' ->> 'session_count')::integer AS session_count,
                 latest.software_version,
                 last30d.uptime,
                 last30d.latency_ms
              FROM guardians g
-             CROSS JOIN LATERAL (
-                 SELECT h.block_height, h.status, h.software_version, h.time
+             -- The latest answer within the window, the same rule as
+             -- `get_guardian_health_summary`
+             LEFT JOIN LATERAL (
+                 SELECT h.block_height, h.status, h.software_version
                  FROM guardian_health h
                  WHERE h.federation_id = $1
                    AND h.guardian_id = g.guardian_id
+                   AND h.time >= (now() AT TIME ZONE 'UTC') - INTERVAL '5 minutes'
+                   AND h.status -> 'federation' ->> 'session_count' IS NOT NULL
                  ORDER BY h.time DESC
                  LIMIT 1
-             ) latest
+             ) latest ON true
              -- Whole hours of the window come from the hourly rollup, the
              -- partial first hour from the raw samples. Same result as
              -- aggregating all raw samples of the last 30 days. Uptime weights
@@ -365,17 +368,20 @@ impl FederationObserver {
              SELECT
                 g.federation_id,
                 COUNT(*)::int as guardians,
-                COUNT(*) FILTER (WHERE latest.status -> 'federation' ->> 'session_count' IS NOT NULL
-                    AND latest.time >= (now() AT TIME ZONE 'UTC') - INTERVAL '5 minutes')::int as online_guardians
+                COUNT(answered.time)::int as online_guardians
              FROM guardians g
-             CROSS JOIN LATERAL (
-                 SELECT h.status, h.time
+             -- Online means answered within the window, not on the latest poll:
+             -- one missed poll must not flip a federation at its threshold
+             LEFT JOIN LATERAL (
+                 SELECT h.time
                  FROM guardian_health h
                  WHERE h.federation_id = g.federation_id
                    AND h.guardian_id = g.guardian_id
+                   AND h.time >= (now() AT TIME ZONE 'UTC') - INTERVAL '5 minutes'
+                   AND h.status -> 'federation' ->> 'session_count' IS NOT NULL
                  ORDER BY h.time DESC
                  LIMIT 1
-             ) latest
+             ) answered ON true
              WHERE g.guardian_id IS NOT NULL
              GROUP BY g.federation_id",
             &[],

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
 import type { FederationSummary } from '../types/api';
@@ -20,7 +20,6 @@ export function Home() {
   const [federations, setFederations] = useState<FederationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
-  const [collapseOffline, setCollapseOffline] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   // The order lives in the URL, so it survives opening a federation and
   // coming back, and can be shared. Defaults are left out of the URL.
@@ -80,19 +79,24 @@ export function Home() {
     };
   }, []);
 
-  // Search, then order, both the active and the shut-down list
-  const [filteredActiveFederations, filteredOfflineFederations] = useMemo(() => {
+  // Search, then order, then split: a federation is shut down once the expiry
+  // its guardians published has passed (as of the last load), whatever its
+  // health; otherwise offline while too few guardians answer
+  const [filteredActiveFederations, filteredOfflineFederations, filteredShutDownFederations] = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const matching = query
       ? federations.filter((fed) => (fed.name?.toLowerCase() ?? '').includes(query) || (fed.invite?.toLowerCase() ?? '').includes(query))
       : federations;
     const active: FederationSummary[] = [];
     const offline: FederationSummary[] = [];
+    const shutDown: FederationSummary[] = [];
     for (const fed of sortFederations(matching, sortKey, sortDirection)) {
-      (fed.health === 'offline' ? offline : active).push(fed);
+      if (fed.expiry_timestamp != null && updatedAt !== null && fed.expiry_timestamp * 1000 <= updatedAt) shutDown.push(fed);
+      else if (fed.health === 'offline') offline.push(fed);
+      else active.push(fed);
     }
-    return [active, offline];
-  }, [federations, searchQuery, sortKey, sortDirection]);
+    return [active, offline, shutDown];
+  }, [federations, searchQuery, sortKey, sortDirection, updatedAt]);
 
   // Compute global maxes across all federations for consistent chart scale
   const { globalMaxTransaction, globalMaxVolume } = useMemo(() => {
@@ -262,35 +266,92 @@ export function Home() {
         </div>
       </div>
 
-  <div className="relative overflow-x-auto bg-white shadow-md rounded-lg border border-gray-200 dark:bg-gray-800 dark:border-gray-700 mt-6">
-        <button
-          type="button"
-          aria-expanded={!collapseOffline}
-          aria-controls="shut-down-federations"
-          className="w-full p-4 sm:p-5 text-base sm:text-lg font-semibold text-left rtl:text-right text-gray-900 bg-white dark:text-white dark:bg-gray-800"
-          onClick={() => setCollapseOffline(!collapseOffline)}
+      <CollapsibleFederations
+        id="offline-federations"
+        title="Offline Federations"
+        description="Federations with too few guardians answering in the last 5 minutes to reach consensus"
+        emptyText={searchQuery ? 'No offline federations match your search' : 'No offline federations'}
+        federations={filteredOfflineFederations}
+        loading={loading}
+        loadError={failed ? loadError : null}
+        maxTransaction={globalMaxTransaction}
+        maxVolume={globalMaxVolume}
+      />
+
+      <CollapsibleFederations
+        id="shut-down-federations"
+        title="Shut Down Federations"
+        description="Federations whose guardians announced an expiry date that has passed"
+        emptyText={searchQuery ? 'No shut down federations match your search' : 'No shut down federations'}
+        federations={filteredShutDownFederations}
+        loading={loading}
+        loadError={failed ? loadError : null}
+        maxTransaction={globalMaxTransaction}
+        maxVolume={globalMaxVolume}
+      />
+    </div>
+  );
+}
+
+interface CollapsibleFederationsProps {
+  id: string;
+  title: string;
+  description: string;
+  emptyText: string;
+  federations: FederationSummary[];
+  loading: boolean;
+  loadError: ReactNode;
+  maxTransaction: number;
+  maxVolume: number;
+}
+
+/** A secondary federation list, collapsed until opened */
+function CollapsibleFederations({
+  id,
+  title,
+  description,
+  emptyText,
+  federations,
+  loading,
+  loadError,
+  maxTransaction,
+  maxVolume,
+}: CollapsibleFederationsProps) {
+  const [collapsed, setCollapsed] = useState(true);
+  const message = (text: string) => (
+    <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
+      {text}
+    </div>
+  );
+
+  return (
+    <div className="relative overflow-x-auto bg-white shadow-md rounded-lg border border-gray-200 dark:bg-gray-800 dark:border-gray-700 mt-6">
+      <button
+        type="button"
+        aria-expanded={!collapsed}
+        aria-controls={id}
+        className="w-full p-4 sm:p-5 text-base sm:text-lg font-semibold text-left rtl:text-right text-gray-900 bg-white dark:text-white dark:bg-gray-800"
+        onClick={() => setCollapsed(!collapsed)}
+      >
+        <svg
+          aria-hidden="true"
+          className={`w-3 h-3 shrink-0 inline mr-2 transition-transform ${collapsed ? 'rotate-180' : ''}`}
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 10 6"
         >
-          <svg
-            className={`w-3 h-3 shrink-0 inline mr-2 transition-transform ${collapseOffline ? 'rotate-180' : ''}`}
-            xmlns="http://www.w3.org/2000/svg"
-            fill="none"
-            viewBox="0 0 10 6"
-          >
-            <path
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="2"
-              d="M9 5 5 1 1 5"
-            />
-          </svg>
-          <span>Shut Down Federations</span>
-          <span className="mt-1 block text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
-            List of federations that have ceased operations but were observed in the past
-          </span>
-        </button>
-        <div id="shut-down-federations" hidden={collapseOffline}>
-        {!collapseOffline && (
+          <path stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5 5 1 1 5" />
+        </svg>
+        <span>{title}</span>
+        {!loading && !loadError && (
+          <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">({federations.length})</span>
+        )}
+        <span className="mt-1 block text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
+          {description}
+        </span>
+      </button>
+      <div id={id} hidden={collapsed}>
+        {!collapsed && (
           <>
             <div className="hidden md:grid bg-gray-50 dark:bg-gray-700 px-3 sm:px-6 py-3 text-xs text-gray-700 dark:text-gray-300 uppercase font-semibold grid-cols-3 gap-4 border-y border-gray-200 dark:border-gray-600">
               <div>Name</div>
@@ -298,34 +359,28 @@ export function Home() {
               <div>Activity Charts (7d)</div>
             </div>
             <div className="divide-y divide-gray-200 dark:divide-gray-700">
-              {loading ? (
-                <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
-                  Loading...
-                </div>
-              ) : failed ? (
-                loadError
-              ) : filteredOfflineFederations.length === 0 ? (
-                <div className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 bg-white dark:bg-gray-800">
-                  {searchQuery ? 'No offline federations match your search' : 'No offline federations'}
-                </div>
-              ) : (
-                filteredOfflineFederations.map((fed) => (
-                  <FederationRow
-                    key={fed.id}
-                    id={fed.id}
-                    name={fed.name || 'Unnamed'}
-                    totalAssets={fed.deposits}
-                    health={fed.health}
-                    activityData={fed.last_7d_activity}
-                    maxTransaction={globalMaxTransaction}
-                    maxVolume={globalMaxVolume}
-                  />
-                ))
-              )}
+              {loading
+                ? message('Loading...')
+                : loadError
+                  ? loadError
+                  : federations.length === 0
+                    ? message(emptyText)
+                    : federations.map((fed) => (
+                      <FederationRow
+                        key={fed.id}
+                        id={fed.id}
+                        name={fed.name || 'Unnamed'}
+                        totalAssets={fed.deposits}
+                        health={fed.health}
+                        expiryTimestamp={fed.expiry_timestamp}
+                        activityData={fed.last_7d_activity}
+                        maxTransaction={maxTransaction}
+                        maxVolume={maxVolume}
+                      />
+                    ))}
             </div>
           </>
         )}
-        </div>
       </div>
     </div>
   );
