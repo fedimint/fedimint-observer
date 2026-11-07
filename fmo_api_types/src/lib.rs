@@ -161,7 +161,8 @@ pub struct GuardianHealth {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardianHealthLatest {
-    pub block_height: u32,
+    /// `None` for federations without a v1 wallet module
+    pub block_height: Option<u32>,
     pub block_outdated: bool,
     pub session_count: u32,
     pub session_outdated: bool,
