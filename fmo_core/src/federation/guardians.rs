@@ -27,8 +27,10 @@ impl FederationObserver {
         config: ClientConfig,
     ) -> anyhow::Result<()> {
         let api = federation_api(self.connectors(), &config.global)?;
-        let wallet_module =
-            module_instance_id(&config, "wallet").context("Wallet module not found")?;
+
+        // Only used for the guardians' block heights. Federations without a v1
+        // wallet (e.g. walletv2) are still monitored, without block heights.
+        let wallet_module = module_instance_id(&config, "wallet");
 
         let poll_guardians = async || {
             join_all(config.global.api_endpoints.keys().map(|&peer_id| {
@@ -49,29 +51,37 @@ impl FederationObserver {
                     // Second request is used to determine ping
                     // TODO: how much time does bitcoind take to answer if at all (caching?)?
                     let start_time = Instant::now();
-                    let block_height = api
-                        .with_module(wallet_module)
-                        .request_single_peer(
-                            BLOCK_COUNT_LOCAL_ENDPOINT.to_owned(),
-                            ApiRequestErased::default(),
-                            peer_id,
-                        )
-                        .await
-                        .ok()
-                        .and_then(|json| serde_json::from_value::<Option<u32>>(json).ok().flatten())
-                        .map(|block_count| {
-                            // Fedimint uses 1-based block heights, while bitcoind uses 0-based
-                            // heights. A guardian without blocks reports 0.
-                            block_count.saturating_sub(1)
-                        });
-                    let api_latency = start_time.elapsed();
+                    let block_height = match wallet_module {
+                        Some(wallet_module) => api
+                            .with_module(wallet_module)
+                            .request_single_peer(
+                                BLOCK_COUNT_LOCAL_ENDPOINT.to_owned(),
+                                ApiRequestErased::default(),
+                                peer_id,
+                            )
+                            .await
+                            .ok()
+                            .and_then(|json| {
+                                serde_json::from_value::<Option<u32>>(json).ok().flatten()
+                            })
+                            .map(|block_count| {
+                                // Fedimint uses 1-based block heights, while bitcoind uses
+                                // 0-based heights. A guardian without blocks reports 0.
+                                block_count.saturating_sub(1)
+                            }),
+                        None => None,
+                    };
+                    let block_latency = wallet_module.map(|_| start_time.elapsed());
 
+                    // Without a wallet module the version request determines ping instead
+                    let start_time = Instant::now();
                     let software_version = api
                         .fedimintd_version(peer_id)
                         .await
                         .ok()
                         .map(|version| version.trim().to_owned())
                         .filter(|version| !version.is_empty());
+                    let api_latency = block_latency.unwrap_or_else(|| start_time.elapsed());
 
                     (peer_id, status, software_version, block_height, api_latency)
                 }
@@ -182,7 +192,15 @@ impl FederationObserver {
         &self,
         federation_id: FederationId,
     ) -> anyhow::Result<BTreeMap<PeerId, GuardianHealth>> {
-        self.ensure_observed(federation_id).await?;
+        let federation = self
+            .get_federation(federation_id)
+            .await?
+            .context("Unknown federation")?;
+        let has_wallet = federation
+            .config
+            .modules
+            .values()
+            .any(|module| module.kind.as_str() == "wallet");
 
         let health_rows = query::<GuardianHealthRow>(
             &self.connection().await?,
@@ -275,14 +293,18 @@ impl FederationObserver {
         Ok(health_rows
             .into_iter()
             .map(|row| {
-                let latest = if let (Some(session_count), Some(block_height)) =
-                    (row.session_count, row.block_height)
+                // Federations without a v1 wallet module have no block heights,
+                // their guardians are online if they report a session count
+                let latest = if let (Some(session_count), true) =
+                    (row.session_count, row.block_height.is_some() || !has_wallet)
                 {
-                    let block_height = block_height as u32;
+                    let block_height = row.block_height.map(|block_height| block_height as u32);
                     let session_count = session_count as u32;
                     Some(GuardianHealthLatest {
                         block_height,
-                        block_outdated: our_block_height.saturating_sub(block_height) > 6,
+                        block_outdated: block_height.is_some_and(|block_height| {
+                            our_block_height.saturating_sub(block_height) > 6
+                        }),
                         session_count,
                         session_outdated: max_session.saturating_sub(session_count) > 1,
                     })
