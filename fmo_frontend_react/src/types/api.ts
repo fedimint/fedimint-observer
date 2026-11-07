@@ -42,7 +42,8 @@ export interface GuardianHealth {
 }
 
 export interface GuardianHealthLatest {
-  block_height: number;
+  // null for federations without a v1 wallet module
+  block_height: number | null;
   block_outdated: boolean;
   session_count: number;
   session_outdated: boolean;

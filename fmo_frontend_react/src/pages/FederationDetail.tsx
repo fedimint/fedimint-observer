@@ -425,7 +425,7 @@ export function FederationDetail() {
                 const isLoading = !health;
                 const isOnline = health?.latest !== null && health?.latest !== undefined;
                 const session = health?.latest?.session_count || 0;
-                const block = health?.latest ? health.latest.block_height - 1 : 0;
+                const block = health?.latest?.block_height ?? null;
                 const sessionOutdated = health?.latest?.session_outdated || false;
                 const blockOutdated = health?.latest?.block_outdated || false;
                 const softwareVersion = health?.software_version || 'Version unknown';
@@ -459,12 +459,14 @@ export function FederationDetail() {
                               >
                                 Session {session}
                               </Badge>
-                              <Badge
-                                level={blockOutdated ? 'warning' : 'info'}
-                                tooltip={blockOutdated ? "Guardian's bitcoind is out of sync" : undefined}
-                              >
-                                Block {block}
-                              </Badge>
+                              {block !== null && (
+                                <Badge
+                                  level={blockOutdated ? 'warning' : 'info'}
+                                  tooltip={blockOutdated ? "Guardian's bitcoind is out of sync" : undefined}
+                                >
+                                  Block {block - 1}
+                                </Badge>
+                              )}
                             </>
                           )}
                         </>
