@@ -235,6 +235,20 @@ impl FederationObserver {
             .instrument(info_span!("health", fed = %federation_id.to_prefix())),
         );
 
+        // Gateways are only announced through the v1 LN module
+        if !federation
+            .config
+            .modules
+            .values()
+            .any(|module| module.kind.as_str() == "ln")
+        {
+            info!(
+                "Not monitoring gateways of federation {}, it has no LN module",
+                federation.federation_id
+            );
+            return;
+        }
+
         let slf = self.clone();
         let federation_id = federation.federation_id;
         let config = federation.config;
