@@ -14,20 +14,23 @@
 //! contracts, details, consensus items and block height votes. Triggers keep
 //! `federation_totals` right as amounts are filled in; the session times and
 //! daily activity are rebuilt once the projector has caught up, from the first
-//! session it completed (`module_cursors.repair_from`).
+//! session it completed (`module_cursors.repair_from`), by the repair worker
+//! ([`FederationObserver::process_session_time_repair`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{ensure, Context};
+use chrono::NaiveDate;
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::encoding::Encodable;
 use fedimint_core::epoch::ConsensusItem;
 use fedimint_core::session_outcome::SessionOutcome;
 use tokio::sync::Notify;
+use tokio_postgres::error::SqlState;
 use tracing::{info, info_span, Instrument};
 
+use crate::error::ClientError;
 use crate::federation::observer::{
     insert_block_height_vote, insert_consensus_item, insert_input_details, insert_output_details,
     insert_unix_time_vote, CiPosition, FederationObserver, SyncProgress,
@@ -43,6 +46,10 @@ const BATCH_SESSIONS: i64 = 100;
 /// How long an idle projector waits before looking for sessions again without
 /// having been woken. Every store and reset wakes it; this is a safety net.
 const IDLE_POLL: Duration = Duration::from_secs(60);
+/// Sessions whose times a read-model rebuild rewrites per transaction
+const REBUILD_SESSIONS: i32 = 10_000;
+/// Days of activity a read-model rebuild recounts per transaction
+const REBUILD_DAYS: u64 = 31;
 
 /// Wakes a federation's projectors when there is something new for them: a
 /// stored session, or a cursor an admin moved
@@ -123,23 +130,21 @@ impl FederationObserver {
             if rows.is_empty() {
                 if let Some(from) = repair_from {
                     // Caught up: rebuild what the completed core rows feed
-                    // once, instead of after every batch
-                    let claimed = dbtx
-                        .execute(
-                            "UPDATE module_cursors SET repair_from = NULL
-                             WHERE module_kind = $1 AND federation_id = $2 AND repair_from = $3",
-                            &[&kind, &federation_bytes, &(from as i32)],
-                        )
-                        .await?;
-                    if claimed == 1 {
-                        dbtx.execute(
-                            "SELECT rebuild_read_models($1, $2)",
-                            &[&federation_bytes, &(from as i32)],
-                        )
-                        .await?;
-                        dbtx.commit().await?;
-                        info!("Rebuilt the session times and daily activity from session {from}, whose core rows this module completed");
-                    }
+                    // once, instead of after every batch. The repair worker
+                    // rebuilds in steps, without holding this cursor.
+                    dbtx.execute(
+                        "SELECT schedule_read_model_rebuild($1, $2)",
+                        &[&federation_bytes, &(from as i32)],
+                    )
+                    .await?;
+                    dbtx.execute(
+                        "UPDATE module_cursors SET repair_from = NULL
+                         WHERE module_kind = $1 AND federation_id = $2",
+                        &[&kind, &federation_bytes],
+                    )
+                    .await?;
+                    dbtx.commit().await?;
+                    info!("Scheduled a rebuild of the session times and daily activity from session {from}, whose core rows this module completed");
                     continue;
                 }
                 // Hand the connection back while waiting
@@ -263,51 +268,72 @@ impl FederationObserver {
         session_start: u64,
         clean: bool,
     ) -> anyhow::Result<()> {
-        let federation = self
-            .get_federation(federation_id)
-            .await?
-            .with_context(|| format!("Federation {federation_id} is not observed"))?;
-        let module = self
-            .modules()
-            .get(kind)
-            .with_context(|| format!("This build has no {kind} module"))?;
-        ensure!(
-            module_instance_id(&federation.config, kind).is_some(),
-            "Federation {federation_id} has no {kind} module"
-        );
-        ensure!(
-            !clean || session_start == 0,
-            "A clean reset replays every session, so it starts from 0"
-        );
-        ensure!(
-            session_start <= i32::MAX as u64,
-            "session_start {session_start} is not a session index"
-        );
-
-        let mut connection = self.connection().await?;
-        let dbtx = connection.transaction().await?;
-        // The cursor first: its row lock waits for a batch the projector is
-        // committing, so the delete below also removes that batch's rows.
-        dbtx.execute(
-            "INSERT INTO module_cursors (module_kind, federation_id, next_session)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (module_kind, federation_id) DO UPDATE
-                 SET next_session = EXCLUDED.next_session, updated_at = now()",
-            &[
-                &kind,
-                &federation_id.consensus_encode_to_vec(),
-                &(session_start as i32),
-            ],
-        )
-        .await?;
-        if clean {
-            let ctx = ProcessCtx {
-                dbtx: &dbtx,
-                config: &federation.config,
-            };
-            module.reset_federation(&ctx, federation_id).await?;
+        let Some(federation) = self.get_federation(federation_id).await? else {
+            return Err(ClientError::not_found(format!(
+                "Federation {federation_id} is not observed"
+            ))
+            .into());
+        };
+        let Some(module) = self.modules().get(kind) else {
+            return Err(
+                ClientError::bad_request(format!("This build has no {kind} module")).into(),
+            );
+        };
+        if module_instance_id(&federation.config, kind).is_none() {
+            return Err(ClientError::bad_request(format!(
+                "Federation {federation_id} has no {kind} module"
+            ))
+            .into());
         }
-        dbtx.commit().await?;
+        if clean && session_start != 0 {
+            return Err(ClientError::bad_request(
+                "A clean reset replays every session, so it starts from 0",
+            )
+            .into());
+        }
+        if session_start > i32::MAX as u64 {
+            return Err(ClientError::bad_request(format!(
+                "session_start {session_start} is not a session index"
+            ))
+            .into());
+        }
+
+        let reset = async {
+            let mut connection = self.connection().await?;
+            let dbtx = connection.transaction().await?;
+            // The projector holds the cursor for a whole batch. Wait for a
+            // while, within the request deadline, then let the admin retry.
+            dbtx.batch_execute("SET LOCAL lock_timeout = '10s'").await?;
+            // The cursor first: its row lock waits for a batch the projector is
+            // committing, so the delete below also removes that batch's rows.
+            dbtx.execute(
+                "INSERT INTO module_cursors (module_kind, federation_id, next_session)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (module_kind, federation_id) DO UPDATE
+                     SET next_session = EXCLUDED.next_session, updated_at = now()",
+                &[
+                    &kind,
+                    &federation_id.consensus_encode_to_vec(),
+                    &(session_start as i32),
+                ],
+            )
+            .await?;
+            if clean {
+                let ctx = ProcessCtx {
+                    dbtx: &dbtx,
+                    config: &federation.config,
+                };
+                module.reset_federation(&ctx, federation_id).await?;
+            }
+            dbtx.commit().await?;
+            anyhow::Ok(())
+        };
+        if let Err(error) = reset.await {
+            if is_lock_timeout(&error) {
+                return Err(ClientError::unavailable("module is busy, retry").into());
+            }
+            return Err(error);
+        }
         self.projector_wakeups().wake(federation_id);
 
         info!(
@@ -320,6 +346,136 @@ impl FederationObserver {
         );
         Ok(())
     }
+
+    /// Rebuilds the session times and daily activity of the federation whose
+    /// repair jobs are ready and that was attempted least recently, if any.
+    /// Returns whether there was one.
+    pub(super) async fn process_session_time_repair(&self) -> anyhow::Result<bool> {
+        // Committed on its own: a rebuild that fails moves the federation to
+        // the back of the queue instead of being claimed again at once
+        let claim = self
+            .connection()
+            .await?
+            .query_one(
+                "SELECT fed, start_index, claimed_at FROM claim_session_time_repair()",
+                &[],
+            )
+            .await?;
+        let Some(federation_bytes) = claim.get::<_, Option<Vec<u8>>>(0) else {
+            return Ok(false);
+        };
+        let start_index: i32 = claim.get(1);
+        let claimed_at: chrono::DateTime<chrono::Utc> = claim.get(2);
+        self.rebuild_read_models(&federation_bytes, start_index)
+            .await?;
+        self.connection()
+            .await?
+            .execute(
+                "SELECT finish_session_time_repair($1, $2, $3)",
+                &[&federation_bytes, &start_index, &claimed_at],
+            )
+            .await?;
+        Ok(true)
+    }
+
+    /// Rebuilds a federation's session times from session `from` on, and the
+    /// daily activity of the days they touch, in steps of bounded size, each
+    /// in its own transaction. Every step holds the federation's read-model
+    /// lock, which ingest needs for each new session, so a rebuild of a long
+    /// history only ever makes ingest wait for one step. Each step is final
+    /// for what it covers: the last session time step and the last activity
+    /// step have no upper end, so they also cover sessions ingest stored
+    /// meanwhile.
+    async fn rebuild_read_models(&self, federation_bytes: &[u8], from: i32) -> anyhow::Result<()> {
+        let mut connection = self.connection().await?;
+        let first_day_sql = "SELECT session_activity_floor($1, $2)";
+        // Only the days of the sessions from `from` on change: those they
+        // were dated to before, and after
+        let old_first_day: Option<NaiveDate> = connection
+            .query_one(first_day_sql, &[&federation_bytes, &from])
+            .await?
+            .get(0);
+        let last_session: Option<i32> = connection
+            .query_one(
+                "SELECT MAX(session_index) FROM sessions WHERE federation_id = $1",
+                &[&federation_bytes],
+            )
+            .await?
+            .get(0);
+        let mut start = from;
+        loop {
+            let end = match last_session {
+                Some(last) if start.saturating_add(REBUILD_SESSIONS) <= last => {
+                    start + REBUILD_SESSIONS - 1
+                }
+                _ => i32::MAX,
+            };
+            rebuild_step(
+                &mut connection,
+                "SELECT update_session_times($1, $2, $3)",
+                &[&federation_bytes, &start, &end],
+            )
+            .await?;
+            if end == i32::MAX {
+                break;
+            }
+            start = end + 1;
+        }
+
+        let new_first_day: Option<NaiveDate> = connection
+            .query_one(first_day_sql, &[&federation_bytes, &from])
+            .await?
+            .get(0);
+        let Some(mut day) = [old_first_day, new_first_day].into_iter().flatten().min() else {
+            return Ok(());
+        };
+        let last_day: Option<NaiveDate> = connection
+            .query_one(
+                "SELECT DATE(MAX(estimated_session_timestamp)) FROM session_times WHERE federation_id = $1",
+                &[&federation_bytes],
+            )
+            .await?
+            .get(0);
+        loop {
+            let next = day + chrono::Days::new(REBUILD_DAYS);
+            let to = last_day.filter(|last| next <= *last).map(|_| next);
+            rebuild_step(
+                &mut connection,
+                "SELECT rebuild_daily_activity_days($1, $2, $3)",
+                &[&federation_bytes, &day, &to],
+            )
+            .await?;
+            let Some(to) = to else {
+                break;
+            };
+            day = to;
+        }
+        Ok(())
+    }
+}
+
+/// One step of a read-model rebuild, in its own transaction. It waits for the
+/// read-model lock behind ingest of one session, which is short.
+async fn rebuild_step(
+    connection: &mut deadpool_postgres::Object,
+    sql: &str,
+    params: &[&(dyn tokio_postgres::types::ToSql + Sync)],
+) -> anyhow::Result<()> {
+    let dbtx = connection.transaction().await?;
+    dbtx.batch_execute("SET LOCAL lock_timeout = '60s'").await?;
+    dbtx.execute(sql, params).await?;
+    dbtx.commit().await?;
+    Ok(())
+}
+
+/// Whether the error is PostgreSQL giving up waiting for a lock
+fn is_lock_timeout(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<tokio_postgres::Error>()
+            .and_then(tokio_postgres::Error::code)
+            == Some(&SqlState::LOCK_NOT_AVAILABLE)
+    })
 }
 
 /// The next session the module processes for the federation, 0 without a row,
@@ -625,4 +781,47 @@ async fn process_module_items(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    #[ignore = "requires an empty isolated FMO_WORK_TEST_DATABASE"]
+    async fn postgres_lock_timeouts_are_recognized() -> anyhow::Result<()> {
+        let database = std::env::var("FMO_WORK_TEST_DATABASE")?;
+        let connect = || async {
+            let (client, driver) =
+                tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
+            tokio::spawn(driver);
+            anyhow::Ok(client)
+        };
+        let (mut holder, mut waiter) = (connect().await?, connect().await?);
+        let schema = format!("fmo_lock_test_{}", std::process::id());
+        holder
+            .batch_execute(&format!(
+                "CREATE SCHEMA {schema}; CREATE TABLE {schema}.cursor (id INTEGER); INSERT INTO {schema}.cursor VALUES (1)"
+            ))
+            .await?;
+        let held = holder.transaction().await?;
+        held.execute(&format!("SELECT * FROM {schema}.cursor FOR UPDATE"), &[])
+            .await?;
+        let waiting = waiter.transaction().await?;
+        waiting
+            .batch_execute("SET LOCAL lock_timeout = '50ms'")
+            .await?;
+        let error = waiting
+            .execute(&format!("UPDATE {schema}.cursor SET id = 2"), &[])
+            .await
+            .expect_err("the row is locked");
+        assert!(super::is_lock_timeout(
+            &anyhow::Error::from(error).context("resetting")
+        ));
+        assert!(!super::is_lock_timeout(&anyhow::anyhow!("other")));
+        drop(waiting);
+        held.rollback().await?;
+        holder
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await?;
+        Ok(())
+    }
 }

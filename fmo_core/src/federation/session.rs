@@ -36,6 +36,11 @@ pub(super) async fn count_sessions(
     Path(federation_id): Path<FederationId>,
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<u64>> {
+    // Unknown ids are a 404 like on the other routes, not a count of 0
+    state
+        .federation_observer
+        .ensure_observed(federation_id)
+        .await?;
     Ok(state
         .federation_observer
         .federation_session_count(federation_id)
@@ -86,26 +91,63 @@ impl FederationObserver {
 
     /// The session to fetch next: one past the last stored session. Counting
     /// rows instead would refetch a session forever if one were ever missing.
+    ///
+    /// Also checks the federation's stored session count against it. The
+    /// count is derived from `sessions`, so where they differ it is recounted
+    /// first: a counter left short is corrected here, and only sessions really
+    /// missing are reported.
     pub(crate) async fn next_session_index(
         &self,
         federation_id: FederationId,
     ) -> anyhow::Result<u64> {
-        let connection = self.connection().await?;
+        let federation_bytes = federation_id.consensus_encode_to_vec();
+        let mut connection = self.connection().await?;
         let (next, count) = {
             let row = connection
                 .query_one(
                     "SELECT COALESCE((SELECT MAX(session_index)::bigint + 1 FROM sessions WHERE federation_id = $1), 0),
                             COALESCE((SELECT session_count FROM federation_session_counts WHERE federation_id = $1), 0)",
-                    &[&federation_id.consensus_encode_to_vec()],
+                    &[&federation_bytes],
                 )
                 .await?;
             (row.get::<_, i64>(0), row.get::<_, i64>(1))
         };
-        if next != count {
+        if next == count {
+            return Ok(next as u64);
+        }
+
+        // A session stored meanwhile updates the count's row, so with that row
+        // locked the count read after it is exact
+        let dbtx = connection.transaction().await?;
+        dbtx.execute(
+            "SELECT 1 FROM federation_session_counts WHERE federation_id = $1 FOR UPDATE",
+            &[&federation_bytes],
+        )
+        .await?;
+        let stored: i64 = dbtx
+            .query_one(
+                "SELECT COUNT(*) FROM sessions WHERE federation_id = $1",
+                &[&federation_bytes],
+            )
+            .await?
+            .get(0);
+        if stored != count {
+            dbtx.execute(
+                "INSERT INTO federation_session_counts (federation_id, session_count) VALUES ($1, $2)
+                 ON CONFLICT (federation_id) DO UPDATE SET session_count = EXCLUDED.session_count",
+                &[&federation_bytes, &stored],
+            )
+            .await?;
+            tracing::warn!(
+                "Federation {federation_id} had a stored session count of {count} for {stored} stored sessions; corrected it"
+            );
+        }
+        dbtx.commit().await?;
+        if next != stored {
             // Sync continues after the newest session, so these are not fetched again
             tracing::warn!(
                 "Federation {federation_id} is missing {} of its first {next} sessions",
-                next - count
+                next - stored
             );
         }
         Ok(next as u64)

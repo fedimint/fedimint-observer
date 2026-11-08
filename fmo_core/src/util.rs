@@ -1,9 +1,7 @@
 use deadpool_postgres::GenericClient;
 use fedimint_api_client::api::DynGlobalApi;
 use fedimint_connectors::ConnectorRegistry;
-use fedimint_core::config::{
-    ClientConfig, ClientModuleConfig, GlobalClientConfig, JsonClientConfig, JsonWithKind,
-};
+use fedimint_core::config::{ClientConfig, ClientModuleConfig, JsonClientConfig, JsonWithKind};
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::encoding::DynRawFallback;
 use hex::ToHex;
@@ -26,17 +24,16 @@ where
     }
 }
 
-/// A client for the API of a federation's guardians
-pub fn federation_api(
+/// A new client for the API of a federation's guardians. Use the observer's
+/// shared clients instead
+/// ([`crate::federation::observer::FederationObserver::federation_api`]): every
+/// client keeps its guardian connections open for the life of the process.
+pub(crate) fn federation_api(
     connectors: &ConnectorRegistry,
-    global: &GlobalClientConfig,
+    peers: &std::collections::BTreeMap<fedimint_core::PeerId, fedimint_core::util::SafeUrl>,
+    api_secret: Option<String>,
 ) -> anyhow::Result<DynGlobalApi> {
-    let peers = global
-        .api_endpoints
-        .iter()
-        .map(|(&peer_id, peer_url)| (peer_id, peer_url.url.clone()))
-        .collect();
-    DynGlobalApi::new(connectors.clone(), peers, None)
+    DynGlobalApi::new(connectors.clone(), peers.clone(), api_secret.as_deref())
 }
 
 /// The instance id of the federation's first module of `kind`

@@ -25,8 +25,9 @@ Fedimint module support lives in independent crates under `fmo_modules/`.
 Mint, wallet and Lightning each have separate v1 and v2 implementations; the
 default server registers all six in the same application.
 
-When it comes to stability guarantees the Postgres database should always be migratable backwards-compatibly, so we
-don't lose historic data. The API under `/federations` isn't stable at this point and I'd recommend to subscribing to
+When it comes to stability guarantees, database migrations preserve historic data. A populated database upgrades
+in place from schema v11 or newer; older databases first need the previous release, which still carries the data
+backfills for those versions. The API under `/federations` isn't stable at this point and I'd recommend to subscribing to
 changes in Fedimint Observer if building against it.
 
 ## Federation Inspector

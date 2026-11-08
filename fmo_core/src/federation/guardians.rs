@@ -7,6 +7,7 @@ use axum::Json;
 use chrono::{NaiveDateTime, TimeDelta};
 use fedimint_api_client::api::{FederationApiExt, StatusResponse};
 use fedimint_core::config::{ClientConfig, FederationId};
+use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::encoding::Encodable;
 use fedimint_core::endpoint_constants::STATUS_ENDPOINT;
 use fedimint_core::module::ApiRequestErased;
@@ -18,7 +19,7 @@ use postgres_from_row::FromRow;
 use tracing::info;
 
 use crate::federation::observer::FederationObserver;
-use crate::util::{federation_api, module_instance_id, query};
+use crate::util::{module_instance_id, query};
 
 impl FederationObserver {
     pub async fn monitor_health(
@@ -26,8 +27,8 @@ impl FederationObserver {
         federation_id: FederationId,
         config: ClientConfig,
     ) -> anyhow::Result<()> {
-        let api = federation_api(self.connectors(), &config.global)?;
-        let wallet_module = module_instance_id(&config, "wallet");
+        let api = self.federation_api(&config.global)?;
+        let block_source = BlockHeightSource::of(&config);
 
         let poll_guardians = async || {
             join_all(config.global.api_endpoints.keys().map(|&peer_id| {
@@ -64,11 +65,11 @@ impl FederationObserver {
                         Ok(Ok(_)) => Some(start_time.elapsed().as_millis() as i32),
                         _ => None,
                     };
-                    let block_height = if let Some(wallet_module) = wallet_module {
-                        tokio::time::timeout(
+                    let block_height = match block_source {
+                        Some(source) => tokio::time::timeout(
                             Duration::from_secs(10),
-                            api.with_module(wallet_module).request_single_peer(
-                                BLOCK_COUNT_LOCAL_ENDPOINT.to_owned(),
+                            api.with_module(source.instance()).request_single_peer(
+                                source.endpoint().to_owned(),
                                 ApiRequestErased::default(),
                                 peer_id,
                             ),
@@ -76,14 +77,8 @@ impl FederationObserver {
                         .await
                         .ok()
                         .and_then(Result::ok)
-                        .and_then(|json| serde_json::from_value::<Option<u32>>(json).ok().flatten())
-                        .map(|block_count| {
-                            // Fedimint uses 1-based block heights, while bitcoind uses 0-based
-                            // heights. A guardian without blocks reports 0.
-                            block_count.saturating_sub(1)
-                        })
-                    } else {
-                        None
+                        .and_then(|json| source.block_height(json)),
+                        None => None,
                     };
 
                     let software_version = tokio::time::timeout(
@@ -158,7 +153,8 @@ impl FederationObserver {
                         &timestamp,
                         &(peer_id.to_usize() as i32),
                         &status.map(|s| serde_json::to_value(s).expect("Can be serialized")),
-                        &block_height.map(|bh| bh as i32),
+                        // Heights beyond the column's range are nonsense, not wrapped
+                        &block_height.and_then(|height| i32::try_from(height).ok()),
                         &api_latency,
                         &software_version,
                         // The sample stands for the time until the next poll
@@ -244,7 +240,10 @@ impl FederationObserver {
              SELECT
                 g.guardian_id,
                 latest.block_height,
-                (latest.status -> 'federation' ->> 'session_count')::integer AS session_count,
+                -- Reported by the guardian: clamped, so an absurd value
+                -- can't fail the whole federation's health
+                LEAST(GREATEST((latest.status -> 'federation' ->> 'session_count')::numeric, 0),
+                      4294967295)::bigint AS session_count,
                 latest.software_version,
                 last30d.uptime,
                 last30d.latency_ms
@@ -297,14 +296,16 @@ impl FederationObserver {
             .iter()
             .filter_map(|row| row.session_count)
             .max()
-            .unwrap_or_default() as u32;
+            .map_or(0, clamp_to_u32);
 
         Ok(health_rows
             .into_iter()
             .map(|row| {
                 let latest = if let Some(session_count) = row.session_count {
-                    let block_height = row.block_height.map(|height| height as u32);
-                    let session_count = session_count as u32;
+                    let block_height = row
+                        .block_height
+                        .and_then(|height| u32::try_from(height).ok());
+                    let session_count = clamp_to_u32(session_count);
                     Some(GuardianHealthLatest {
                         block_height,
                         block_outdated: block_height
@@ -425,6 +426,70 @@ impl FederationObserver {
     }
 }
 
+fn clamp_to_u32(value: i64) -> u32 {
+    u32::try_from(value.max(0)).unwrap_or(u32::MAX)
+}
+
+/// `fedimint_walletv2_common::endpoint_constants::CONSENSUS_BLOCK_COUNT_ENDPOINT`
+const WALLETV2_CONSENSUS_BLOCK_COUNT_ENDPOINT: &str = "consensus_block_count";
+/// `fedimint_walletv2_server::CONFIRMATION_FINALITY_DELAY`: walletv2 guardians
+/// vote for their bitcoind's block count minus this many blocks
+const WALLETV2_CONFIRMATION_FINALITY_DELAY: u64 = 6;
+
+/// Where a guardian's block height comes from
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockHeightSource {
+    /// The v1 wallet module's block count of the guardian's own bitcoind
+    WalletLocal(ModuleInstanceId),
+    /// Wallet v2 has no endpoint for the guardian's own bitcoind, only for
+    /// the block count consensus agreed on as the guardian has processed it,
+    /// which trails the chain tip by the finality delay. Added back, it is
+    /// comparable to the chain tip; a guardian behind on consensus or
+    /// federation whose bitcoinds lag reports a lower height.
+    WalletV2Consensus(ModuleInstanceId),
+}
+
+impl BlockHeightSource {
+    fn of(config: &ClientConfig) -> Option<Self> {
+        module_instance_id(config, "wallet")
+            .map(Self::WalletLocal)
+            .or_else(|| module_instance_id(config, "walletv2").map(Self::WalletV2Consensus))
+    }
+
+    fn instance(self) -> ModuleInstanceId {
+        match self {
+            Self::WalletLocal(instance) | Self::WalletV2Consensus(instance) => instance,
+        }
+    }
+
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::WalletLocal(_) => BLOCK_COUNT_LOCAL_ENDPOINT,
+            Self::WalletV2Consensus(_) => WALLETV2_CONSENSUS_BLOCK_COUNT_ENDPOINT,
+        }
+    }
+
+    /// The 0-based height of the chain tip in the guardian's answer. Fedimint
+    /// counts blocks, so the tip is one less; a guardian without blocks
+    /// reports 0.
+    fn block_height(self, response: serde_json::Value) -> Option<u32> {
+        let block_count = match self {
+            Self::WalletLocal(_) => {
+                u64::from(serde_json::from_value::<Option<u32>>(response).ok()??)
+            }
+            Self::WalletV2Consensus(_) => {
+                let count = serde_json::from_value::<u64>(response).ok()?;
+                // Consensus hasn't agreed on any block yet
+                if count == 0 {
+                    return None;
+                }
+                count.saturating_add(WALLETV2_CONFIRMATION_FINALITY_DELAY)
+            }
+        };
+        u32::try_from(block_count.saturating_sub(1)).ok()
+    }
+}
+
 /// Polls of a federation that is online, or partly so
 const ONLINE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -456,7 +521,7 @@ fn log_poll_interval(interval: Duration, offline_since: Option<NaiveDateTime>) {
 struct GuardianHealthRow {
     guardian_id: i32,
     block_height: Option<i32>,
-    session_count: Option<i32>,
+    session_count: Option<i64>,
     software_version: Option<String>,
     uptime: f32,
     latency_ms: f32,

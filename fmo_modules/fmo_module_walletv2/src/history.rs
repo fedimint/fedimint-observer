@@ -1,4 +1,3 @@
-use anyhow::Context;
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -6,7 +5,7 @@ use chrono::{DateTime, Utc};
 use fedimint_core::config::FederationId;
 use fedimint_core::encoding::Encodable;
 use fmo_api_types::{WalletV2History, WalletV2OnChainTransaction};
-use fmo_core::module::{ApiError, ApiResult, Services};
+use fmo_core::module::{ApiError, ApiResult, ClientError, Services};
 use serde::Deserialize;
 
 pub(crate) const HISTORY_PAGE_SQL: &str = "SELECT data FROM fmo_walletv2.chain WHERE federation_id=$1 AND module_instance_id=$2
@@ -34,26 +33,36 @@ pub(crate) fn page_limit(params: &Params) -> ApiResult<i64> {
     Ok(i64::from(limit))
 }
 
+/// The walletv2 instance a request is about: 404 if the federation has none,
+/// 400 if the requested one isn't a walletv2 instance or the choice is
+/// ambiguous
+pub(crate) fn select_instance(ids: &[u16], requested: Option<u16>) -> ApiResult<u16> {
+    match (requested, ids) {
+        (_, []) => Err(ApiError::not_found("Federation has no Wallet v2 module")),
+        (Some(id), _) if ids.contains(&id) => Ok(id),
+        (Some(id), _) => Err(ApiError::bad_request(format!(
+            "Module instance {id} is not a Wallet v2 module of this federation"
+        ))),
+        (None, [id]) => Ok(*id),
+        (None, _) => Err(ApiError::bad_request(
+            "Select a configured walletv2 module_instance_id",
+        )),
+    }
+}
+
 async fn history(
     Path(federation_id): Path<FederationId>,
     Query(params): Query<Params>,
     State(services): State<Services>,
 ) -> ApiResult<Json<WalletV2History>> {
     let limit = page_limit(&params)?;
-    let federation = services
-        .federation(federation_id)
-        .await?
-        .context("Federation not observed")?;
-    let ids = super::collector::instances(&federation.config);
-    let instance = match params.module_instance_id {
-        Some(id) if ids.contains(&id) => id,
-        None if ids.len() == 1 => ids[0],
-        _ => {
-            return Err(ApiError::bad_request(
-                "Select a configured walletv2 module_instance_id",
-            ))
-        }
-    };
+    let federation = services.federation(federation_id).await?.ok_or_else(|| {
+        ClientError::not_found(format!("Federation {federation_id} is not observed"))
+    })?;
+    let instance = select_instance(
+        &super::collector::instances(&federation.config),
+        params.module_instance_id,
+    )?;
     let connection = services.connection().await?;
     let bytes = federation_id.consensus_encode_to_vec();
     let state = connection

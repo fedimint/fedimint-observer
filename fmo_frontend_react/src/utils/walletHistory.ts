@@ -1,4 +1,4 @@
-export type HistoryContent = 'loading' | 'unavailable' | 'empty' | 'ready';
+type HistoryContent = 'loading' | 'unavailable' | 'empty' | 'ready';
 
 /** Which request failed: the latest page, or an older page */
 export type HistoryError = 'refresh' | 'older';
@@ -17,8 +17,8 @@ export function historyAlert(loaded: boolean, error: HistoryError | null): strin
     case null:
       return null;
     case 'older':
-      // The loaded operations are still current; only the next page is missing
-      return 'Older operations could not load. Try again with the button below.';
+      // The shown operations are still current; only the requested page is missing
+      return 'That page of operations could not load. Try the page arrows again.';
     case 'refresh':
       return loaded
         ? 'Wallet history could not refresh. The data below is the last successful observation.'

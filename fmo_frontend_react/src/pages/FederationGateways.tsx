@@ -1,9 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api } from '../services/api';
+import { errorMessage } from '../utils/errors';
 import type {
   FederationSummary,
   GatewayInfo,
+  GatewayOverviewSummary,
+  GatewayStatus,
+  GatewayUptimeBucket,
   GatewayUptimeTrendPoint,
   GatewayWindow,
 } from '../types/api';
@@ -11,10 +15,10 @@ import { GatewayWarningPage, type GatewayWarningState } from '../components/Gate
 import { ErrorBoundary, ReloadMessage } from '../components/ErrorBoundary';
 import { readStorage, writeStorage } from '../utils/storage';
 import { useTheme } from '../hooks/useTheme';
-import { shortMiddle } from '../utils/format';
+import { formatMsatsCompact, shortMiddle } from '../utils/format';
+import { formatUtcDate, formatUtcDateTime } from '../utils/time';
 import type { EChartsOption } from 'echarts';
 
-type GatewayStatus = 'online' | 'degraded' | 'offline' | 'unknown' | 'retired';
 type UptimeStripStatus = 'online' | 'degraded' | 'offline' | 'unknown';
 
 const GATEWAY_WINDOWS: readonly GatewayWindow[] = ['24h', '7d', '30d', '90d'];
@@ -85,17 +89,6 @@ function getGatewayStatus(lastSeen: Date | null, now: number): GatewayStatus {
   return 'offline';
 }
 
-function formatDateTime(date: Date | null): string {
-  if (!date) return 'N/A';
-  return date.toLocaleString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 function formatRelative(date: Date | null, now: number): string {
   if (!date) return 'Never seen';
 
@@ -115,14 +108,6 @@ function formatCompactDuration(minutes: number): string {
   if (safe >= 60) return `${Math.round(safe / 60)}h`;
   if (safe === 0) return '0m';
   return `${safe}m`;
-}
-
-function formatMsats(msat: number): string {
-  const sats = msat / 1000;
-  if (sats >= 100_000_000) return `${(sats / 100_000_000).toFixed(2)} BTC`;
-  if (sats >= 100_000) return `${(sats / 100_000).toFixed(1)}M sats`;
-  if (sats >= 1_000) return `${(sats / 1000).toFixed(1)}k sats`;
-  return `${Math.round(sats).toLocaleString()} sats`;
 }
 
 function statusClasses(status: GatewayStatus): string {
@@ -151,54 +136,25 @@ function getUptimeStripClass(status: UptimeStripStatus): string {
   }
 }
 
-function buildUptimeStrip(gateway: GatewayWithStatus, windowMinutes: number): UptimeStripStatus[] {
-  const segments = 30;
+const UPTIME_SEGMENTS = 30;
 
-  if (gateway.status === 'unknown' || gateway.status === 'retired' || windowMinutes <= 0) {
-    return Array.from({ length: segments }, () => 'unknown');
-  }
+/** The polls recorded in each slot of the window, when the server sends them */
+function uptimeBuckets(gateway: GatewayWithStatus): GatewayUptimeBucket[] | null {
+  const buckets = gateway.uptime_window?.buckets;
+  return buckets && buckets.length === UPTIME_SEGMENTS ? buckets : null;
+}
 
-  const strip: UptimeStripStatus[] = Array.from({ length: segments }, () => 'unknown');
-  const unknownMinutes = Math.max(0, Math.min(windowMinutes, gateway.estimatedUnknownMinutes));
-  const unknownSegments = Math.max(
-    0,
-    Math.min(segments, Math.round((unknownMinutes / Math.max(1, windowMinutes)) * segments)),
-  );
-  const observedSegments = Math.max(0, segments - unknownSegments);
-  const observedStart = unknownSegments;
+function bucketStatus(bucket: GatewayUptimeBucket): UptimeStripStatus {
+  if (bucket.total_samples === 0) return 'unknown';
+  if (bucket.seen_samples === bucket.total_samples) return 'online';
+  return bucket.seen_samples === 0 ? 'offline' : 'degraded';
+}
 
-  for (let idx = observedStart; idx < segments; idx += 1) {
-    strip[idx] = 'online';
-  }
-
-  if (observedSegments === 0) {
-    return strip;
-  }
-
-  const sampledMinutes = Math.max(
-    1,
-    gateway.estimatedOnlineMinutes + gateway.estimatedOfflineMinutes,
-  );
-  const offlineMinutes = Math.max(0, gateway.estimatedOfflineMinutes);
-  const offlineSegments = Math.max(
-    0,
-    Math.min(observedSegments, Math.round((offlineMinutes / sampledMinutes) * observedSegments)),
-  );
-  const offlineStatus: UptimeStripStatus = gateway.status === 'degraded' ? 'degraded' : 'offline';
-
-  for (let idx = segments - 1; idx >= segments - offlineSegments; idx -= 1) {
-    if (idx >= 0) strip[idx] = offlineStatus;
-  }
-
-  if (gateway.status === 'degraded') {
-    strip[segments - 1] = 'degraded';
-  } else if (gateway.status === 'offline') {
-    strip[segments - 1] = 'offline';
-  } else {
-    strip[segments - 1] = 'online';
-  }
-
-  return strip;
+function buildUptimeStrip(gateway: GatewayWithStatus): UptimeStripStatus[] {
+  // Each segment shows the polls recorded in its own slot of the window; without
+  // them (a live registry lookup) nothing was observed
+  const buckets = uptimeBuckets(gateway);
+  return buckets ? buckets.map(bucketStatus) : Array.from({ length: UPTIME_SEGMENTS }, () => 'unknown');
 }
 
 function getUptimeBucketLabel(
@@ -216,16 +172,20 @@ function getUptimeBucketLabel(
 }
 
 function getUptimeBucketTooltip(
-  status: UptimeStripStatus,
   bucketIndex: number,
   totalBuckets: number,
   windowMinutes: number,
+  bucket?: GatewayUptimeBucket,
 ): string {
-  return `Bucket ${bucketIndex + 1} of ${totalBuckets} · ${getUptimeBucketLabel(
+  const label = `Bucket ${bucketIndex + 1} of ${totalBuckets} · ${getUptimeBucketLabel(
     bucketIndex,
     totalBuckets,
     windowMinutes,
-  )} · Estimated ${status}`;
+  )}`;
+  if (!bucket) return `${label} · No poll history`;
+  return bucket.total_samples === 0
+    ? `${label} · No polls recorded`
+    : `${label} · Seen in ${bucket.seen_samples} of ${bucket.total_samples} polls`;
 }
 
 function mergeGatewayData(observedGateways: GatewayInfo[], liveGateways: GatewayInfo[]): GatewayInfo[] {
@@ -397,7 +357,7 @@ function selectGatewayData({
       message: observedError?.network
         ? 'Check your connection and try again.'
         : 'The observer API returned an error. Try again in a moment.',
-      detail: observedError?.message,
+      detail: liveError ? `${observedError?.message} · Live registry: ${liveError}` : observedError?.message,
     },
   };
 }
@@ -409,10 +369,6 @@ function parseOption<T extends string>(options: readonly T[], value: string | nu
 
 function defaultDirection(sort: GatewaySort): SortDirection {
   return sort === 'status' ? 'asc' : 'desc';
-}
-
-function errorMessage(err: unknown, fallback: string): string {
-  return err instanceof Error ? err.message : fallback;
 }
 
 export function FederationGateways() {
@@ -433,7 +389,7 @@ export function FederationGateways() {
   const [federationKey, setFederationKey] = useState(0);
   // Each response is stored with the window it belongs to, so a window switch never
   // recomputes the previous window's numbers against the new window's length
-  const [observed, setObserved] = useState<{ window: GatewayWindow; gateways: GatewayInfo[] } | null>(null);
+  const [observed, setObserved] = useState<{ window: GatewayWindow; gateways: GatewayInfo[]; summary: GatewayOverviewSummary } | null>(null);
   const [observedError, setObservedError] = useState<LoadError | null>(null);
   const [observedLoading, setObservedLoading] = useState(true);
   const [live, setLive] = useState<LiveLookup>({ status: 'pending' });
@@ -502,7 +458,7 @@ export function FederationGateways() {
     api.getFederationGatewayOverview(id, timeWindow, signal)
       .then((overview) => {
         if (signal.aborted) return;
-        setObserved({ window: timeWindow, gateways: overview.gateways ?? [] });
+        setObserved({ window: timeWindow, gateways: overview.gateways ?? [], summary: overview.summary });
         setTrend({ window: timeWindow, points: overview.uptime_trend ?? [] });
         setObservedError(null);
         setUpdatedAt(Date.parse(overview.computed_at));
@@ -626,33 +582,19 @@ export function FederationGateways() {
       .map((gateway) => {
         const firstSeenDate = parseTimestamp(gateway.first_seen);
         const lastSeenDate = parseTimestamp(gateway.last_seen);
-        const status = getGatewayStatus(lastSeenDate, now);
+        // Re-derived from last_seen against the current clock, so it stays fresh between
+        // refreshes; the server's status is the fallback without a last_seen
+        const status = lastSeenDate ? getGatewayStatus(lastSeenDate, now) : gateway.status ?? 'unknown';
         const minutesSinceLastSeen = lastSeenDate
           ? (now - lastSeenDate.getTime()) / (1000 * 60)
           : null;
-        const observedUptime = gateway.uptime_window;
-        const hasObservedSamples = Boolean(observedUptime && observedUptime.sample_count > 0);
-        const rawObservedOnlineMinutes = hasObservedSamples ? (observedUptime?.online_minutes ?? 0) : 0;
-        const rawObservedOfflineMinutes = hasObservedSamples ? (observedUptime?.offline_minutes ?? 0) : 0;
-        const rawObservedTotalMinutes = rawObservedOnlineMinutes + rawObservedOfflineMinutes;
-        const clampScale = rawObservedTotalMinutes > windowMinutes
-          ? windowMinutes / rawObservedTotalMinutes
-          : 1;
-        const estimatedOnlineMinutes = rawObservedOnlineMinutes * clampScale;
-        const observedOfflineMinutes = rawObservedOfflineMinutes * clampScale;
-        const sampledMinutes = estimatedOnlineMinutes + observedOfflineMinutes;
-        const baseUnknownMinutes = Math.max(0, windowMinutes - sampledMinutes);
-        const inferredOfflineFromRecency = status === 'offline' && minutesSinceLastSeen !== null
-          ? Math.max(0, Math.min(baseUnknownMinutes, minutesSinceLastSeen))
-          : 0;
-        const estimatedOfflineMinutes = observedOfflineMinutes + inferredOfflineFromRecency;
-        const estimatedUnknownMinutes = Math.max(0, baseUnknownMinutes - inferredOfflineFromRecency);
-        const estimatedUptimePct = sampledMinutes > 0
-          ? (estimatedOnlineMinutes / sampledMinutes) * 100
-          : 0;
-        const coveragePct = windowMinutes > 0
-          ? (sampledMinutes / windowMinutes) * 100
-          : 0;
+        // Availability over the window is computed on the server; gateways from a live
+        // registry lookup have none, so their whole window is unobserved
+        const estimatedOnlineMinutes = gateway.estimated_online_minutes ?? 0;
+        const estimatedOfflineMinutes = gateway.estimated_offline_minutes ?? 0;
+        const estimatedUnknownMinutes = gateway.estimated_unknown_minutes ?? windowMinutes;
+        const estimatedUptimePct = gateway.estimated_uptime_pct ?? 0;
+        const coveragePct = gateway.coverage_pct ?? 0;
         const activityWindow = gateway.activity_window ?? gateway.activity_7d;
         const fundCountWindow = activityWindow?.fund_count ?? 0;
         const settleCountWindow = activityWindow?.settle_count ?? 0;
@@ -698,33 +640,9 @@ export function FederationGateways() {
       });
   }, [gateways, now, windowMinutes]);
 
-  // Retired gateways are listed separately and left out of every figure
-  const activeRows = useMemo(() => rows.filter((row) => row.status !== 'retired'), [rows]);
-
-  const totals = useMemo(() => {
-    const total = activeRows.length;
-    const online = activeRows.filter((row) => row.status === 'online').length;
-    const degraded = activeRows.filter((row) => row.status === 'degraded').length;
-    const offline = activeRows.filter((row) => row.status === 'offline').length;
-    const unknown = total - online - degraded - offline;
-    const vetted = activeRows.filter((row) => row.vetted).length;
-    const retired = rows.length - total;
-
-    return { total, online, degraded, offline, unknown, vetted, retired };
-  }, [activeRows, rows]);
-
-  const avgUptime = useMemo(() => {
-    const observedRows = activeRows.filter((row) => row.coveragePct > 0);
-    if (observedRows.length === 0) return 0;
-    const total = observedRows.reduce((sum, row) => sum + row.estimatedUptimePct, 0);
-    return total / observedRows.length;
-  }, [activeRows]);
-
-  const avgCoverage = useMemo(() => {
-    if (activeRows.length === 0) return 0;
-    const total = activeRows.reduce((sum, row) => sum + row.coveragePct, 0);
-    return total / activeRows.length;
-  }, [activeRows]);
+  // Counted on the server over all the federation's recorded gateways, as of
+  // computed_at; retired ones count only in `retired`. Live registry rows alone have none.
+  const summary = observed?.summary ?? null;
 
   const filteredRows = useMemo(() => {
     const query = gatewaySearch.trim().toLowerCase();
@@ -771,9 +689,9 @@ export function FederationGateways() {
   const uptimeStripByGatewayId = useMemo(
     () => new Map(rows.map((gateway) => [
       gateway.gateway_id,
-      buildUptimeStrip(gateway, windowMinutes),
+      buildUptimeStrip(gateway),
     ])),
-    [rows, windowMinutes],
+    [rows],
   );
   const visibleRows = useMemo(
     () => filteredRows.slice(0, visibleGatewayCount),
@@ -787,20 +705,23 @@ export function FederationGateways() {
 
   // A window switch shows the loading state rather than the previous window's trend
   const uptimeTrend = trend?.window === timeWindow ? trend.points : EMPTY_TREND;
+  // Each point starts at UTC midnight and covers that UTC day
+  const trendLabels = useMemo(
+    () => uptimeTrend.map((point) => formatUtcDate(point.day, { month: 'short', day: 'numeric' })),
+    [uptimeTrend],
+  );
   const uptimeTrendOption = useMemo<EChartsOption>(() => ({
     animationDuration: 200,
     grid: { top: 18, right: 18, bottom: 30, left: 42 },
     tooltip: { trigger: 'axis', valueFormatter: (value) => `${Number(value).toFixed(1)}%` },
     xAxis: {
       type: 'category', boundaryGap: false,
-      // Days are bucketed in the server's time zone (midnight there is e.g. 22:00Z). Half a
-      // day later, formatted in UTC, names that same calendar day for every viewer.
-      data: uptimeTrend.map((point) => new Date(Date.parse(point.day) + 12 * 60 * 60 * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })),
+      data: trendLabels,
       axisLabel: { color: chartColors.label, fontSize: 11 }, axisLine: { lineStyle: { color: chartColors.axis } },
     },
     yAxis: { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%', color: chartColors.label, fontSize: 11 }, splitLine: { lineStyle: { color: chartColors.grid } } },
     series: [{ name: 'Gateway availability', type: 'line', smooth: true, symbol: uptimeTrend.length > 45 ? 'none' : 'circle', symbolSize: 5, data: uptimeTrend.map((point) => Number(point.uptime_pct.toFixed(2))), lineStyle: { color: chartColors.line, width: 2.5 }, itemStyle: { color: chartColors.line }, areaStyle: { color: chartColors.area } }],
-  }), [chartColors, uptimeTrend]);
+  }), [chartColors, trendLabels, uptimeTrend]);
 
   if (federation === null && observed !== null && observed.gateways.length === 0) {
     return (
@@ -860,7 +781,7 @@ export function FederationGateways() {
           </div>
         </div>
         {hasData && (
-          <div aria-busy={switchingWindow} className={`mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-200 pt-3 text-sm transition-opacity dark:border-gray-700 ${switchingWindow ? 'opacity-60' : ''}`}><span className="font-semibold text-gray-950 dark:text-white">{totals.total} gateways</span><span className="text-green-700 dark:text-green-300">● {totals.online} online</span><span className="text-yellow-700 dark:text-yellow-300">● {totals.degraded} degraded</span><span className="text-red-700 dark:text-red-300">● {totals.offline} offline</span>{totals.unknown > 0 && <span className="text-gray-600 dark:text-gray-300">● {totals.unknown} unknown</span>}{totals.retired > 0 && <span className="text-gray-500 dark:text-gray-400">{totals.retired} retired</span>}<span className="text-gray-600 dark:text-gray-300">{totals.vetted} vetted</span><span className="sm:ml-auto font-semibold text-indigo-700 dark:text-indigo-300">{avgCoverage > 0 ? <>{avgUptime.toFixed(1)}% uptime <span className="font-normal text-xs text-gray-500 dark:text-gray-400">({avgCoverage.toFixed(0)}% observed)</span></> : 'No uptime data'}</span></div>
+          <div aria-busy={switchingWindow} className={`mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-200 pt-3 text-sm transition-opacity dark:border-gray-700 ${switchingWindow ? 'opacity-60' : ''}`}>{summary ? <><span className="font-semibold text-gray-950 dark:text-white">{summary.total} gateways</span><span className="text-green-700 dark:text-green-300">● {summary.online} online</span><span className="text-yellow-700 dark:text-yellow-300">● {summary.degraded} degraded</span><span className="text-red-700 dark:text-red-300">● {summary.offline} offline</span>{summary.unknown > 0 && <span className="text-gray-600 dark:text-gray-300">● {summary.unknown} unknown</span>}{summary.retired > 0 && <span className="text-gray-500 dark:text-gray-400">{summary.retired} retired</span>}<span className="text-gray-600 dark:text-gray-300">{summary.vetted} vetted</span><span className="sm:ml-auto font-semibold text-indigo-700 dark:text-indigo-300">{summary.avg_uptime_pct !== null ? <>{summary.avg_uptime_pct.toFixed(1)}% uptime <span className="font-normal text-xs text-gray-500 dark:text-gray-400">({(summary.avg_coverage_pct ?? 0).toFixed(0)}% observed)</span></> : 'No uptime data'}</span></> : <span className="text-gray-600 dark:text-gray-300">{rows.length} gateways from the live registry · no recorded history</span>}</div>
         )}
       </header>
 
@@ -878,7 +799,7 @@ export function FederationGateways() {
 
       {hasData && (<>
       <section className="mb-4 rounded-xl border border-gray-200 bg-white px-4 pt-4 shadow-xs dark:border-gray-700 dark:bg-gray-800 sm:px-5" aria-labelledby="uptime-trend-heading">
-        <div className="flex flex-wrap items-baseline justify-between gap-2"><div><h2 id="uptime-trend-heading" className="text-base font-semibold text-gray-950 dark:text-white">Gateway availability trend ({timeWindow.toUpperCase()})</h2><p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Each point combines every gateway poll snapshot recorded on that calendar day.</p></div>{uptimeTrend.length > 0 && <span className="text-xs text-gray-500 dark:text-gray-400">{uptimeTrend.length} calendar day{uptimeTrend.length === 1 ? '' : 's'} with data</span>}</div>
+        <div className="flex flex-wrap items-baseline justify-between gap-2"><div><h2 id="uptime-trend-heading" className="text-base font-semibold text-gray-950 dark:text-white">Gateway availability trend ({timeWindow.toUpperCase()})</h2><p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Each point combines every gateway poll snapshot recorded on that day · days in UTC.</p></div>{uptimeTrend.length > 0 && <span className="text-xs text-gray-500 dark:text-gray-400">{uptimeTrend.length} day{uptimeTrend.length === 1 ? '' : 's'} with data</span>}</div>
         {uptimeTrend.length > 0 ? (
           <ErrorBoundary fallback={<div className="flex h-[210px] items-center justify-center"><ReloadMessage message="The availability chart could not be loaded." /></div>}>
             <Suspense fallback={<div className="flex h-[210px] items-center justify-center text-sm text-gray-500 dark:text-gray-400">Loading chart…</div>}>
@@ -893,7 +814,7 @@ export function FederationGateways() {
       <section aria-busy={switchingWindow} className={`mb-4 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-md transition-opacity dark:border-gray-700 dark:bg-gray-800 ${switchingWindow ? 'opacity-60' : ''}`}>
         <div className="border-b border-gray-200 p-4 dark:border-gray-700 sm:p-5">
           <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-end"><div><h2 className="text-lg font-semibold text-gray-950 dark:text-white">Gateway directory</h2><p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{filteredRows.length} of {rows.length} gateways · every row includes its 30-bucket availability strip, ordered oldest to newest.</p></div><div className="flex flex-col gap-2 sm:flex-row"><input value={gatewaySearch} onChange={(event) => setGatewaySearch(event.target.value)} aria-label="Search gateways" placeholder="Search gateway, node, endpoint" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-hidden focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white" /><select value={gatewaySort} onChange={(event) => { const nextSort = event.target.value as GatewaySort; updateView({ sort: nextSort === 'freshness' ? null : nextSort, dir: null }); }} aria-label="Sort gateways" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200"><option value="freshness">Last seen</option><option value="status">Status</option><option value="uptime">Uptime</option><option value="activity">Activity</option></select><button type="button" onClick={() => { const nextDirection = sortDirection === 'asc' ? 'desc' : 'asc'; updateView({ dir: nextDirection === defaultDirection(gatewaySort) ? null : nextDirection }); }} className="rounded-lg border border-blue-300 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 dark:border-blue-800 dark:bg-blue-950/50 dark:text-blue-200" title={`Sort ${sortDirection === 'asc' ? 'ascending' : 'descending'}`}>{sortDirection === 'asc' ? '↑ Asc' : '↓ Desc'}</button></div></div>
-          <div className="mt-3 flex flex-wrap gap-2 pb-1" role="group" aria-label="Filter by status">{GATEWAY_FILTERS.map((filter) => <button key={filter} type="button" aria-pressed={gatewayFilter === filter} onClick={() => updateView({ status: filter === 'all' ? null : filter })} className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium capitalize ${gatewayFilter === filter ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300'}`}>{filter === 'all' ? 'All active' : filter} ({filter === 'all' ? totals.total : totals[filter]})</button>)}</div>
+          <div className="mt-3 flex flex-wrap gap-2 pb-1" role="group" aria-label="Filter by status">{GATEWAY_FILTERS.map((filter) => <button key={filter} type="button" aria-pressed={gatewayFilter === filter} onClick={() => updateView({ status: filter === 'all' ? null : filter })} className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium capitalize ${gatewayFilter === filter ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300'}`}>{filter === 'all' ? 'All active' : filter}{summary && ` (${filter === 'all' ? summary.total : summary[filter]})`}</button>)}</div>
           <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400"><span><i className="mr-1 inline-block h-2 w-2 rounded-xs bg-green-500" />Online</span><span><i className="mr-1 inline-block h-2 w-2 rounded-xs bg-yellow-500" />Degraded</span><span><i className="mr-1 inline-block h-2 w-2 rounded-xs bg-red-500" />Offline</span><span><i className="mr-1 inline-block h-2 w-2 rounded-xs bg-gray-300 dark:bg-gray-600" />Unknown</span></div>
         </div>
         {/* Phones get one stacked card per gateway instead of a 960px table behind a sideways scroll */}
@@ -921,8 +842,8 @@ export function FederationGateways() {
                 <td colSpan={5} className="block px-4 sm:px-6 py-6 text-center text-gray-500 dark:text-gray-400 sm:table-cell">
                   {gatewayFilter !== 'all' || gatewaySearch.trim()
                     ? 'No gateways match these filters.'
-                    : totals.retired > 0
-                      ? `No active gateways. ${totals.retired} retired ${totals.retired === 1 ? 'one is' : 'ones are'} under the Retired filter.`
+                    : summary && summary.retired > 0
+                      ? `No active gateways. ${summary.retired} retired ${summary.retired === 1 ? 'one is' : 'ones are'} under the Retired filter.`
                       : 'No gateways to show.'}
                 </td>
               </tr>
@@ -968,7 +889,7 @@ export function FederationGateways() {
                     aria-label={`${dataWindow.toUpperCase()} availability: ${gateway.coveragePct > 0 ? `${gateway.estimatedUptimePct.toFixed(1)}% uptime` : 'no samples'}, ${gateway.coveragePct.toFixed(0)}% observed`}
                   >
                     {(uptimeStripByGatewayId.get(gateway.gateway_id) ?? []).map((status, index) => {
-                      const tooltip = getUptimeBucketTooltip(status, index, 30, windowMinutes);
+                      const tooltip = getUptimeBucketTooltip(index, UPTIME_SEGMENTS, windowMinutes, uptimeBuckets(gateway)?.[index]);
                       // On phones the strip spans the whole card, so more tooltips anchor to an edge
                       const tooltipPosition = index < 4
                         ? 'left-0'
@@ -1005,7 +926,7 @@ export function FederationGateways() {
                       </div>
                       <div className="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
                         {metricsWindow} · {gateway.fundCountWindow} funds · {gateway.settleCountWindow} settles · {gateway.cancelCountWindow} cancels<br />
-                        {formatMsats(gateway.totalVolumeMsatWindow)} volume
+                        {formatMsatsCompact(gateway.totalVolumeMsatWindow)} volume
                       </div>
                     </>
                   ) : (
@@ -1019,8 +940,8 @@ export function FederationGateways() {
                   <span className={`text-sm font-medium ${gateway.vetted ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'}`}>
                     {gateway.vetted ? '✓ Vetted' : 'Not vetted'}
                   </span>
-                  <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">First seen<br /><span className="text-gray-700 dark:text-gray-300">{formatDateTime(gateway.firstSeenDate)}</span></div>
-                  <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">Last seen<br /><span className="text-gray-700 dark:text-gray-300">{formatDateTime(gateway.lastSeenDate)}</span></div>
+                  <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">First seen<br /><span className="text-gray-700 dark:text-gray-300">{formatUtcDateTime(gateway.firstSeenDate)}</span></div>
+                  <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">Last seen<br /><span className="text-gray-700 dark:text-gray-300">{formatUtcDateTime(gateway.lastSeenDate)}</span></div>
                 </td>
                 <td className="block px-4 py-2 sm:table-cell sm:px-5 sm:py-4">
                   <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400 sm:hidden">Endpoint</div>

@@ -7,7 +7,9 @@ use std::time::Duration;
 use anyhow::Context;
 use bitcoin::hashes::Hash;
 use bitcoin::Txid;
-use fmo_core::module::Services;
+use fedimint_core::config::FederationId;
+use fedimint_core::encoding::Decodable;
+use fmo_core::module::{module_instance_id, Services};
 use futures::{stream, StreamExt};
 
 pub(crate) async fn run(
@@ -76,8 +78,31 @@ pub(crate) async fn run(
     }
 }
 
+/// The Bitcoin network of the wallet whose peg-out `txid` is
+async fn peg_out_network(services: &Services, txid: &[u8]) -> anyhow::Result<bitcoin::Network> {
+    let federation_id: Vec<u8> = services
+        .connection()
+        .await?
+        .query_one(
+            "SELECT federation_id FROM fmo_wallet.withdrawal_transactions WHERE on_chain_txid = $1",
+            &[&txid],
+        )
+        .await?
+        .get(0);
+    let federation_id = FederationId::consensus_decode_whole(&federation_id, &Default::default())?;
+    let config = services
+        .federation(federation_id)
+        .await?
+        .context("Peg-out of a federation that is not observed")?
+        .config;
+    let wallet =
+        module_instance_id(&config, "wallet").context("Federation has no wallet module")?;
+    crate::network::federation_wallet_network(&config, wallet)
+}
+
 async fn enrich(services: &Services, id: i64, bytes: &[u8]) -> anyhow::Result<()> {
     let txid = Txid::from_slice(bytes)?;
+    let network = peg_out_network(services, bytes).await?;
     let fetched = tokio::time::timeout(Duration::from_secs(30), async {
         let _permit = services.external_io_permit().await?;
         services
@@ -111,9 +136,8 @@ async fn enrich(services: &Services, id: i64, bytes: &[u8]) -> anyhow::Result<()
         ).await?;
     }
     for (index, output) in fetched.output.iter().enumerate() {
-        let address =
-            bitcoin::Address::from_script(&output.script_pubkey, bitcoin::Network::Bitcoin)
-                .context("Peg-out output has no address")?;
+        let address = crate::network::script_address(&output.script_pubkey, network)
+            .context("Peg-out output has no address")?;
         let amount = i64::try_from(
             output
                 .value

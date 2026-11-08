@@ -34,7 +34,7 @@ pub async fn federation_meta(
     }
     let maybe_consensus_meta = state
         .consensus_meta_cache
-        .fetch_meta_cached(cfg, state.federation_observer.connectors())
+        .fetch_meta_cached(cfg, &state.federation_observer)
         .await;
 
     let meta_fields_config = parse_meta_lenient(

@@ -21,6 +21,7 @@ use regex::Regex;
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
+use crate::error::ClientError;
 use crate::federation::observer::{federation_id_from_db, FederationObserver};
 use crate::util::query;
 use crate::AppState;
@@ -50,8 +51,7 @@ struct NostrRelay {
 }
 
 impl FederationObserver {
-    /// Syncs federation announcements, and the votes on announced and
-    /// observed federations.
+    /// Syncs federation announcements, and the votes on observed federations.
     ///
     /// Most minutes nothing new was published, so each sync asks only for
     /// events since the previous one, in one request for all federations.
@@ -139,16 +139,14 @@ impl FederationObserver {
         Ok(client)
     }
 
-    /// Observed and announced federations, each once
+    /// The federations whose votes are synced: only observed ones, since a
+    /// stored vote references its federation. Votes on a federation that is
+    /// only announced could never be stored, and would be fetched, verified
+    /// and rejected again on every sync.
     async fn voted_federation_ids(&self) -> anyhow::Result<Vec<FederationId>> {
         self.connection()
             .await?
-            .query(
-                "SELECT federation_id FROM federations
-                 UNION
-                 SELECT federation_id FROM nostr_federations",
-                &[],
-            )
+            .query("SELECT federation_id FROM federations", &[])
             .await?
             .iter()
             .map(|row| federation_id_from_db(&row.get::<_, Vec<u8>>(0)))
@@ -234,19 +232,14 @@ impl FederationObserver {
         .collect()
     }
 
-    /// Number and average of star votes of every federation that has votes
+    /// Number and average of star votes of every federation that has votes,
+    /// counting each rater's current vote only
     pub async fn federation_ratings(
         &self,
     ) -> anyhow::Result<HashMap<FederationId, FederationRating>> {
         self.connection()
             .await?
-            .query(
-                // language=postgresql
-                "SELECT federation_id, COUNT(star_vote)::bigint, AVG(star_vote)::DOUBLE PRECISION
-                 FROM nostr_votes
-                 GROUP BY federation_id",
-                &[],
-            )
+            .query(FEDERATION_RATINGS_SQL, &[])
             .await?
             .iter()
             .map(|row| {
@@ -261,28 +254,58 @@ impl FederationObserver {
             .collect()
     }
 
+    /// Checks a vote, sends it to the relays and stores it. A vote on a
+    /// federation that isn't observed can't be stored, so it is rejected
+    /// before anything is relayed.
     pub async fn submit_rating(&self, nostr_event: Event) -> anyhow::Result<()> {
-        self.submit::<ParsedRecommendationEvent>(nostr_event).await
+        let parsed = parse_submitted::<ParsedRecommendationEvent>(&nostr_event)?;
+        self.ensure_observed(parsed.federation_id).await?;
+        self.publish(parsed, nostr_event).await
     }
 
+    /// Checks an announcement, sends it to the relays and stores it
     pub async fn submit_federation(&self, nostr_event: Event) -> anyhow::Result<()> {
-        self.submit::<ParsedFederationEvent>(nostr_event).await
+        let parsed = parse_submitted::<ParsedFederationEvent>(&nostr_event)?;
+        self.publish(parsed, nostr_event).await
     }
 
-    /// Checks an event, sends it to the relays and stores it
-    async fn submit<T: StoredEvent>(&self, nostr_event: Event) -> anyhow::Result<()> {
-        let parsed = T::parse(&nostr_event)?;
-
+    /// Sends a checked event to the relays and stores it
+    async fn publish<T: StoredEvent>(&self, parsed: T, nostr_event: Event) -> anyhow::Result<()> {
         self.nostr_relay_client()
             .await?
             .send_event(
                 nostr_event.clone(),
                 RelaySendOptions::default().timeout(Some(Duration::from_secs(5))),
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                anyhow::Error::from(error).context(ClientError::bad_gateway(
+                    "Could not publish the event to Nostr relays",
+                ))
+            })?;
 
         parsed.insert(&self.connection().await?, &nostr_event).await
     }
+}
+
+/// Kind 38000 is parameterized replaceable: a rater's newest vote on a
+/// federation replaces the earlier ones, which may still be stored. Per
+/// NIP-01 the newest is the one created last, and of those the lowest id.
+// language=postgresql
+const FEDERATION_RATINGS_SQL: &str = "
+    SELECT federation_id, COUNT(star_vote)::bigint, AVG(star_vote)::DOUBLE PRECISION
+    FROM (
+        SELECT DISTINCT ON (federation_id, event ->> 'pubkey') federation_id, star_vote
+        FROM nostr_votes
+        ORDER BY federation_id, event ->> 'pubkey', (event ->> 'created_at')::bigint DESC, event_id
+    ) current_votes
+    GROUP BY federation_id
+";
+
+/// Checks an event someone submitted: one that isn't of the kind, isn't
+/// signed by its author or lacks its tags is the client's mistake
+fn parse_submitted<T: StoredEvent>(event: &Event) -> anyhow::Result<T> {
+    T::parse(event).map_err(|error| ClientError::bad_request(format!("{error:#}")).into())
 }
 
 /// A kind of Nostr event the observer stores

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import type { FederationActivity, FederationHealth } from '../types/api';
 import { Badge } from './Badge';
 import { asBitcoin } from '../utils/format';
+import { formatUtcDate } from '../utils/time';
 import { CombinedMiniChart } from './MiniChart';
 
 interface FederationRowProps {
@@ -40,18 +41,19 @@ export const FederationRow = memo(function FederationRow({
   const transactionData = useMemo(() => activityData.map(d => d.num_transactions), [activityData]);
   const volumeData = useMemo(() => activityData.map(d => d.amount_transferred), [activityData]);
 
-  // Generate date labels (most recent data last, so we count backwards)
+  // The server counts UTC days, the last being the current one (most recent data
+  // last, so we count backwards)
   const dates = useMemo(() => activityData.map((_, index) => {
     const daysAgo = activityData.length - 1 - index;
-    if (daysAgo === 0) return 'Today';
-    if (daysAgo === 1) return 'Yesterday';
-    return `${daysAgo} days ago`;
+    if (daysAgo === 0) return 'Today (UTC)';
+    if (daysAgo === 1) return 'Yesterday (UTC)';
+    return `${daysAgo} days ago (UTC)`;
   }), [activityData]);
 
   const showWarning = health === 'degraded' || health === 'offline';
   const badgeLevel = health === 'degraded' ? 'warning' : 'error';
   const healthMessage = showWarning ? HEALTH_MESSAGES[health] : '';
-  const expiryDate = expiryTimestamp ? new Date(expiryTimestamp * 1000).toLocaleDateString() : null;
+  const expiryDate = expiryTimestamp ? `${formatUtcDate(expiryTimestamp * 1000)} UTC` : null;
 
   return (
     <Link

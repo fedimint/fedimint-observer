@@ -189,5 +189,11 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
         .await
         .context("Starting axum server")?;
 
+    // A shutdown caused by losing the worker lease, not by a signal, is a
+    // failure: exiting with an error lets a process manager restart us
+    anyhow::ensure!(
+        !runtime::worker_lease_lost(),
+        "Lost the worker lease and stopped the collectors"
+    );
     Ok(())
 }

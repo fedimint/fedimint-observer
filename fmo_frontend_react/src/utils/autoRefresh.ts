@@ -1,16 +1,16 @@
 /** The parts of `document` auto-refresh uses, so tests can supply their own. */
-export interface VisibilitySource {
+interface VisibilitySource {
   readonly visibilityState: DocumentVisibilityState;
   addEventListener(type: 'visibilitychange', listener: () => void): void;
   removeEventListener(type: 'visibilitychange', listener: () => void): void;
 }
 
-export interface IntervalTimer {
+interface IntervalTimer {
   setInterval(handler: () => void, timeout: number): number;
   clearInterval(id: number): void;
 }
 
-export interface AutoRefreshOptions {
+interface AutoRefreshOptions {
   /** When data last loaded (ms since epoch), or null if it never has */
   lastSuccessAt?: () => number | null;
   source?: VisibilitySource;

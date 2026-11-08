@@ -928,3 +928,35 @@ async fn iroh_next_read_limit_closes_connection() -> anyhow::Result<()> {
     server.close().await;
     Ok(())
 }
+
+#[test]
+fn registry_instance_selection_is_a_client_error() {
+    use axum::http::StatusCode;
+
+    assert_eq!(gateways::select_instance(&[3], None).unwrap(), 3);
+    assert_eq!(gateways::select_instance(&[3, 5], Some(5)).unwrap(), 5);
+    // No lnv2 module, or an instance that isn't one: not found
+    assert_eq!(
+        gateways::select_instance(&[], None).unwrap_err().status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        gateways::select_instance(&[], Some(0))
+            .unwrap_err()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        gateways::select_instance(&[3], Some(0))
+            .unwrap_err()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    // Several to choose from: the request must say which
+    assert_eq!(
+        gateways::select_instance(&[3, 5], None)
+            .unwrap_err()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+}

@@ -1,6 +1,8 @@
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
 import type { WalletV2OnChainTransaction } from '../types/api';
 import { asBitcoin, shortMiddle } from '../utils/format';
+import { explorerTxUrl } from '../utils/network';
+import { formatUtcDateTime } from '../utils/time';
 import { historyAlert, historyContent, type HistoryError } from '../utils/walletHistory';
 
 const WalletV2ChainChart = lazy(() => import('./WalletV2ChainChart').then((module) => ({ default: module.WalletV2ChainChart })));
@@ -19,25 +21,18 @@ interface WalletV2AssetsProps {
   stale?: boolean;
   balanceStale?: boolean;
   balanceObservedAt?: string | null;
-  hasMore?: boolean;
-  loadingMore?: boolean;
-  onLoadMore?: () => void;
+  /** Previous/next page arrows, shown above and below the operations */
+  pager?: ReactNode;
 }
 
 const card = 'rounded-xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800';
 const muted = 'text-gray-500 dark:text-gray-400';
 const button = 'rounded-lg px-3 py-2 text-xs font-medium transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500';
 
-function explorerUrl(txid: string, network?: string): string | null {
-  const paths: Record<string, string> = { bitcoin: '', mainnet: '', testnet: '/testnet', testnet4: '/testnet4', signet: '/signet' };
-  const path = paths[network?.toLowerCase() ?? ''];
-  return path === undefined ? null : `https://mempool.space${path}/tx/${txid}`;
-}
-
 function OperationCard({ transaction, network }: { transaction: WalletV2OnChainTransaction; network?: string }) {
   const deposit = transaction.output_msat >= transaction.input_msat;
   const difference = Math.abs(transaction.output_msat - transaction.input_msat);
-  const url = explorerUrl(transaction.txid, network);
+  const url = explorerTxUrl(transaction.txid, network);
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
 
@@ -88,7 +83,7 @@ function OperationCard({ transaction, network }: { transaction: WalletV2OnChainT
   );
 }
 
-export function WalletV2Assets({ balance, transactions, loaded, error, network, observedAt, stale, balanceStale, balanceObservedAt, hasMore, loadingMore, onLoadMore }: WalletV2AssetsProps) {
+export function WalletV2Assets({ balance, transactions, loaded, error, network, observedAt, stale, balanceStale, balanceObservedAt, pager }: WalletV2AssetsProps) {
   const [mobileView, setMobileView] = useState<MobileView>('chart');
   const [filter, setFilter] = useState<OperationFilter>('all');
   const [newestFirst, setNewestFirst] = useState(true);
@@ -118,11 +113,11 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
           </div>
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3 border-t border-gray-200 pt-4 dark:border-gray-700 sm:grid-cols-3">
-          <div><p className={`text-xs ${muted}`}>Loaded operations</p><p className="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{tile(ordered.length)}</p></div>
+          <div><p className={`text-xs ${muted}`}>Operations on this page</p><p className="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{tile(ordered.length)}</p></div>
           <div><p className={`text-xs ${muted}`}>Latest operation</p><p className="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{tile(latest ? `#${latest.index}` : 'None yet')}</p></div>
           <div className="col-span-2 sm:col-span-1"><p className={`text-xs ${muted}`}>Latest operation block</p><p className="mt-1 text-sm font-semibold text-gray-900 dark:text-white">{tile(latest ? latest.created.toLocaleString() : '—')}</p></div>
         </div>
-        <p className={`mt-3 text-xs ${muted}`}>History loads 20 operations at a time.</p>
+        <p className={`mt-3 text-xs ${muted}`}>History shows 20 operations per page.</p>
       </section>
 
       <div className="flex rounded-lg border border-gray-200 bg-gray-100 p-1 dark:border-gray-700 dark:bg-gray-800 sm:hidden" role="group" aria-label="Wallet details view">
@@ -130,9 +125,9 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
       </div>
 
       {(observedAt || stale || balanceStale) && <p role="status" className={`text-xs ${muted}`}>
-        {observedAt ? `History observed ${new Date(observedAt).toLocaleString()}.` : 'Collecting wallet history.'}
+        {observedAt ? `History observed ${formatUtcDateTime(observedAt)}.` : 'Collecting wallet history.'}
         {stale && observedAt ? ' History collection is delayed; showing the last observation.' : ''}
-        {balanceStale ? ` Balance collection is delayed${balanceObservedAt ? `; last observed ${new Date(balanceObservedAt).toLocaleString()}` : ''}.` : ''}
+        {balanceStale ? ` Balance collection is delayed${balanceObservedAt ? `; last observed ${formatUtcDateTime(balanceObservedAt)}` : ''}.` : ''}
       </p>}
       {alert && <div role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">{alert}</div>}
 
@@ -149,7 +144,7 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
         <div className="flex flex-wrap items-center justify-between gap-3"><div><h4 id="wallet-operations-title" className="text-base font-semibold text-gray-900 dark:text-white">Recent on-chain operations</h4><p className={`mt-1 text-xs ${muted}`}>Select an operation for its details.</p></div><button type="button" onClick={() => setNewestFirst(!newestFirst)} className={`${button} border border-gray-200 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-700`}>{newestFirst ? 'Newest first ↓' : 'Oldest first ↑'}</button></div>
         <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label="Filter operations">{(['all', 'deposits', 'withdrawals'] as const).map((item) => <button key={item} type="button" aria-pressed={filter === item} onClick={() => setFilter(item)} className={`${button} ${filter === item ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}`}>{item === 'all' ? 'All' : item === 'deposits' ? 'Deposits' : 'Withdrawals'}</button>)}</div>
         <div className="mt-4 space-y-2">{content === 'loading' ? <p className={`py-6 text-center text-sm ${muted}`}>Loading on-chain history…</p> : content === 'unavailable' ? <p className={`py-6 text-center text-sm ${muted}`}>History is unavailable.</p> : visible.length === 0 ? <p className={`py-6 text-center text-sm ${muted}`}>{ordered.length ? 'No operations match this filter.' : 'No on-chain operations recorded yet.'}</p> : visible.map((transaction) => <OperationCard key={`${transaction.index}-${transaction.txid}`} transaction={transaction} network={network} />)}</div>
-        {hasMore && <button type="button" disabled={loadingMore} onClick={onLoadMore} className={`${button} mt-4 bg-blue-600 text-white disabled:opacity-50`}>{loadingMore ? 'Loading…' : 'Load older operations'}</button>}
+        {pager && <div className="mt-4">{pager}</div>}
       </section>
 
     </div>

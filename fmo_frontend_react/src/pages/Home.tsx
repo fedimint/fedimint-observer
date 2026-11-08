@@ -6,6 +6,7 @@ import { Totals } from '../components/Totals';
 import { FederationRow } from '../components/FederationRow';
 import { Alert } from '../components/Alert';
 import { startAutoRefresh } from '../utils/autoRefresh';
+import { formatUtcTime } from '../utils/time';
 import {
   DEFAULT_SORT_KEY,
   SORT_OPTIONS,
@@ -186,7 +187,7 @@ export function Home() {
             </p>
             {refreshFailed && updatedAt !== null && (
               <p role="status" className="mt-1 text-xs font-normal text-amber-700 dark:text-amber-400">
-                Could not refresh the list; showing data from {new Date(updatedAt).toLocaleTimeString()}. Retrying automatically.
+                Could not refresh the list; showing data from {formatUtcTime(updatedAt)}. Retrying automatically.
               </p>
             )}
           </div>

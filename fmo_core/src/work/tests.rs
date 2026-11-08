@@ -29,7 +29,7 @@ async fn postgres_commit_notifications_and_block_arrival() -> anyhow::Result<()>
         crate::runtime::worker_lease(&database, tasks.clone(), notifications.clone()).await?;
     let (mut writer, driver) = tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(driver);
-    // Everything v14 creates lands in a schema of this test's own, so the
+    // Everything v12 creates here lands in a schema of this test's own, so the
     // cleanup below cannot drop a real database's functions or triggers.
     let schema = format!("fmo_work_test_{}", std::process::id());
     writer
@@ -41,7 +41,14 @@ async fn postgres_commit_notifications_and_block_arrival() -> anyhow::Result<()>
         ))
         .await?;
     writer
-        .batch_execute(include_str!("../../schema/v14.sql"))
+        // The notification triggers of v12, which only need the tables above
+        .batch_execute(
+            include_str!("../../schema/v12.sql")
+                .split_once("-- BEGIN WORK NOTIFICATIONS")
+                .and_then(|(_, rest)| rest.split_once("-- END WORK NOTIFICATIONS"))
+                .expect("v12 marks its work notifications")
+                .0,
+        )
         .await?;
     let mut wakeup = notifications.subscribe("session-time-repair");
     wakeup.borrow_and_update();

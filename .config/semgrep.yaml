@@ -1,0 +1,2 @@
+# Project semgrep rules, run by `just semgrep` and the pre-commit hook.
+rules: []

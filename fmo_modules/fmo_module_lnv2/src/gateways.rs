@@ -4,7 +4,6 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use anyhow::Context;
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -15,8 +14,8 @@ use fedimint_core::encoding::Encodable;
 use fedimint_core::module::ApiRequestErased;
 use fedimint_core::util::SafeUrl;
 use fedimint_lnv2_common::endpoint_constants::GATEWAYS_ENDPOINT;
-use fmo_api_types::{GatewayV2Info as Gateway, GatewayV2Registry as Registry};
-use fmo_core::module::{federation_api, ApiError, ApiResult, DbTransaction, Services};
+use fmo_api_types::{GatewayV2Info as Gateway, GatewayV2Registry as Registry, GatewayV2Totals};
+use fmo_core::module::{ApiError, ApiResult, ClientError, DbTransaction, Services};
 use futures::{stream, StreamExt};
 use serde::Deserialize;
 
@@ -59,6 +58,48 @@ pub(crate) fn window_start(now: DateTime<Utc>, buckets: i32, hours: i64) -> Date
 
 pub(crate) const REGISTRY_SQL: &str = include_str!("../schema/gateway_overview.sql");
 
+/// A module instance's gateways summed over all of them (`$1` federation, `$2`
+/// instance, `$3` now, `$4` window start). The status is `probes::status` in
+/// SQL; samples are the window's probes. Health rows go with their gateway
+/// (ON DELETE CASCADE), so these are the probes of the gateways counted.
+pub(crate) const TOTALS_SQL: &str = "WITH g AS (
+         SELECT api_endpoint,registered,latency_ms,
+             CASE
+                 WHEN NOT registered THEN 'removed'
+                 WHEN probed_at IS NULL OR $3::timestamptz-probed_at>interval '900 seconds' THEN 'unknown'
+                 WHEN reachable IS TRUE AND federation_supported IS TRUE THEN 'online'
+                 WHEN reachable IS TRUE THEN 'degraded'
+                 WHEN reachable IS FALSE THEN 'offline'
+                 ELSE 'unknown'
+             END AS status
+         FROM fmo_lnv2.gateways
+         WHERE federation_id=$1 AND module_instance_id=$2
+     )
+     SELECT
+         COUNT(*) FILTER(WHERE registered)::bigint AS registered,
+         COUNT(*) FILTER(WHERE status='online')::bigint AS online,
+         COUNT(*) FILTER(WHERE status='degraded')::bigint AS degraded,
+         COUNT(*) FILTER(WHERE status='offline')::bigint AS offline,
+         COUNT(*) FILTER(WHERE status='unknown')::bigint AS unknown,
+         COUNT(*) FILTER(WHERE status='removed')::bigint AS removed,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms::double precision)
+             FILTER(WHERE status='online' AND latency_ms IS NOT NULL) AS median_latency_ms,
+         (SELECT COALESCE(SUM(samples),0)::bigint FROM fmo_lnv2.gateway_health_hourly
+          WHERE federation_id=$1 AND module_instance_id=$2 AND hour>=$4) AS samples,
+         (SELECT COALESCE(SUM(online_samples),0)::bigint FROM fmo_lnv2.gateway_health_hourly
+          WHERE federation_id=$1 AND module_instance_id=$2 AND hour>=$4) AS online_samples
+     FROM g";
+
+/// Probes of all a module instance's gateways per bucket of the window (`$1`
+/// federation, `$2` instance, `$3` window start, `$4` seconds per bucket, `$5`
+/// buckets), bucketed as `REGISTRY_SQL` buckets each gateway's
+pub(crate) const AVAILABILITY_TREND_SQL: &str =
+    "SELECT LEAST($5::integer-1,GREATEST(0,floor(extract(epoch FROM (hour-$3::timestamptz))/$4::double precision)::integer)) AS bucket,
+         SUM(samples)::bigint AS samples,SUM(online_samples)::bigint AS online_samples
+     FROM fmo_lnv2.gateway_health_hourly
+     WHERE federation_id=$1 AND module_instance_id=$2 AND hour>=$3
+     GROUP BY 1";
+
 pub(crate) fn instances(config: &ClientConfig) -> Vec<u16> {
     config
         .modules
@@ -79,21 +120,13 @@ async fn registry(
     let federation = services
         .federation(fed)
         .await?
-        .context("Federation not observed")?;
-    let ids = instances(&federation.config);
-    let instance = match params.module_instance_id {
-        Some(id) if ids.contains(&id) => id,
-        None if ids.len() == 1 => ids[0],
-        _ => {
-            return Err(ApiError::bad_request(
-                "Select a configured lnv2 module_instance_id",
-            ))
-        }
-    };
+        .ok_or_else(|| ClientError::not_found(format!("Federation {fed} is not observed")))?;
+    let instance = select_instance(&instances(&federation.config), params.module_instance_id)?;
     let window = params.window.as_deref().unwrap_or("7d");
     let (bucket_count, bucket_hours) = window_buckets(window)
         .ok_or_else(|| ApiError::bad_request("window must be 24h, 7d, 30d or 90d"))?;
-    let since = window_start(Utc::now(), bucket_count, bucket_hours);
+    let now = Utc::now();
+    let since = window_start(now, bucket_count, bucket_hours);
     let limit = params.limit.unwrap_or(100);
     if !(1..=100).contains(&limit) {
         return Err(ApiError::bad_request("limit must be 1..100"));
@@ -108,6 +141,50 @@ async fn registry(
         )
         .await?;
     let observed_at: Option<DateTime<Utc>> = poll.as_ref().map(|row| row.get(0));
+    let totals_row = connection
+        .query_one(TOTALS_SQL, &[&bytes, &i32::from(instance), &now, &since])
+        .await?;
+    let count = |column: &str| u64::try_from(totals_row.get::<_, i64>(column));
+    let totals = GatewayV2Totals {
+        registered: count("registered")?,
+        online: count("online")?,
+        degraded: count("degraded")?,
+        offline: count("offline")?,
+        unknown: count("unknown")?,
+        removed: count("removed")?,
+        samples: count("samples")?,
+        online_samples: count("online_samples")?,
+        median_latency_ms: totals_row.get("median_latency_ms"),
+    };
+    let trend_rows = connection
+        .query(
+            AVAILABILITY_TREND_SQL,
+            &[
+                &bytes,
+                &i32::from(instance),
+                &since,
+                &((bucket_hours * 3600) as f64),
+                &bucket_count,
+            ],
+        )
+        .await?;
+    let mut availability_trend: Vec<_> = (0..bucket_count)
+        .map(|index| fmo_api_types::GatewayV2AvailabilityBucket {
+            start: since + chrono::Duration::hours(bucket_hours * i64::from(index)),
+            samples: 0,
+            online_samples: 0,
+        })
+        .collect();
+    for row in trend_rows {
+        // The query clamps the index into range
+        if let Some(bucket) = usize::try_from(row.get::<_, i32>("bucket"))
+            .ok()
+            .and_then(|index| availability_trend.get_mut(index))
+        {
+            bucket.samples = u64::try_from(row.get::<_, i64>("samples"))?;
+            bucket.online_samples = u64::try_from(row.get::<_, i64>("online_samples"))?;
+        }
+    }
     let rows = connection
         .query(
             REGISTRY_SQL,
@@ -196,6 +273,8 @@ async fn registry(
         stale: observed_at
             .is_none_or(|at| Utc::now().signed_duration_since(at).num_seconds() > 900),
         successful_guardians: poll.as_ref().map_or(0, |row| row.get(1)),
+        totals,
+        availability_trend,
         total_guardians: poll
             .as_ref()
             .map_or(federation.config.global.api_endpoints.len() as i32, |row| {
@@ -204,6 +283,27 @@ async fn registry(
         gateways,
         next_after,
     }))
+}
+
+/// The lnv2 module instance a request is about: the one asked for, or the
+/// only one
+pub(crate) fn select_instance(
+    instances: &[u16],
+    requested: Option<u16>,
+) -> Result<u16, ClientError> {
+    match (requested, instances) {
+        (_, []) => Err(ClientError::not_found(
+            "This federation has no Lightning v2 (lnv2) module",
+        )),
+        (Some(id), _) if instances.contains(&id) => Ok(id),
+        (Some(id), _) => Err(ClientError::not_found(format!(
+            "Module instance {id} is not an lnv2 module of this federation"
+        ))),
+        (None, [only]) => Ok(*only),
+        (None, _) => Err(ClientError::bad_request(
+            "This federation has several lnv2 modules; select one with module_instance_id",
+        )),
+    }
 }
 
 pub(crate) fn attribution(claimed_keys: i64, contested_keys: i64) -> &'static str {
@@ -404,7 +504,9 @@ async fn poll_instance(
     config: ClientConfig,
     instance: u16,
 ) -> anyhow::Result<()> {
-    let api = federation_api(services.connectors(), &config.global)?.with_module(instance);
+    let api = services
+        .federation_api(&config.global)?
+        .with_module(instance);
     let bytes = fed.consensus_encode_to_vec();
     let jitter = (bytes.iter().map(|b| u64::from(*b)).sum::<u64>() + u64::from(instance)) % 31;
     tokio::time::sleep(Duration::from_secs(jitter)).await;

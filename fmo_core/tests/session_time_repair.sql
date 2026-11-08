@@ -1,4 +1,5 @@
 -- Run against a freshly migrated disposable database.
+\ir repair_worker.sql
 INSERT INTO federations VALUES ('\x01', '\x00');
 INSERT INTO sessions VALUES ('\x01', 0, '\x00'), ('\x01', 1, '\x00');
 INSERT INTO transactions VALUES ('\x01', '\x01', 0, 0, '\x00'), ('\x02', '\x01', 1, 0, '\x00');
@@ -12,7 +13,7 @@ DO $$ BEGIN
     IF NOT EXISTS (SELECT FROM session_time_repairs WHERE federation_id = '\x01' AND block_height = 12345 AND from_index = 0) THEN
         RAISE EXCEPTION 'missing timestamp was not queued';
     END IF;
-    IF process_session_time_repair() THEN RAISE EXCEPTION 'repaired before timestamp arrived'; END IF;
+    IF pg_temp.process_session_time_repair() THEN RAISE EXCEPTION 'repaired before timestamp arrived'; END IF;
     IF EXISTS (SELECT FROM federation_daily_activity WHERE federation_id = '\x01') THEN
         RAISE EXCEPTION 'undated activity unexpectedly counted';
     END IF;
@@ -20,7 +21,7 @@ END $$;
 INSERT INTO block_times VALUES (12345, '2024-01-02 12:00:00');
 -- An interrupted repair rolls back both its changes and removal of the job.
 SAVEPOINT before_repair;
-SELECT process_session_time_repair();
+SELECT pg_temp.process_session_time_repair();
 ROLLBACK TO SAVEPOINT before_repair;
 DO $$ BEGIN
     IF NOT EXISTS (SELECT FROM session_time_repairs WHERE federation_id = '\x01' AND block_height = 12345) THEN
@@ -28,7 +29,7 @@ DO $$ BEGIN
     END IF;
 END $$;
 DO $$ BEGIN
-    IF NOT process_session_time_repair() THEN RAISE EXCEPTION 'ready repair was not processed'; END IF;
+    IF NOT pg_temp.process_session_time_repair() THEN RAISE EXCEPTION 'ready repair was not processed'; END IF;
     IF EXISTS (SELECT FROM session_times WHERE federation_id = '\x01' AND estimated_session_timestamp IS DISTINCT FROM '2024-01-02 12:00:00'::timestamp) THEN
         RAISE EXCEPTION 'session timestamps were not repaired';
     END IF;

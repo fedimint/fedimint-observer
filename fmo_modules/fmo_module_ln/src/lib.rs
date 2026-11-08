@@ -1,4 +1,5 @@
-//! Observes the Lightning (v1) module: contracts funded, claimed and cancelled
+//! Observes the Lightning (v1) module: contracts funded, claimed and
+//! cancelled, and the gateways guardians announce
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -7,13 +8,12 @@ use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
 use fedimint_core::encoding::Encodable;
 use fedimint_core::module::CommonModuleInit;
-use fedimint_ln_common::contracts::{Contract, IdentifiableContract};
+use fedimint_ln_common::contracts::IdentifiableContract;
 use fedimint_ln_common::{
     LightningCommonInit, LightningConsensusItem, LightningInput, LightningOutput, LightningOutputV0,
 };
 use fmo_core::module::{
-    details_json, module_instance_id, InputSummary, ItemMeta, ObserverModule, OutputSummary,
-    ProcessCtx, Services, Task,
+    details_json, module_instance_id, InputSummary, ObserverModule, OutputSummary, Services, Task,
 };
 
 use crate::gateways::{GatewayOverviewCache, Gateways};
@@ -38,6 +38,10 @@ fn v0_output(output: &DynOutput) -> anyhow::Result<&LightningOutputV0> {
 
 #[async_trait]
 impl ObserverModule for LnObserver {
+    fn migrations(&self) -> &'static [&'static str] {
+        &[include_str!("../schema/v1.sql")]
+    }
+
     fn kind(&self) -> ModuleKind {
         LightningCommonInit::KIND
     }
@@ -93,21 +97,6 @@ impl ObserverModule for LnObserver {
         details_json::<LightningConsensusItem>(ci.as_any(), ci, "Lightning CI")
     }
 
-    /// Contracts come from sessions; the gateway registry is the task's
-    async fn reset_federation(
-        &self,
-        ctx: &ProcessCtx<'_>,
-        federation_id: FederationId,
-    ) -> anyhow::Result<()> {
-        ctx.dbtx
-            .execute(
-                "DELETE FROM fmo_ln.contracts WHERE federation_id = $1",
-                &[&federation_id.consensus_encode_to_vec()],
-            )
-            .await?;
-        Ok(())
-    }
-
     fn federation_routes(&self) -> Option<Router<Services>> {
         Some(gateways::federation_routes(self.overviews.clone()))
     }
@@ -150,35 +139,6 @@ impl ObserverModule for LnObserver {
             .await;
             Ok(())
         }))
-    }
-
-    async fn process_output(
-        &self,
-        ctx: &ProcessCtx<'_>,
-        meta: &ItemMeta,
-        output: &DynOutput,
-        _summary: &OutputSummary,
-    ) -> anyhow::Result<()> {
-        let LightningOutputV0::Contract(contract) = v0_output(output)? else {
-            return Ok(());
-        };
-        let (contract_type, payment_hash) = match &contract.contract {
-            Contract::Incoming(c) => ("incoming", c.hash),
-            Contract::Outgoing(c) => ("outgoing", c.hash),
-        };
-
-        ctx.dbtx
-            .execute(
-                "INSERT INTO fmo_ln.contracts VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-                &[
-                    &meta.federation_id.consensus_encode_to_vec(),
-                    &contract.contract.contract_id().consensus_encode_to_vec(),
-                    &contract_type,
-                    &payment_hash.consensus_encode_to_vec(),
-                ],
-            )
-            .await?;
-        Ok(())
     }
 }
 

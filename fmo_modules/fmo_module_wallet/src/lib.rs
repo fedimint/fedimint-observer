@@ -23,6 +23,7 @@ use fmo_core::module::{
 use crate::utxos::UtxoCaches;
 
 mod enrichment;
+mod network;
 mod utxos;
 
 #[derive(Default)]
@@ -153,8 +154,9 @@ impl ObserverModule for WalletObserver {
             }
         };
 
-        let address = bitcoin::Address::from_script(&script, bitcoin::Network::Bitcoin)
-            .context("Peg-in output has no address")?;
+        let network = network::federation_wallet_network(ctx.config, meta.module_instance_id)?;
+        let address =
+            network::script_address(&script, network).context("Peg-in output has no address")?;
 
         ctx.dbtx
             .execute(

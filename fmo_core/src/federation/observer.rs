@@ -32,9 +32,9 @@ use crate::config::FederationConfigCache;
 use crate::federation::db::Federation;
 use crate::federation::projector::ProjectorWakeups;
 use crate::federation::{db, instance_to_kind};
-use crate::module::{schema_name, InputSummary, ModuleRegistry, OutputSummary, Services};
+use crate::module::{schema_name, ModuleRegistry, Services};
 use crate::task::supervise;
-use crate::util::{federation_api, query, query_one, query_opt, query_value};
+use crate::util::{query, query_one, query_opt, query_value};
 
 /// Per request to the mempool instance; callers bound their total time
 /// themselves
@@ -55,22 +55,39 @@ const CORE_MIGRATIONS: &[&str] = &[
     include_str!("../../schema/v10.sql"),
     include_str!("../../schema/v11.sql"),
     include_str!("../../schema/v12.sql"),
-    include_str!("../../schema/v13.sql"),
-    include_str!("../../schema/v14.sql"),
 ];
-/// The `CREATE OR REPLACE` section of v14 that workers re-apply at startup
-pub(crate) fn session_time_repair_batching_sql() -> &'static str {
-    CORE_MIGRATIONS[14]
-        .split_once("-- BEGIN SESSION TIME REPAIR BATCHING")
-        .and_then(|(_, rest)| rest.split_once("-- END SESSION TIME REPAIR BATCHING"))
-        .expect("v14 marks its repair batching section")
-        .0
-}
-
 const NO_ACTIVITY: FederationActivity = FederationActivity {
     num_transactions: 0,
     amount_transferred: Amount::ZERO,
 };
+
+/// Distinct guardian endpoint sets [`FederationObserver::federation_api`]
+/// keeps clients for: observed federations
+const MAX_OBSERVED_API_CLIENTS: usize = 4096;
+
+/// Distinct guardian endpoint sets [`FederationObserver::lookup_api`] keeps
+/// clients for. Public invite lookups can name any servers, so they get their
+/// own budget and can't crowd out observed federations.
+const MAX_LOOKUP_API_CLIENTS: usize = 512;
+
+type ApiPeers = std::collections::BTreeMap<PeerId, fedimint_core::util::SafeUrl>;
+
+/// Shared guardian API clients, see [`FederationObserver::federation_api`]
+#[derive(Default, Debug)]
+struct ApiClients {
+    /// Observed federations, which only admins add
+    observed: HashMap<ApiPeers, fedimint_api_client::api::DynGlobalApi>,
+    /// Invite lookups, by endpoints and the invite's API secret
+    lookups: HashMap<(ApiPeers, Option<String>), fedimint_api_client::api::DynGlobalApi>,
+}
+
+fn api_peers(global: &fedimint_core::config::GlobalClientConfig) -> ApiPeers {
+    global
+        .api_endpoints
+        .iter()
+        .map(|(&peer_id, endpoint)| (peer_id, endpoint.url.clone()))
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct FederationObserver {
@@ -89,11 +106,17 @@ pub struct FederationObserver {
     connectors: ConnectorRegistry,
     /// Configs fetched by invite code, shared with the config API
     federation_config_cache: FederationConfigCache,
+    /// One guardian API client per set of guardian endpoints, see
+    /// [`Self::federation_api`]
+    api_clients: Arc<std::sync::Mutex<ApiClients>>,
     modules: ModuleRegistry,
     /// Tells a federation's module projectors about stored sessions and moved
     /// cursors
     projector_wakeups: ProjectorWakeups,
     nostr_pool: Arc<tokio::sync::OnceCell<nostr_sdk::RelayPool>>,
+    /// Federations whose observer tasks this process runs, see
+    /// [`Self::spawn_observer`]
+    spawned_federations: Arc<std::sync::Mutex<std::collections::HashSet<FederationId>>>,
 }
 
 impl FederationObserver {
@@ -139,9 +162,11 @@ impl FederationObserver {
             task_group,
             connectors,
             federation_config_cache: Default::default(),
+            api_clients: Default::default(),
             modules,
             projector_wakeups: Default::default(),
             nostr_pool: Default::default(),
+            spawned_federations: Default::default(),
         };
 
         if options.api_only {
@@ -228,6 +253,72 @@ impl FederationObserver {
         &self.connectors
     }
 
+    /// The shared client for the API of the guardians of an observed
+    /// federation.
+    ///
+    /// Every new client opens its own connection to each guardian, and the
+    /// connection pool keeps those connections, so they are never closed while
+    /// the guardian keeps them alive. Creating a client per request therefore
+    /// leaks connections on both sides; this hands out one client per set of
+    /// endpoints for the life of the process. For federations that aren't
+    /// observed, use [`Self::lookup_api`].
+    pub fn federation_api(
+        &self,
+        global: &fedimint_core::config::GlobalClientConfig,
+    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
+        let peers = api_peers(global);
+        let mut clients = self
+            .api_clients
+            .lock()
+            .expect("API client cache lock poisoned");
+        if let Some(api) = clients.observed.get(&peers) {
+            return Ok(api.clone());
+        }
+        if clients.observed.len() >= MAX_OBSERVED_API_CLIENTS {
+            return Err(crate::error::ClientError::unavailable(
+                "Too many federations observed; try again after the observer restarts",
+            )
+            .into());
+        }
+        let api = crate::util::federation_api(&self.connectors, &peers, None)?;
+        clients.observed.insert(peers, api.clone());
+        Ok(api)
+    }
+
+    /// The shared client for guardians named by an invite code, of a
+    /// federation that may not be observed. Like [`Self::federation_api`], but
+    /// with the invite's API secret and a separate, smaller budget, since
+    /// anyone can ask to look up any servers.
+    pub fn lookup_api(
+        &self,
+        global: &fedimint_core::config::GlobalClientConfig,
+        api_secret: Option<String>,
+    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
+        let peers = api_peers(global);
+        let mut clients = self
+            .api_clients
+            .lock()
+            .expect("API client cache lock poisoned");
+        if api_secret.is_none() {
+            if let Some(api) = clients.observed.get(&peers) {
+                return Ok(api.clone());
+            }
+        }
+        let key = (peers, api_secret);
+        if let Some(api) = clients.lookups.get(&key) {
+            return Ok(api.clone());
+        }
+        if clients.lookups.len() >= MAX_LOOKUP_API_CLIENTS {
+            return Err(crate::error::ClientError::unavailable(
+                "Too many federations looked up; try again after the observer restarts",
+            )
+            .into());
+        }
+        let api = crate::util::federation_api(&self.connectors, &key.0, key.1.clone())?;
+        clients.lookups.insert(key, api.clone());
+        Ok(api)
+    }
+
     pub fn modules(&self) -> &ModuleRegistry {
         &self.modules
     }
@@ -278,7 +369,16 @@ impl FederationObserver {
         (self.connection_pool.status(), self.worker_pool.status())
     }
 
+    /// Starts the federation's tasks, unless this process already runs them
     fn spawn_observer(&self, federation: Federation) {
+        if !self
+            .spawned_federations
+            .lock()
+            .expect("spawned federations lock poisoned")
+            .insert(federation.federation_id)
+        {
+            return;
+        }
         let slf = self.worker();
 
         let federation_id = federation.federation_id;
@@ -356,6 +456,8 @@ impl FederationObserver {
         }
     }
 
+    /// Whether the v12 database has `session_time_repairs`, which the
+    /// pre-release v12 lacked
     async fn has_session_time_repair_schema(&self) -> anyhow::Result<bool> {
         query_value(
             &self.connection().await?,
@@ -412,6 +514,18 @@ impl FederationObserver {
                 version => Some(version as usize),
             };
 
+        // Databases that applied the pre-release v12..v14 of this branch,
+        // since merged into one v12. A pre-release v12 lacks the
+        // session_time_repairs table that v12 now creates.
+        let pre_release = match maybe_schema_version {
+            Some(13 | 14) => true,
+            Some(12) => !self.has_session_time_repair_schema().await?,
+            _ => false,
+        };
+        ensure!(
+            !pre_release,
+            "Database schema is from a pre-release build whose v12..v14 migrations were since merged into v12; restore the database from a v11 backup or start a new one"
+        );
         ensure!(
             maybe_schema_version.is_none_or(|version| version < CORE_MIGRATIONS.len()),
             "Database schema is newer than this binary; use a compatible observer version"
@@ -424,33 +538,6 @@ impl FederationObserver {
                 version >= MIN_UPGRADE_VERSION,
                 "Database schema is at v{version}, but this version of Fedimint Observer upgrades from v{MIN_UPGRADE_VERSION} or newer; run the previous release first"
             );
-        }
-
-        // Earlier v13 databases predate the repair section. The collector
-        // lease makes this additive update safe to apply exactly once.
-        if maybe_schema_version.is_some_and(|version| version >= 13)
-            && !self.has_session_time_repair_schema().await?
-        {
-            let sql = CORE_MIGRATIONS[13]
-                .split_once("-- BEGIN SESSION TIME REPAIR")
-                .expect("v13 repair section is present")
-                .1;
-            let mut connection = self.connection().await?;
-            let tx = connection.transaction().await?;
-            tx.batch_execute("SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '30s'")
-                .await?;
-            tx.batch_execute(sql).await?;
-            tx.commit().await?;
-        }
-
-        // The repair batching section was added to v14 after some databases
-        // had applied it. Re-applying it is idempotent and brings them up to
-        // date; databases migrated through v14 below already have it.
-        if maybe_schema_version.is_some_and(|version| version >= 14) {
-            self.connection()
-                .await?
-                .batch_execute(session_time_repair_batching_sql())
-                .await?;
         }
 
         for (index, sql) in CORE_MIGRATIONS.iter().enumerate() {
@@ -518,8 +605,12 @@ impl FederationObserver {
             for (index, sql) in migrations.iter().enumerate().skip(applied) {
                 info!("Running migration {} of module {kind}", index + 1);
                 let dbtx = connection.transaction().await?;
-                dbtx.batch_execute(&format!("SET LOCAL search_path TO {schema}, public"))
-                    .await?;
+                // Like core migrations: no statement deadline, a bounded lock wait
+                dbtx.batch_execute(&format!(
+                    "SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '30s';
+                     SET LOCAL search_path TO {schema}, public"
+                ))
+                .await?;
                 dbtx.batch_execute(sql).await?;
                 dbtx.execute(
                     "INSERT INTO module_schema_versions (module_kind, migrations_applied)
@@ -738,35 +829,68 @@ impl FederationObserver {
             &[&federation_id.consensus_encode_to_vec()],
         )
         .await?;
-        ensure!(observed, "Federation {federation_id} is not observed");
+        if !observed {
+            return Err(not_observed(federation_id));
+        }
         Ok(())
     }
 
+    /// An observed federation; a 404 for any other id
+    pub async fn observed_federation(
+        &self,
+        federation_id: FederationId,
+    ) -> anyhow::Result<Federation> {
+        self.get_federation(federation_id)
+            .await?
+            .ok_or_else(|| not_observed(federation_id))
+    }
+
+    /// Stores the federation and starts observing it. Adding a federation
+    /// again, or concurrently, is fine: it is stored once, and observed once
+    /// per process.
     pub async fn add_federation(&self, invite: &InviteCode) -> anyhow::Result<FederationId> {
         let federation_id = invite.federation_id();
 
-        if self.get_federation(federation_id).await?.is_some() {
+        if let Some(federation) = self.get_federation(federation_id).await? {
+            // Its observer may not run yet, if the request that stored it was
+            // cancelled before starting it
+            self.spawn_observer(federation);
             return Ok(federation_id);
         }
 
-        let (config, _api) =
-            fedimint_api_client::download_from_invite_code(&self.connectors, invite).await?;
-
-        self.connection()
-            .await?
-            .execute(
-                "INSERT INTO federations VALUES ($1, $2)",
-                &[
-                    &federation_id.consensus_encode_to_vec(),
-                    &config.consensus_encode_to_vec(),
-                ],
+        // Observing uses the shared clients, which carry no API secret
+        if invite.api_secret().is_some() {
+            return Err(crate::error::ClientError::bad_request(
+                "Federations whose invite code has an API secret can't be observed",
             )
-            .await?;
+            .into());
+        }
+        let config = crate::config::download_client_config(invite, self).await?;
 
-        self.spawn_observer(Federation {
-            federation_id,
-            config,
-        });
+        // Stored and started apart from the request, so a request cancelled at
+        // its deadline can't leave a stored federation unobserved
+        let observer = self.clone();
+        tokio::spawn(async move {
+            observer
+                .connection()
+                .await?
+                .execute(
+                    "INSERT INTO federations VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    &[
+                        &federation_id.consensus_encode_to_vec(),
+                        &config.consensus_encode_to_vec(),
+                    ],
+                )
+                .await?;
+            // A concurrent add may have stored it first
+            let federation = observer
+                .get_federation(federation_id)
+                .await?
+                .context("Stored federation is missing")?;
+            observer.spawn_observer(federation);
+            anyhow::Ok(())
+        })
+        .await??;
 
         Ok(federation_id)
     }
@@ -786,20 +910,15 @@ impl FederationObserver {
         Ok(())
     }
 
-    /// A repair is committed with deletion of its durable request, so a crash
-    /// or database error leaves it available for the next attempt.
+    /// A repair's durable request is deleted once its rebuild is done, so a
+    /// crash or database error leaves it available for the next attempt.
     async fn repair_session_times(self) -> anyhow::Result<()> {
         let mut wakeup = self.work_notifications.subscribe("session-time-repair");
         loop {
             // Mark the generation before querying, retaining commits racing the query.
             wakeup.borrow_and_update();
             let permit = self.work_budget.acquire().await?;
-            let connection = self.connection().await?;
-            let repaired: bool = connection
-                .query_one("SELECT process_session_time_repair()", &[])
-                .await?
-                .get(0);
-            drop(connection);
+            let repaired = self.process_session_time_repair().await?;
             drop(permit);
             if repaired {
                 continue;
@@ -879,7 +998,9 @@ impl FederationObserver {
         federation_id: FederationId,
         config: ClientConfig,
     ) -> anyhow::Result<()> {
-        let api = federation_api(&self.connectors, &config.global)?;
+        // Shared, so the supervisor restarting this task doesn't leak
+        // guardian connections
+        let api = self.federation_api(&config.global)?;
         let decoders = self.modules.decoders_for_config(&config);
 
         info!("Starting background job for {federation_id}");
@@ -920,6 +1041,11 @@ impl FederationObserver {
             let _permit = self.work_budget.acquire().await?;
             let mut connection = self.connection().await?;
             let dbtx = connection.transaction().await?;
+            // Waiting is right for every lock this takes: a step of a
+            // read-model rebuild (record_new_session) or another writer's
+            // commit of the federation's totals. Both are short, but the
+            // default 5 s would fail the session and restart the sync.
+            dbtx.batch_execute("SET LOCAL lock_timeout = '60s'").await?;
             let new = self
                 .process_session(
                     federation_id,
@@ -1031,13 +1157,13 @@ impl FederationObserver {
 
         for (in_idx, input) in transaction.inputs.into_iter().enumerate() {
             let kind = instance_to_kind(config, input.module_instance_id());
-            let summary = match self.modules.get(&kind) {
-                Some(module) => module.summarize_input(&input)?,
-                None => {
-                    warn!("Transaction Input of kind {kind}. Not implemented.");
-                    InputSummary::default()
-                }
-            };
+            let summary = summary_or_default(
+                &kind,
+                "input",
+                self.modules
+                    .get(&kind)
+                    .map(|module| module.summarize_input(&input)),
+            );
 
             dbtx.execute(
                 "INSERT INTO transaction_inputs
@@ -1068,13 +1194,13 @@ impl FederationObserver {
 
         for (out_idx, output) in transaction.outputs.into_iter().enumerate() {
             let kind = instance_to_kind(config, output.module_instance_id());
-            let summary = match self.modules.get(&kind) {
-                Some(module) => module.summarize_output(&output)?,
-                None => {
-                    warn!("Transaction Output of kind {kind}. Not implemented.");
-                    OutputSummary::default()
-                }
-            };
+            let summary = summary_or_default(
+                &kind,
+                "output",
+                self.modules
+                    .get(&kind)
+                    .map(|module| module.summarize_output(&output)),
+            );
 
             dbtx.execute(
                 "INSERT INTO transaction_outputs VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
@@ -1171,10 +1297,7 @@ impl FederationObserver {
         &self,
         federation_id: FederationId,
     ) -> anyhow::Result<Option<Amount>> {
-        let federation = self
-            .get_federation(federation_id)
-            .await?
-            .context("Federation not observed")?;
+        let federation = self.observed_federation(federation_id).await?;
         let services = Services::new(self.clone());
         let total_assets_msat = query_value::<i64>(
             &self.connection().await?,
@@ -1295,23 +1418,21 @@ impl FederationObserver {
         })
     }
 
-    /// Reprocesses stored sessions of a federation, filling in core rows that
-    /// are missing. Commits every `BACKFILL_BATCH` sessions, so an interrupted
-    /// run keeps its progress. Module tables are rebuilt by resetting the
-    /// module's cursor instead (`reset_module_cursor`).
-    pub async fn backfill_federation(
+    /// Checks a backfill request and starts it in the background, returning
+    /// the stored sessions it covers. One backfill per federation runs at a
+    /// time; see [`Self::backfill_federation`].
+    pub async fn start_backfill(
         &self,
         federation_id: FederationId,
         session_start: Option<i32>,
         session_end: Option<i32>,
-    ) -> anyhow::Result<()> {
-        const BACKFILL_BATCH: i32 = 1000;
+    ) -> anyhow::Result<(i32, i32)> {
+        use crate::error::ClientError;
 
-        let federation = self
-            .get_federation(federation_id)
-            .await?
-            .with_context(|| format!("Federation {federation_id} is not observed"))?;
-        let session_start = session_start.unwrap_or(0);
+        if session_start.is_some_and(|start| start < 0) || session_end.is_some_and(|end| end < 0) {
+            return Err(ClientError::bad_request("Session indices are not negative").into());
+        }
+        self.ensure_observed(federation_id).await?;
         let Some(last_session) = query_value::<Option<i32>>(
             &self.connection().await?,
             "SELECT MAX(session_index) FROM sessions WHERE federation_id = $1",
@@ -1319,14 +1440,80 @@ impl FederationObserver {
         )
         .await?
         else {
-            info!("Federation {federation_id} has no stored sessions to backfill");
-            return Ok(());
+            return Err(ClientError::bad_request(format!(
+                "Federation {federation_id} has no stored sessions to backfill"
+            ))
+            .into());
         };
+        let session_start = session_start.unwrap_or(0);
         let session_end = session_end.unwrap_or(last_session).min(last_session);
-        ensure!(
-            session_start <= session_end,
-            "session_start {session_start} is after session_end {session_end}"
+        if session_start > session_end {
+            return Err(ClientError::bad_request(format!(
+                "session_start {session_start} is after session_end {session_end} (the last stored session is {last_session})"
+            ))
+            .into());
+        }
+
+        static RUNNING: std::sync::LazyLock<
+            std::sync::Mutex<std::collections::HashSet<FederationId>>,
+        > = std::sync::LazyLock::new(Default::default);
+        /// Ends the federation's entry in `RUNNING` however the backfill ends
+        struct Running(FederationId);
+        impl Drop for Running {
+            fn drop(&mut self) {
+                RUNNING.lock().expect("not poisoned").remove(&self.0);
+            }
+        }
+        if !RUNNING.lock().expect("not poisoned").insert(federation_id) {
+            return Err(ClientError::unavailable(format!(
+                "A backfill of federation {federation_id} is already running"
+            ))
+            .into());
+        }
+        let running = Running(federation_id);
+        let worker = self.worker();
+        self.task_group.spawn_cancellable(
+            format!("backfill of {federation_id}"),
+            async move {
+                let _running = running;
+                // A panic must not reach the task group, which would stop
+                // every task (see `supervise`)
+                match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+                    worker.backfill_federation(federation_id, session_start, session_end),
+                ))
+                .await
+                {
+                    Ok(Ok(())) => info!("Backfill complete"),
+                    Ok(Err(error)) => warn!("Backfill failed: {error:#}"),
+                    Err(_) => warn!("Backfill panicked"),
+                }
+            }
+            // Outlives the request, so not inside its span
+            .instrument(info_span!(parent: None, "backfill", fed = %federation_id.to_prefix())),
         );
+        Ok((session_start, session_end))
+    }
+
+    /// Reprocesses stored sessions of a federation, filling in core rows that
+    /// are missing. Commits every `BACKFILL_BATCH` sessions, so an interrupted
+    /// run keeps its progress, and has the session times and daily activity
+    /// rebuilt from `session_start` by the repair worker: once with the first
+    /// batch, so an interrupted run's batches are covered, and once after the
+    /// last. Module tables are rebuilt by resetting the module's cursor instead
+    /// (`reset_module_cursor`).
+    async fn backfill_federation(
+        &self,
+        federation_id: FederationId,
+        session_start: i32,
+        session_end: i32,
+    ) -> anyhow::Result<()> {
+        const BACKFILL_BATCH: i32 = 1000;
+
+        let federation = self
+            .get_federation(federation_id)
+            .await?
+            .with_context(|| format!("Federation {federation_id} is not observed"))?;
+        let federation_bytes = federation_id.consensus_encode_to_vec();
 
         info!("Backfilling federation {federation_id}, sessions {session_start} to {session_end}");
         let decoders = self.modules.decoders_for_config(&federation.config);
@@ -1342,7 +1529,7 @@ impl FederationObserver {
             let rows = dbtx
                 .query(
                     "SELECT * FROM sessions WHERE federation_id = $1 AND session_index BETWEEN $2 AND $3 ORDER BY session_index",
-                    &[&federation_id.consensus_encode_to_vec(), &batch_start, &batch_end],
+                    &[&federation_bytes, &batch_start, &batch_end],
                 )
                 .await
                 .context("querying sessions for federation backfill")?;
@@ -1358,13 +1545,13 @@ impl FederationObserver {
                 .await?;
                 processed += 1;
             }
-            // Publish restored rows and their read models atomically. A cancelled
-            // HTTP request must not leave previously committed batches inconsistent.
-            dbtx.execute(
-                "SELECT rebuild_read_models($1, $2)",
-                &[&federation_id.consensus_encode_to_vec(), &batch_start],
-            )
-            .await?;
+            if batch_start == session_start || batch_end >= session_end {
+                dbtx.execute(
+                    "SELECT schedule_read_model_rebuild($1, $2)",
+                    &[&federation_bytes, &session_start],
+                )
+                .await?;
+            }
             dbtx.commit().await?;
             info!("Backfilled up to session {batch_end} ({processed} sessions)");
 
@@ -1373,8 +1560,6 @@ impl FederationObserver {
             }
             batch_start = batch_end + 1;
         }
-
-        info!("Backfill complete!");
         Ok(())
     }
 }
@@ -1459,6 +1644,26 @@ impl SyncProgress {
         info!("Synced up to {unit} {position}, processed {synced} {unit}s at a rate of {rate:.2} {unit}s/s");
         self.logged_at = Instant::now();
         self.logged_position = position;
+    }
+}
+
+/// The summary core stores an input or output with: the module's, or, when the
+/// build has no module of its kind or the module can't summarize it (a variant
+/// newer than the build), none. The item is then stored without amount or
+/// details, which the module's projector fills in once a build summarizes it.
+/// Failing instead would roll back the session and stall the federation's
+/// sync on it until the build is upgraded.
+fn summary_or_default<S: Default>(kind: &str, item: &str, summary: Option<anyhow::Result<S>>) -> S {
+    match summary {
+        Some(Ok(summary)) => summary,
+        Some(Err(error)) => {
+            warn!("Storing a {kind} {item} without its summary: {error:#}");
+            S::default()
+        }
+        None => {
+            warn!("Transaction {item} of kind {kind}. Not implemented.");
+            S::default()
+        }
     }
 }
 
@@ -1577,6 +1782,12 @@ pub(super) async fn insert_unix_time_vote(
     Ok(())
 }
 
+/// The 404 of a federation id that isn't observed
+fn not_observed(federation_id: FederationId) -> anyhow::Error {
+    crate::error::ClientError::not_found(format!("Federation {federation_id} is not observed"))
+        .into()
+}
+
 pub(crate) fn federation_id_from_db(bytes: &[u8]) -> anyhow::Result<FederationId> {
     Ok(FederationId::consensus_decode_whole(
         bytes,
@@ -1594,7 +1805,8 @@ fn last_n_day_iter(now: NaiveDate, days: u32) -> impl Iterator<Item = NaiveDate>
 mod tests {
     use futures::FutureExt;
 
-    use crate::federation::observer::{last_n_day_iter, SessionFetchGate};
+    use crate::federation::observer::{last_n_day_iter, summary_or_default, SessionFetchGate};
+    use crate::module::{InputSummary, OutputSummary};
 
     #[tokio::test]
     async fn only_the_next_session_is_fetched_while_fetches_fail() {
@@ -1614,6 +1826,28 @@ mod tests {
         // A fetch that succeeds lets the waiting ones go on
         gate.record(true);
         assert!(later.now_or_never().is_some());
+    }
+
+    #[test]
+    fn unsummarizable_items_are_stored_without_summary() {
+        // A module that doesn't know an item's version must not stall ingest
+        let input: InputSummary = summary_or_default(
+            "mint",
+            "input",
+            Some(Err(anyhow::anyhow!("Unsupported mint input version"))),
+        );
+        assert!(input.amount_msat.is_none() && input.details.is_none());
+        let output: OutputSummary = summary_or_default("unknown", "output", None);
+        assert!(output.amount_msat.is_none() && output.ln_contract.is_none());
+        let known = summary_or_default(
+            "mint",
+            "output",
+            Some(Ok(OutputSummary {
+                amount_msat: Some(1000),
+                ..Default::default()
+            })),
+        );
+        assert_eq!(known.amount_msat, Some(1000));
     }
 
     #[test]

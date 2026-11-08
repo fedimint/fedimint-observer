@@ -10,7 +10,7 @@ use fedimint_walletv2_common::endpoint_constants::{
 };
 use fedimint_walletv2_common::{FederationWallet, OutputInfo, TxInfo};
 use fmo_api_types::WalletV2OnChainTransaction;
-use fmo_core::module::{federation_api, Services};
+use fmo_core::module::Services;
 use futures::future::try_join_all;
 
 // The total inherits the oldest component's timestamp. Updating one wallet
@@ -110,10 +110,12 @@ async fn fetch<T: serde::de::DeserializeOwned + Eq + std::fmt::Debug + Clone + S
     params: ApiRequestErased,
 ) -> anyhow::Result<T> {
     // Bound queue time as well as remote I/O. The permit ends before any database
-    // write.
+    // write. The guardian client is the process-wide shared one: a client per
+    // call would open (and leak) a new connection to every guardian each time.
     tokio::time::timeout(Duration::from_secs(30), async {
         let _permit = services.external_io_permit().await?;
-        federation_api(services.connectors(), &config.global)?
+        services
+            .federation_api(&config.global)?
             .with_module(instance)
             .request_current_consensus(endpoint.to_owned(), params)
             .await

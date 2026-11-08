@@ -26,3 +26,25 @@ fn unsupported_versions_are_errors() {
     );
     assert!(MintObserver.summarize_output(&output).is_err());
 }
+
+#[test]
+fn too_many_nonces_is_a_bad_request() {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use fmo_core::module::ApiError;
+
+    use crate::nonces::{check_nonce_count, MAX_NONCES_PER_REQUEST};
+
+    let nonces = vec![String::new(); MAX_NONCES_PER_REQUEST];
+    assert!(check_nonce_count(&nonces).is_ok());
+    assert!(check_nonce_count(&[]).is_ok());
+
+    let too_many = vec![String::new(); MAX_NONCES_PER_REQUEST + 1];
+    // Through `?` and `.context()`, as the handler returns it
+    let error =
+        anyhow::Context::context(check_nonce_count(&too_many), "Checking nonces").unwrap_err();
+    assert_eq!(
+        ApiError::from(error).into_response().status(),
+        StatusCode::BAD_REQUEST
+    );
+}

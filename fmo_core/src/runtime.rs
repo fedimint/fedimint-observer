@@ -1,6 +1,7 @@
 //! Deployment limits and database ownership. API replicas never start
 //! collectors.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -77,6 +78,24 @@ pub(crate) fn pool(
     Ok(config.create_pool(Some(Runtime::Tokio1), tls()?)?)
 }
 
+/// Set when the worker lease was lost, which stops the workers
+static WORKER_LEASE_LOST: AtomicBool = AtomicBool::new(false);
+
+/// Whether the process stopped its workers because it lost the worker lease.
+/// It must then exit with an error, so a process manager restarts it.
+pub(crate) fn worker_lease_lost() -> bool {
+    WORKER_LEASE_LOST.load(Ordering::SeqCst)
+}
+
+fn lose_worker_lease(tasks: &fedimint_core::task::TaskGroup) {
+    // The lease connection also closes once a graceful shutdown has dropped
+    // its client, which is not a loss
+    if !tasks.is_shutting_down() {
+        WORKER_LEASE_LOST.store(true, Ordering::SeqCst);
+    }
+    tasks.shutdown();
+}
+
 /// This dedicated connection is never returned to a pool. If it is lost,
 /// cancel workers immediately rather than continue without ownership.
 pub(crate) async fn worker_lease(
@@ -107,7 +126,7 @@ pub(crate) async fn worker_lease(
                 None => break,
             }
         }
-        connection_tasks.shutdown();
+        lose_worker_lease(&connection_tasks);
     });
     tokio::time::timeout(
         Duration::from_secs(10),
@@ -134,7 +153,7 @@ pub(crate) async fn worker_lease(
                 Ok(Ok(_))
             ) {
                 tracing::error!("Worker lease heartbeat failed; stopping collectors");
-                heartbeat_tasks.shutdown();
+                lose_worker_lease(&heartbeat_tasks);
                 return;
             }
         }

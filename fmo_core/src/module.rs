@@ -38,12 +38,11 @@ use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::registry::ModuleDecoderRegistry;
 use fedimint_core::{OutPoint, PeerId, TransactionId};
 
-pub use crate::error::{AppError as ApiError, Result as ApiResult};
+pub use crate::config::INVITE_FETCH_TIMEOUT;
+pub use crate::error::{AppError as ApiError, ClientError, Result as ApiResult};
 pub use crate::federation::db::Federation;
 use crate::federation::observer::FederationObserver;
-pub use crate::util::{
-    federation_api, module_instance_id, query, query_one, query_opt, query_value,
-};
+pub use crate::util::{module_instance_id, query, query_one, query_opt, query_value};
 
 /// The database transaction a session is processed in
 pub type DbTransaction<'a> = deadpool_postgres::Transaction<'a>;
@@ -147,6 +146,27 @@ impl Services {
     /// Connections to federations' guardians
     pub fn connectors(&self) -> &ConnectorRegistry {
         self.0.connectors()
+    }
+
+    /// The shared client for the API of the guardians in `global`. Use this
+    /// instead of building a client per request, which leaks connections: see
+    /// [`FederationObserver::federation_api`].
+    pub fn federation_api(
+        &self,
+        global: &fedimint_core::config::GlobalClientConfig,
+    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
+        self.0.federation_api(global)
+    }
+
+    /// The shared client for guardians named by an invite code, of a
+    /// federation that may not be observed: see
+    /// [`FederationObserver::lookup_api`]
+    pub fn lookup_api(
+        &self,
+        global: &fedimint_core::config::GlobalClientConfig,
+        api_secret: Option<String>,
+    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
+        self.0.lookup_api(global, api_secret)
     }
 
     /// Client of the configured mempool instance

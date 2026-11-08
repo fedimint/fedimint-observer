@@ -11,10 +11,32 @@ import type {
   GatewayOverview,
   GatewayWindow,
   GuardianHealth,
+  HistogramAverage,
+  UtxoView,
 } from '../types/api';
 import type { SignedNostrEvent } from '../types/nostr';
 
 const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
+
+/** A request the server answered with an error status; `message` is the server's own when it sent one */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+// The server's `{ error }` message, or `fallback` when the body has none
+async function serverError(response: Response, fallback: string): Promise<ApiError> {
+  const body: unknown = await response.json().catch(() => null);
+  const message = body && typeof body === 'object' && 'error' in body && typeof body.error === 'string' && body.error
+    ? body.error
+    : fallback;
+  return new ApiError(response.status, message);
+}
 
 // Invite codes are user input, so they are always encoded: a / ? or # would change the path
 export const api = {
@@ -60,8 +82,16 @@ export const api = {
     return response.json();
   },
 
-  async getFederationHistogram(id: string, signal?: AbortSignal): Promise<FederationHistogram> {
-    const response = await fetch(`${BASE_URL}/federations/${id}/transactions/histogram`, { signal });
+  async getFederationHistogram(
+    id: string,
+    options: { average: HistogramAverage; excludeOutliers: boolean },
+    signal?: AbortSignal,
+  ): Promise<FederationHistogram> {
+    const query = new URLSearchParams({
+      average: String(options.average),
+      outliers: options.excludeOutliers ? 'exclude' : 'include',
+    });
+    const response = await fetch(`${BASE_URL}/federations/${id}/transactions/histogram?${query}`, { signal });
     if (!response.ok) {
       throw new Error(`Failed to fetch transaction histogram for federation ${id} (${response.status})`);
     }
@@ -88,22 +118,34 @@ export const api = {
     const query = new URLSearchParams({ module_instance_id: String(moduleInstanceId), window });
     if (after !== undefined) query.set('after', after);
     const response = await fetch(`${BASE_URL}/federations/${id}/gateways/v2?${query}`, { signal });
-    if (!response.ok) throw new Error(`Could not fetch gateway registrations (${response.status})`);
+    if (!response.ok) throw await serverError(response, `Could not fetch gateway registrations (${response.status})`);
     return response.json();
   },
 
-  async getFederationUtxos(id: string, signal?: AbortSignal): Promise<FederationUtxosResponse> {
-    const response = await fetch(`${BASE_URL}/federations/${id}/utxos`, { signal });
+  async getFederationUtxos(
+    id: string,
+    options: { view: UtxoView; search: string; page: number; limit: number },
+    signal?: AbortSignal,
+  ): Promise<FederationUtxosResponse> {
+    const query = new URLSearchParams({
+      view: options.view,
+      search: options.search,
+      page: String(options.page),
+      limit: String(options.limit),
+    });
+    const response = await fetch(`${BASE_URL}/federations/${id}/utxos?${query}`, { signal });
     if (!response.ok) {
-      throw new Error(`Failed to fetch UTXOs for federation ${id} (${response.status})`);
+      // 400 names the bad parameter; 404 means the federation has no Wallet v1 module
+      throw await serverError(response, `Failed to fetch UTXOs for federation ${id} (${response.status})`);
     }
     return response.json();
   },
 
   async getFederationGatewayOverview(id: string, window: GatewayWindow, signal?: AbortSignal): Promise<GatewayOverview> {
-    const response = await fetch(`${BASE_URL}/federations/${id}/gateways/overview?window=${encodeURIComponent(window)}`, { signal });
+    const query = new URLSearchParams({ window });
+    const response = await fetch(`${BASE_URL}/federations/${id}/gateways/overview?${query}`, { signal });
     if (!response.ok) {
-      throw new Error(`Failed to fetch gateways (${response.status})`);
+      throw await serverError(response, `Failed to fetch gateways (${response.status})`);
     }
     return response.json();
   },
@@ -136,7 +178,8 @@ export const api = {
   async getFederationGatewaysByInvite(inviteCode: string, signal?: AbortSignal): Promise<GatewayInfo[]> {
     const response = await fetch(`${BASE_URL}/config/${encodeURIComponent(inviteCode)}/gateways`, { signal });
     if (!response.ok) {
-      throw new Error(`Failed to fetch gateways by invite (${response.status})`);
+      // 404 without a Lightning v1 module, 502 or 504 when no guardian answers
+      throw await serverError(response, `Failed to fetch gateways by invite (${response.status})`);
     }
     return response.json();
   },

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 
-export type BadgeLevel = 'info' | 'warning' | 'error' | 'success';
+type BadgeLevel = 'info' | 'warning' | 'error' | 'success';
 
 interface BadgeProps {
   level: BadgeLevel;

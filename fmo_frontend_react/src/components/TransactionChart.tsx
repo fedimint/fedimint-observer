@@ -9,6 +9,7 @@ import {
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useTheme } from '../hooks/useTheme';
+import type { HistogramEntry } from '../utils/histogram';
 
 // Register only the components we need
 echarts.use([
@@ -18,16 +19,6 @@ echarts.use([
   DataZoomComponent,
   CanvasRenderer,
 ]);
-
-// One day of a federation's activity, with volume in BTC for the axis
-export interface HistogramEntry {
-  date: string;
-  timestamp: number;
-  volume: number;
-  count: number;
-  avgVolume?: number;
-  avgCount?: number;
-}
 
 // Dark is what the chart always used; light matches the app's other charts
 const CHART_COLORS = {

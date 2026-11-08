@@ -1,14 +1,16 @@
 import { useState } from 'react';
 import { chartSegments } from '../utils/chartSegments';
+import { formatUtcDayHour } from '../utils/time';
 
-interface Bucket { start?: string; samples: number; online: number }
+import type { GatewayV2AvailabilityBucket } from '../types/api';
 
-export function GatewayAvailabilityChart({ buckets }: { buckets: Bucket[] }) {
+export function GatewayAvailabilityChart({ buckets }: { buckets: GatewayV2AvailabilityBucket[] }) {
   const [active, setActive] = useState<number | null>(null);
-  const values = buckets.map((bucket) => bucket.samples ? bucket.online / bucket.samples * 100 : null);
+  const values = buckets.map((bucket) => bucket.samples ? bucket.online_samples / bucket.samples * 100 : null);
   const segments = chartSegments(values);
   const x = (index: number) => index / Math.max(1, buckets.length - 1) * 100;
-  const label = (index: number) => buckets[index]?.start ? new Date(buckets[index].start!).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit' }) : '';
+  // The section names the zone once: all times in UTC
+  const label = (index: number) => formatUtcDayHour(buckets[index]?.start);
   const selected = active === null ? null : buckets[active];
   return <div className="h-[210px] pt-3 text-[10px] text-gray-600 dark:text-gray-300">
     <div className="flex h-40 gap-2">
@@ -29,9 +31,9 @@ export function GatewayAvailabilityChart({ buckets }: { buckets: Bucket[] }) {
         </svg>
         {values.map((value, index) => value !== null && <span key={index} aria-hidden="true" className="pointer-events-none absolute h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full" style={{ backgroundColor: '#6366f1', left: `${x(index)}%`, top: `${100 - value}%` }} />)}
         <div className="absolute inset-0 flex" aria-hidden="true">{buckets.map((bucket, index) => <span key={index} className="h-full flex-1" onMouseEnter={() => setActive(index)}
-          title={`${label(index)}: ${bucket.samples ? `${(bucket.online / bucket.samples * 100).toFixed(1)}% (${bucket.online}/${bucket.samples} checks)` : 'No observations'}`} />)}</div>
+          title={`${label(index)}: ${bucket.samples ? `${(bucket.online_samples / bucket.samples * 100).toFixed(1)}% (${bucket.online_samples}/${bucket.samples} checks)` : 'No observations'}`} />)}</div>
         {selected && <div aria-hidden="true" className="pointer-events-none absolute left-1/2 top-2 z-10 -translate-x-1/2 whitespace-nowrap rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-900 shadow-sm dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100">
-          {label(active!)}<br />{selected.samples ? `${(selected.online / selected.samples * 100).toFixed(1)}% · ${selected.online}/${selected.samples} checks` : 'No observations'}
+          {label(active!)}<br />{selected.samples ? `${(selected.online_samples / selected.samples * 100).toFixed(1)}% · ${selected.online_samples}/${selected.samples} checks` : 'No observations'}
         </div>}
       </div>
     </div>

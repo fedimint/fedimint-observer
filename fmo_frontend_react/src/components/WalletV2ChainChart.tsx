@@ -42,7 +42,7 @@ export function WalletV2ChainChart({ transactions }: WalletV2ChainChartProps) {
       },
       yAxis: {
         type: 'value',
-        axisLabel: { color: labelColor, fontSize: 10, formatter: (value: number) => `${(value / 100_000_000_000).toFixed(3)} BTC` },
+        axisLabel: { color: labelColor, fontSize: 10, formatter: (value: number) => asBitcoin(value, 3) },
         axisLine: { lineStyle: { color: axisColor } },
         splitLine: { lineStyle: { color: gridColor, type: 'dashed' } },
       },

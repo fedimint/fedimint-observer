@@ -31,7 +31,7 @@ just run
 
 1. Take a database backup and verify a restore in an isolated database.
 2. Stop the existing collector and start the updated one. It applies the core
-   schema (currently v14) and the module migrations. Populated databases upgrade
+   schema (currently v12) and the module migrations. Populated databases upgrade
    from core v11 or newer; older ones need the previous release's migrations
    first.
 3. Allow time for backfills and index builds. Migrations run transactionally
@@ -71,7 +71,8 @@ reverse proxy.
 
 Lightning v2 gateway data comes from guardians and gateways and is bounded:
 256 gateway URLs per guardian per poll, 1,024 registered and 1,024 retired
-gateways per federation module instance, and 90 days of probe history. Contract
+gateways per federation module instance, and probe history kept for
+`FO_HEALTH_RETENTION_DAYS` (90 days by default). Contract
 activity is attributed by the module key a gateway reports about itself, which
 the observer cannot verify; a key claimed by more than one gateway is shown as
 contested and credited to neither.

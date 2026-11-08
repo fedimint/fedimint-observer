@@ -307,3 +307,42 @@ fn history_publication_requires_a_contiguous_append() {
     assert!(collector::validate_delta(2, 4, &[3, 3]).is_err());
     assert!(collector::validate_delta(2, 1, &[]).is_err());
 }
+
+#[test]
+fn history_instance_selection_maps_to_client_statuses() {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use history::select_instance;
+
+    let status =
+        |result: fmo_core::module::ApiResult<u16>| result.unwrap_err().into_response().status();
+    assert_eq!(select_instance(&[3], None).unwrap(), 3);
+    assert_eq!(select_instance(&[3, 5], Some(5)).unwrap(), 5);
+    // No walletv2 module at all, e.g. a v1-only federation
+    assert_eq!(status(select_instance(&[], None)), StatusCode::NOT_FOUND);
+    assert_eq!(status(select_instance(&[], Some(0))), StatusCode::NOT_FOUND);
+    // An instance that is not walletv2 (or does not exist)
+    assert_eq!(
+        status(select_instance(&[3], Some(0))),
+        StatusCode::BAD_REQUEST
+    );
+    // Several instances and none chosen
+    assert_eq!(
+        status(select_instance(&[3, 5], None)),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[test]
+fn unobserved_federation_is_a_not_found_client_error() {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use fmo_core::module::{ApiError, ClientError};
+
+    // What the history handler returns for a federation it doesn't observe
+    let error: anyhow::Error = ClientError::not_found("Federation is not observed").into();
+    assert_eq!(
+        ApiError::from(error).into_response().status(),
+        StatusCode::NOT_FOUND
+    );
+}

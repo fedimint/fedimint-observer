@@ -21,8 +21,8 @@ impl ObserverModule for StabilityPoolObserver {
         StabilityPoolCommonGen::decoder()
     }
 
-    fn summarize_input(&self, input: &DynInput) -> InputSummary {
-        InputSummary {
+    fn summarize_input(&self, input: &DynInput) -> anyhow::Result<InputSummary> {
+        Ok(InputSummary {
             amount_msat: None,
             ln_contract_id: None,
             claimed_output: None,
@@ -31,11 +31,11 @@ impl ObserverModule for StabilityPoolObserver {
                 input,
                 "Stability Pool Input",
             ),
-        }
+        })
     }
 
-    fn summarize_output(&self, output: &DynOutput) -> OutputSummary {
-        OutputSummary {
+    fn summarize_output(&self, output: &DynOutput) -> anyhow::Result<OutputSummary> {
+        Ok(OutputSummary {
             amount_msat: None,
             ln_contract: None,
             details: details_json::<StabilityPoolOutput>(
@@ -43,7 +43,7 @@ impl ObserverModule for StabilityPoolObserver {
                 output,
                 "Stability Pool Output",
             ),
-        }
+        })
     }
 
     fn summarize_ci(&self, ci: &DynModuleConsensusItem) -> Option<serde_json::Value> {

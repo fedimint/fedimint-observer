@@ -1,4 +1,4 @@
-export type AlertLevel = 'info' | 'warning' | 'error' | 'success';
+type AlertLevel = 'info' | 'warning' | 'error' | 'success';
 
 interface AlertProps {
   message: string;

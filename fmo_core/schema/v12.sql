@@ -1,5 +1,6 @@
 -- Read models kept up to date as sessions and health samples are written, so
--- page loads and background jobs stop aggregating over the full history
+-- page loads and background jobs stop aggregating over the full history; module
+-- schemas; repair jobs for session times; and removal of unused objects
 
 INSERT INTO schema_version (version)
 VALUES (12);
@@ -14,14 +15,7 @@ LOCK TABLE sessions, block_height_votes, transactions, transaction_inputs,
 -- The materialized view recomputed every session of every federation each
 -- minute. A session's time only depends on its own votes and the sessions
 -- before it, and sessions are committed in order, so it is final once written.
--- The view stays, no longer refreshed, until it is dropped separately.
-ALTER MATERIALIZED VIEW session_times RENAME TO session_times_v5;
-ALTER INDEX IF EXISTS session_times_federation_id_idx
-    RENAME TO session_times_v5_federation_id_idx;
-ALTER INDEX IF EXISTS session_times_federation_id_session_index_idx
-    RENAME TO session_times_v5_federation_id_session_index_idx;
-ALTER INDEX IF EXISTS session_times_federation_id_estimated_session_timestamp_idx
-    RENAME TO session_times_v5_federation_id_estimated_session_timestamp_idx;
+DROP MATERIALIZED VIEW session_times;
 
 CREATE TABLE session_times (
     federation_id BYTEA NOT NULL,
@@ -145,6 +139,7 @@ CREATE TABLE federation_daily_activity (
     volume_msat BIGINT NOT NULL,
     PRIMARY KEY (federation_id, day)
 );
+CREATE INDEX federation_daily_activity_day ON federation_daily_activity(day);
 
 CREATE FUNCTION session_range_activity(fed BYTEA, from_index INTEGER, to_index INTEGER)
 RETURNS TABLE (day DATE, tx_count BIGINT, funded_tx_count BIGINT, volume_msat BIGINT) AS $$
@@ -163,23 +158,14 @@ RETURNS TABLE (day DATE, tx_count BIGINT, funded_tx_count BIGINT, volume_msat BI
     GROUP BY 1;
 $$ LANGUAGE sql STABLE;
 
--- Recounts a federation from scratch, after a backfill restored rows
-CREATE FUNCTION rebuild_daily_activity(fed BYTEA) RETURNS VOID AS $$
-BEGIN
-    PERFORM lock_federation_read_models(fed);
-    DELETE FROM federation_daily_activity WHERE federation_id = fed;
-    INSERT INTO federation_daily_activity (federation_id, day, tx_count, funded_tx_count, volume_msat)
-    SELECT fed, a.day, a.tx_count, a.funded_tx_count, a.volume_msat
-    FROM session_range_activity(fed, 0, 2147483647) a;
-END;
-$$ LANGUAGE plpgsql;
-
-SELECT rebuild_daily_activity(federation_id) FROM federations;
+INSERT INTO federation_daily_activity (federation_id, day, tx_count, funded_tx_count, volume_msat)
+SELECT f.federation_id, a.day, a.tx_count, a.funded_tx_count, a.volume_msat
+FROM federations f, session_range_activity(f.federation_id, 0, 2147483647) a;
 
 -- Called by the sync for every session it writes, in the session's
 -- transaction. Counts the session's transactions on top of what is there, so
--- it must run exactly once per session: backfills of stored sessions call
--- rebuild_read_models instead.
+-- it must run exactly once per session: after stored sessions are
+-- reprocessed, schedule_read_model_rebuild asks for a rebuild instead.
 CREATE FUNCTION record_new_session(fed BYTEA, idx INTEGER) RETURNS VOID AS $$
 BEGIN
     PERFORM update_session_times(fed, idx, idx);
@@ -193,19 +179,175 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Rewrites a federation's read models from `from_index` on, for when stored
--- sessions were reprocessed
-CREATE FUNCTION rebuild_read_models(fed BYTEA, from_index INTEGER) RETURNS VOID AS $$
+-- The first day a session from `from_index` on is dated to
+CREATE FUNCTION session_activity_floor(fed BYTEA, from_index INTEGER) RETURNS DATE AS $$
+    SELECT DATE(MIN(estimated_session_timestamp))
+    FROM session_times
+    WHERE federation_id = fed AND session_index >= from_index;
+$$ LANGUAGE sql STABLE;
+
+-- Recounts the federation's activity on the days from `from_day` up to, not
+-- including, `to_day` (NULL: every later day). The collector rebuilds read
+-- models in steps of bounded size, each in its own transaction, so the
+-- federation's ingest, which needs the read-model lock for every session,
+-- waits for one step at most (FederationObserver::rebuild_read_models).
+CREATE FUNCTION rebuild_daily_activity_days(fed BYTEA, from_day DATE, to_day DATE)
+RETURNS VOID AS $$
+DECLARE
+    first_session INTEGER;
+    last_session INTEGER;
 BEGIN
-    PERFORM update_session_times(fed, from_index, 2147483647);
-    PERFORM rebuild_daily_activity(fed);
+    PERFORM lock_federation_read_models(fed);
+    DELETE FROM federation_daily_activity
+    WHERE federation_id = fed AND day >= from_day AND (to_day IS NULL OR day < to_day);
+    SELECT MIN(session_index), MAX(session_index) INTO first_session, last_session
+    FROM session_times
+    WHERE federation_id = fed
+      AND estimated_session_timestamp >= from_day
+      AND (to_day IS NULL OR estimated_session_timestamp < to_day);
+    IF first_session IS NULL THEN RETURN; END IF;
+    INSERT INTO federation_daily_activity (federation_id, day, tx_count, funded_tx_count, volume_msat)
+    SELECT fed, a.day, a.tx_count, a.funded_tx_count, a.volume_msat
+    FROM session_range_activity(fed, first_session, last_session) a
+    WHERE a.day >= from_day AND (to_day IS NULL OR a.day < to_day);
 END;
 $$ LANGUAGE plpgsql;
+
+-- Session time repairs
+--
+-- Votes must remain ingestible while the block explorer is behind, so the
+-- foreign key to block_times goes, and a vote for a block without a time yet
+-- leaves a durable job to rebuild from its session once the time arrives.
+-- Until now that key held, so every stored vote's block has a time and the
+-- seed above dated every session that has votes: there is nothing to repair.
+-- block_height -1 is a job that waits for no block: a rebuild after stored
+-- sessions were reprocessed.
+DO $$
+DECLARE constraint_name TEXT;
+BEGIN
+    FOR constraint_name IN
+        SELECT conname FROM pg_constraint
+        WHERE conrelid = 'block_height_votes'::regclass
+          AND confrelid = 'block_times'::regclass AND contype = 'f'
+    LOOP
+        EXECUTE format('ALTER TABLE block_height_votes DROP CONSTRAINT %I', constraint_name);
+    END LOOP;
+END;
+$$;
+CREATE TABLE session_time_repairs (
+    federation_id BYTEA NOT NULL REFERENCES federations (federation_id),
+    block_height INTEGER NOT NULL,
+    from_index INTEGER NOT NULL,
+    -- When the collector last claimed the job; claims go to the least recently
+    -- attempted federation, so one that keeps failing holds back no other
+    attempted_at TIMESTAMPTZ,
+    PRIMARY KEY (federation_id, block_height)
+);
+CREATE INDEX session_time_repairs_height ON session_time_repairs (block_height);
+
+CREATE FUNCTION schedule_missing_block_time_repair() RETURNS trigger AS $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM block_times WHERE block_height = NEW.height_vote) THEN
+        INSERT INTO session_time_repairs (federation_id, block_height, from_index)
+        VALUES (NEW.federation_id, NEW.height_vote, NEW.session_index)
+        ON CONFLICT (federation_id, block_height) DO UPDATE
+            SET from_index = LEAST(session_time_repairs.from_index, EXCLUDED.from_index);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER schedule_missing_block_time_repair
+    AFTER INSERT ON block_height_votes
+    FOR EACH ROW EXECUTE FUNCTION schedule_missing_block_time_repair();
+
+-- Marks the ready jobs of the least recently attempted federation as claimed
+-- at `claimed_at`, and returns the session to rebuild from. NULLs when no job
+-- is ready.
+CREATE FUNCTION claim_session_time_repair(OUT fed BYTEA, OUT start_index INTEGER, OUT claimed_at TIMESTAMPTZ)
+AS $$
+BEGIN
+    SELECT r.federation_id INTO fed FROM session_time_repairs r
+    WHERE r.block_height = -1 OR EXISTS
+        (SELECT 1 FROM block_times b WHERE b.block_height = r.block_height)
+    ORDER BY r.attempted_at NULLS FIRST, r.block_height, r.federation_id
+    LIMIT 1;
+    IF fed IS NULL THEN RETURN; END IF;
+    claimed_at := clock_timestamp();
+    UPDATE session_time_repairs r SET attempted_at = claimed_at
+    WHERE r.federation_id = fed AND (r.block_height = -1 OR EXISTS
+        (SELECT 1 FROM block_times b WHERE b.block_height = r.block_height));
+    SELECT MIN(r.from_index) INTO start_index FROM session_time_repairs r
+    WHERE r.federation_id = fed AND r.attempted_at = claimed_at;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Deletes the jobs a claim covered once its rebuild is done. A job moved to an
+-- earlier session, or scheduled again, since the claim stays.
+CREATE FUNCTION finish_session_time_repair(fed BYTEA, start_index INTEGER, claimed_at TIMESTAMPTZ)
+RETURNS VOID AS $$
+    DELETE FROM session_time_repairs
+    WHERE federation_id = fed AND attempted_at = claimed_at AND from_index >= start_index;
+$$ LANGUAGE sql;
+
+-- Asks the collector to rebuild the federation's session times and daily
+-- activity from `from_index`, after stored sessions were reprocessed. Durable,
+-- and merged with the federation's other rebuilds.
+CREATE FUNCTION schedule_read_model_rebuild(fed BYTEA, from_index INTEGER) RETURNS VOID AS $$
+    INSERT INTO session_time_repairs (federation_id, block_height, from_index)
+    VALUES (fed, -1, from_index)
+    ON CONFLICT (federation_id, block_height) DO UPDATE
+        SET from_index = LEAST(session_time_repairs.from_index, EXCLUDED.from_index),
+            attempted_at = NULL;
+$$ LANGUAGE sql;
+
+-- BEGIN WORK NOTIFICATIONS
+-- (fmo_core/src/work/tests.rs runs this part on its own)
+-- Delivered after commit. Startup also drains work created while offline.
+CREATE FUNCTION notify_session_time_repair() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_notify('fmo_work', 'session-time-repair');
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER notify_session_time_repair
+    AFTER INSERT OR UPDATE ON session_time_repairs
+    FOR EACH STATEMENT EXECUTE FUNCTION notify_session_time_repair();
+CREATE TRIGGER notify_repair_block_arrival
+    AFTER INSERT ON block_times
+    FOR EACH STATEMENT EXECUTE FUNCTION notify_session_time_repair();
+-- END WORK NOTIFICATIONS
+
+-- Session counts
+CREATE TABLE federation_session_counts (
+    federation_id BYTEA PRIMARY KEY REFERENCES federations(federation_id),
+    session_count BIGINT NOT NULL
+);
+INSERT INTO federation_session_counts
+SELECT federation_id, COUNT(*) FROM sessions GROUP BY federation_id;
+CREATE FUNCTION count_stored_session() RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO federation_session_counts VALUES (NEW.federation_id, 1)
+    ON CONFLICT (federation_id) DO UPDATE
+        SET session_count = federation_session_counts.session_count + 1;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+CREATE TRIGGER sessions_count_insert AFTER INSERT ON sessions
+FOR EACH ROW EXECUTE FUNCTION count_stored_session();
 
 -- Federation assets
 --
 -- The federation list summed every wallet input and output of each
 -- federation on every load. Kept by the v9 counters instead.
+--
+-- federation_totals has one row per federation. Updated as each transaction,
+-- input or output was written, that row stayed locked until the writer
+-- committed: a projector completing amounts held it for its whole batch, and
+-- the federation's ingest, which needs it for every session, ran into its lock
+-- timeout. Deferred to commit, the counters change at the end of the writing
+-- transaction and the row is locked only while it commits. Writers that also
+-- take the federation's read-model lock (record_new_session, deposit
+-- enrichment) all take it before the totals row, in one order.
 ALTER TABLE federation_totals
     ADD COLUMN wallet_in_msat BIGINT NOT NULL DEFAULT 0,
     ADD COLUMN wallet_out_msat BIGINT NOT NULL DEFAULT 0;
@@ -234,12 +376,69 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Like the v9 triggers, skipped for rows that ON CONFLICT DO NOTHING drops
-CREATE TRIGGER transaction_outputs_bump_totals
+-- A module added to a build later fills in the amounts of its items, which
+-- ingest stored without them. Keep the counters right for those updates too,
+-- as the insert triggers do for new rows.
+CREATE FUNCTION federation_totals_update_volume() RETURNS TRIGGER AS $$
+DECLARE
+    delta BIGINT := COALESCE(NEW.amount_msat, 0) - COALESCE(OLD.amount_msat, 0);
+    wallet_delta BIGINT := CASE WHEN NEW.kind = 'wallet' THEN delta ELSE 0 END;
+BEGIN
+    INSERT INTO federation_totals (federation_id, tx_volume_msat, wallet_in_msat)
+    VALUES (NEW.federation_id, delta, wallet_delta)
+    ON CONFLICT (federation_id) DO UPDATE
+        SET tx_volume_msat = federation_totals.tx_volume_msat + delta,
+            wallet_in_msat = federation_totals.wallet_in_msat + wallet_delta;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE FUNCTION federation_totals_update_wallet_out() RETURNS TRIGGER AS $$
+DECLARE
+    delta BIGINT := COALESCE(NEW.amount_msat, 0) - COALESCE(OLD.amount_msat, 0);
+BEGIN
+    INSERT INTO federation_totals (federation_id, wallet_out_msat)
+    VALUES (NEW.federation_id, delta)
+    ON CONFLICT (federation_id) DO UPDATE
+        SET wallet_out_msat = federation_totals.wallet_out_msat + delta;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- The v9 insert counters, deferred; the rest new. Like the v9 triggers, they
+-- skip rows that ON CONFLICT DO NOTHING drops.
+DROP TRIGGER transactions_bump_totals ON transactions;
+CREATE CONSTRAINT TRIGGER transactions_bump_totals
+    AFTER INSERT ON transactions
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION federation_totals_count_tx();
+
+DROP TRIGGER transaction_inputs_bump_totals ON transaction_inputs;
+CREATE CONSTRAINT TRIGGER transaction_inputs_bump_totals
+    AFTER INSERT ON transaction_inputs
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW EXECUTE FUNCTION federation_totals_add_volume();
+
+CREATE CONSTRAINT TRIGGER transaction_outputs_bump_totals
     AFTER INSERT ON transaction_outputs
+    DEFERRABLE INITIALLY DEFERRED
     FOR EACH ROW
     WHEN (NEW.kind = 'wallet')
     EXECUTE FUNCTION federation_totals_add_wallet_out();
+
+CREATE CONSTRAINT TRIGGER transaction_inputs_update_totals
+    AFTER UPDATE OF amount_msat ON transaction_inputs
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    WHEN (OLD.amount_msat IS DISTINCT FROM NEW.amount_msat)
+    EXECUTE FUNCTION federation_totals_update_volume();
+
+CREATE CONSTRAINT TRIGGER transaction_outputs_update_totals
+    AFTER UPDATE OF amount_msat ON transaction_outputs
+    DEFERRABLE INITIALLY DEFERRED
+    FOR EACH ROW
+    WHEN (NEW.kind = 'wallet' AND OLD.amount_msat IS DISTINCT FROM NEW.amount_msat)
+    EXECUTE FUNCTION federation_totals_update_wallet_out();
 
 INSERT INTO federation_totals (federation_id, wallet_in_msat, wallet_out_msat)
 SELECT f.federation_id,
@@ -325,6 +524,19 @@ FROM guardian_health
 WHERE time >= date_trunc('hour', NOW()::timestamp - INTERVAL '31 days')
 GROUP BY 1, 2, 3;
 
+CREATE INDEX guardian_health_retention_time ON guardian_health(time);
+
+-- Observations
+--
+-- Request handlers read observations; background workers own remote I/O.
+CREATE TABLE federation_observations (
+    federation_id BYTEA NOT NULL REFERENCES federations(federation_id),
+    kind TEXT NOT NULL,
+    data JSONB NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (federation_id, kind)
+);
+
 -- Module schemas
 --
 -- Each module owns a schema, fmo_<kind>, for the tables it derives from
@@ -386,43 +598,27 @@ FROM sessions s
          CROSS JOIN (VALUES ('mint'), ('wallet'), ('ln')) AS k(kind)
 GROUP BY k.kind, s.federation_id;
 
--- A module added to a build later fills in the amounts of its items, which
--- ingest stored without them. Keep the counters right for those updates too,
--- as the insert triggers do for new rows.
-CREATE FUNCTION federation_totals_update_volume() RETURNS TRIGGER AS $$
-DECLARE
-    delta BIGINT := COALESCE(NEW.amount_msat, 0) - COALESCE(OLD.amount_msat, 0);
-    wallet_delta BIGINT := CASE WHEN NEW.kind = 'wallet' THEN delta ELSE 0 END;
-BEGIN
-    INSERT INTO federation_totals (federation_id, tx_volume_msat, wallet_in_msat)
-    VALUES (NEW.federation_id, delta, wallet_delta)
-    ON CONFLICT (federation_id) DO UPDATE
-        SET tx_volume_msat = federation_totals.tx_volume_msat + delta,
-            wallet_in_msat = federation_totals.wallet_in_msat + wallet_delta;
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER transaction_inputs_update_totals
-    AFTER UPDATE OF amount_msat ON transaction_inputs
-    FOR EACH ROW
-    WHEN (OLD.amount_msat IS DISTINCT FROM NEW.amount_msat)
-    EXECUTE FUNCTION federation_totals_update_volume();
-
-CREATE FUNCTION federation_totals_update_wallet_out() RETURNS TRIGGER AS $$
-DECLARE
-    delta BIGINT := COALESCE(NEW.amount_msat, 0) - COALESCE(OLD.amount_msat, 0);
-BEGIN
-    INSERT INTO federation_totals (federation_id, wallet_out_msat)
-    VALUES (NEW.federation_id, delta)
-    ON CONFLICT (federation_id) DO UPDATE
-        SET wallet_out_msat = federation_totals.wallet_out_msat + delta;
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER transaction_outputs_update_totals
-    AFTER UPDATE OF amount_msat ON transaction_outputs
-    FOR EACH ROW
-    WHEN (NEW.kind = 'wallet' AND OLD.amount_msat IS DISTINCT FROM NEW.amount_msat)
-    EXECUTE FUNCTION federation_totals_update_wallet_out();
+-- Unused objects
+--
+-- Never read
+DROP VIEW latest_guardian_health;
+-- Backed the foreign key to block_times dropped above; nothing looks votes up
+-- by height
+DROP INDEX block_height_vote_heights;
+-- Nothing reads votes by fetch time
+DROP INDEX nostr_votes_fetch_time;
+-- Leading columns of their table's primary key, whose index serves the same
+-- lookups
+DROP INDEX federation_sessions;
+DROP INDEX federation_transactions;
+DROP INDEX federation_inputs;
+DROP INDEX federation_transaction_inputs;
+DROP INDEX federation_outputs;
+DROP INDEX federation_transaction_outputs;
+DROP INDEX block_height_vote_federation_sessions;
+DROP INDEX federation_consensus_items;
+DROP INDEX federation_session_consensus_items;
+DROP INDEX federation_input_details;
+DROP INDEX federation_transaction_input_details;
+DROP INDEX federation_output_details;
+DROP INDEX federation_transaction_output_details;

@@ -5,7 +5,6 @@ use std::time::{Duration, SystemTime};
 use anyhow::{anyhow, bail, ensure, Context};
 use axum::extract::{Path, State};
 use axum::Json;
-use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::{FederationId, JsonClientConfig};
 use fedimint_core::invite_code::InviteCode;
 use fedimint_meta_client::api::MetaFederationApi;
@@ -14,8 +13,9 @@ use serde::de::DeserializeOwned;
 use tokio::sync::RwLock;
 use tracing::warn;
 
+use crate::federation::observer::FederationObserver;
 use crate::meta::federation_meta;
-use crate::util::{federation_api, make_room};
+use crate::util::make_room;
 use crate::AppState;
 
 pub type MetaFields = BTreeMap<String, serde_json::Value>;
@@ -121,7 +121,7 @@ impl ConsensusMetaCache {
     pub async fn fetch_meta_cached(
         &self,
         config: &JsonClientConfig,
-        connectors: &ConnectorRegistry,
+        observer: &FederationObserver,
     ) -> Option<MetaFields> {
         let federation_id = config.global.calculate_federation_id();
         let current_meta_cache_entry = {
@@ -154,29 +154,29 @@ impl ConsensusMetaCache {
 
                     let self_inner = self.metas.clone();
                     let config_inner = config.clone();
-                    let connectors = connectors.clone();
+                    let observer = observer.clone();
                     tokio::task::spawn(async move {
-                        Self::update_meta_cache(&self_inner, &config_inner, &connectors).await;
+                        Self::update_meta_cache(&self_inner, &config_inner, &observer).await;
                     });
                 }
                 meta
             }
             None => {
                 // TODO: deduplicate efforts by making the content of the map subscribable
-                Self::update_meta_cache(&self.metas, config, connectors).await
+                Self::update_meta_cache(&self.metas, config, observer).await
             }
         }
     }
 
-    pub async fn update_meta_cache(
+    async fn update_meta_cache(
         inner: &ConsensusMetaCacheInner,
         config: &JsonClientConfig,
-        connectors: &ConnectorRegistry,
+        observer: &FederationObserver,
     ) -> Option<MetaFields> {
         let federation_id = config.global.calculate_federation_id();
         let meta = tokio::time::timeout(
             CONSENSUS_META_TIMEOUT,
-            Self::try_fetch_meta_inner(config, connectors),
+            Self::try_fetch_meta_inner(config, observer),
         )
         .await
         .unwrap_or_else(|_| Err(anyhow!("timed out")))
@@ -195,7 +195,7 @@ impl ConsensusMetaCache {
 
     pub(crate) async fn try_fetch_meta_inner(
         config: &JsonClientConfig,
-        connectors: &ConnectorRegistry,
+        observer: &FederationObserver,
     ) -> anyhow::Result<Option<MetaFields>> {
         let Some((meta_instance_id, _)) = config
             .modules
@@ -205,9 +205,9 @@ impl ConsensusMetaCache {
             bail!("No meta module found in federation");
         };
 
-        // Reuse the observer's registry: one built per refresh keeps its
-        // guardian connections open
-        let api_client = federation_api(connectors, &config.global)?;
+        // The observer's shared client: one built per refresh keeps its
+        // guardian connections open for the life of the process
+        let api_client = observer.federation_api(&config.global)?;
 
         let module_api = api_client.with_module(*meta_instance_id);
 

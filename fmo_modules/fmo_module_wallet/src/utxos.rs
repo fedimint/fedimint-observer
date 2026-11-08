@@ -3,18 +3,19 @@
 //! vouch, against the chain
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::str::FromStr;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Context;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use bitcoin::hashes::Hash;
-use bitcoin::{Address, OutPoint, Txid};
+use bitcoin::{Network, OutPoint, Txid};
 use fedimint_api_client::api::FederationApiExt;
-use fedimint_core::config::FederationId;
+use fedimint_core::config::{ClientConfig, FederationId};
+use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::encoding::Encodable;
 use fedimint_core::endpoint_constants::STATUS_ENDPOINT;
 use fedimint_core::module::ApiRequestErased;
@@ -24,30 +25,51 @@ use fedimint_wallet_common::{TxOutputSummary, WalletSummary};
 use fmo_api_types::{
     FederationUtxo, FederationUtxosResponse, GuardianClaimedUtxo, GuardianClaimedUtxoState,
     GuardianUtxoClaim, GuardianUtxoClaimStatus, GuardianUtxoDisagreementKind, GuardianUtxoReport,
-    UtxoComparisonRow, UtxoComparisonStatus,
+    UtxoComparisonRow, UtxoComparisonStatus, UtxoStatusCounts, UtxoView,
 };
-use fmo_core::module::{federation_api, module_instance_id, query, ApiResult, Services};
-use futures::future::join_all;
+use fmo_core::module::{module_instance_id, query, ApiError, ApiResult, ClientError, Services};
+use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use postgres_from_row::FromRow;
-use tracing::debug;
+use tokio::time::Instant;
+use tracing::{debug, warn};
 
-/// Guardian wallet summaries younger than this are reused, so page views don't
-/// each send a request to every guardian.
-const GUARDIAN_CLAIMS_TTL: Duration = Duration::from_secs(30);
+use crate::network::{address_on_network, federation_wallet_network};
 
-type GuardianClaimsSlot = Arc<tokio::sync::Mutex<Option<(Instant, Vec<GuardianUtxoClaim>)>>>;
+/// A comparison younger than this is served as is.
+const UTXO_REPORT_FRESH: Duration = Duration::from_secs(60);
+/// A comparison that left something out (a guardian cut off, a chain lookup
+/// unfinished) is replaced in the background after this.
+const UTXO_REPORT_INCOMPLETE_FRESH: Duration = Duration::from_secs(10);
+/// Older comparisons, up to this age, are served while a background refresh
+/// replaces them, so only the first view after a long pause waits for the
+/// guardians and the chain.
+const UTXO_REPORT_MAX_STALE: Duration = Duration::from_secs(15 * 60);
+
+/// How long each guardian gets for its wallet summary and status
+const GUARDIAN_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// While a viewer waits: once a threshold of guardians answered, how much
+/// longer the others get. Guardians cut off count as not answering in this
+/// comparison, which is then refreshed in the background with the full timeout.
+const GUARDIAN_QUORUM_GRACE: Duration = Duration::from_secs(2);
 
 /// Unspent and missing results are rechecked after this; spends are final.
 const ONCHAIN_CHECK_TTL: Duration = Duration::from_secs(10 * 60);
-/// Upper bound on how long a page load waits for chain lookups. Results that
-/// arrive in time are cached, so a later load continues where this one stopped.
-const ONCHAIN_CHECK_DEADLINE: Duration = Duration::from_secs(8);
+/// While a viewer waits: bound on chain lookups. Results that arrive in time
+/// are cached, and a comparison missing some is refreshed in the background,
+/// which continues where this one stopped.
+const ONCHAIN_CHECK_DEADLINE: Duration = Duration::from_secs(4);
+/// Bound on the chain lookups of a background refresh
+const ONCHAIN_REFRESH_DEADLINE: Duration = Duration::from_secs(60);
 const ONCHAIN_CHECK_CONCURRENCY: usize = 8;
+
+/// Rows per page unless the request says otherwise, as the frontend shows
+const UTXOS_DEFAULT_LIMIT: usize = 25;
+const UTXOS_MAX_LIMIT: usize = 100;
 
 /// State of a transaction output according to the blockchain
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnChainOutput {
+enum OnChainOutput {
     /// `amount` is only looked up when the caller asked for it
     Unspent {
         amount: Option<bitcoin::Amount>,
@@ -63,43 +85,262 @@ pub enum OnChainOutput {
 /// the mempool instance again
 #[derive(Default)]
 pub(crate) struct UtxoCaches {
-    guardian_claims: Mutex<HashMap<FederationId, GuardianClaimsSlot>>,
+    reports: Mutex<HashMap<FederationId, Arc<ReportSlot>>>,
     onchain: Mutex<HashMap<OutPoint, (Instant, OnChainOutput)>>,
 }
 
+/// One federation's latest comparison
+#[derive(Default)]
+struct ReportSlot {
+    latest: Mutex<Option<CachedReport>>,
+    /// Held by whoever computes the comparison, so concurrent misses share one
+    /// computation and at most one background refresh runs at a time
+    computing: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Clone)]
+struct CachedReport {
+    report: Arc<UtxoReport>,
+    fresh_until: Instant,
+    expires_at: Instant,
+}
+
+impl ReportSlot {
+    /// The cached comparison, unless it is too old to serve at all
+    fn servable(&self, now: Instant) -> Option<CachedReport> {
+        self.latest
+            .lock()
+            .expect("UTXO report cache lock poisoned")
+            .clone()
+            .filter(|cached| now < cached.expires_at)
+    }
+
+    fn store(&self, report: UtxoReport, complete: bool) -> Arc<UtxoReport> {
+        let now = Instant::now();
+        let report = Arc::new(report);
+        *self.latest.lock().expect("UTXO report cache lock poisoned") = Some(CachedReport {
+            report: report.clone(),
+            fresh_until: now
+                + if complete {
+                    UTXO_REPORT_FRESH
+                } else {
+                    UTXO_REPORT_INCOMPLETE_FRESH
+                },
+            expires_at: now + UTXO_REPORT_MAX_STALE,
+        });
+        report
+    }
+}
+
+/// Whether the comparison is computed for a waiting viewer, who gets it
+/// sooner, or refreshed in the background, which waits for everything
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Interactive,
+    Background,
+}
+
+impl Mode {
+    fn guardian_grace(self) -> Option<Duration> {
+        match self {
+            Mode::Interactive => Some(GUARDIAN_QUORUM_GRACE),
+            Mode::Background => None,
+        }
+    }
+
+    fn onchain_deadline(self) -> Duration {
+        match self {
+            Mode::Interactive => ONCHAIN_CHECK_DEADLINE,
+            Mode::Background => ONCHAIN_REFRESH_DEADLINE,
+        }
+    }
+}
+
+/// The federation a comparison is about
+#[derive(Clone)]
+struct Target {
+    federation_id: FederationId,
+    config: ClientConfig,
+    wallet_id: ModuleInstanceId,
+    network: Network,
+}
+
 /// The endpoint's view of core and the module's caches
-struct Utxos<'a> {
-    services: &'a Services,
-    caches: &'a UtxoCaches,
+#[derive(Clone)]
+struct Utxos {
+    services: Services,
+    caches: Arc<UtxoCaches>,
 }
 
 /// `GET /federations/:federation_id/utxos`
 pub(crate) fn federation_routes(caches: Arc<UtxoCaches>) -> Router<Services> {
     Router::new().route(
         "/utxos",
-        get(move |path, state| get_federation_utxos(caches.clone(), path, state)),
+        get(move |path, query, state| get_federation_utxos(caches.clone(), path, query, state)),
     )
 }
 
 async fn get_federation_utxos(
     caches: Arc<UtxoCaches>,
     Path(federation_id): Path<FederationId>,
+    Query(params): Query<HashMap<String, String>>,
     State(services): State<Services>,
 ) -> ApiResult<Json<FederationUtxosResponse>> {
-    let utxos = Utxos {
-        services: &services,
-        caches: &caches,
+    let request = UtxoPageRequest::parse(&params)?;
+    let federation = services.federation(federation_id).await?.ok_or_else(|| {
+        ClientError::not_found(format!("Federation {federation_id} is not observed"))
+    })?;
+    let config = federation.config;
+    let wallet_id = module_instance_id(&config, "wallet")
+        .ok_or_else(|| ClientError::not_found("Federation has no Wallet v1 module"))?;
+    let network = federation_wallet_network(&config, wallet_id)?;
+    let utxos = Utxos { services, caches };
+    let report = utxos
+        .report(Target {
+            federation_id,
+            config,
+            wallet_id,
+            network,
+        })
+        .await?;
+    Ok(Json(report.page(&request)))
+}
+
+/// What page of which rows a request asks for
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UtxoPageRequest {
+    view: UtxoView,
+    /// Trimmed and lowercased; empty matches everything
+    search: String,
+    /// 1-based
+    page: usize,
+    limit: usize,
+}
+
+impl UtxoPageRequest {
+    /// `view=all|verified|pending|mismatch`, `search`, `page` (from 1) and
+    /// `limit` (1 to 100); anything else is a 400
+    fn parse(params: &HashMap<String, String>) -> ApiResult<Self> {
+        let view = match params.get("view").map(String::as_str) {
+            None | Some("all") => UtxoView::All,
+            Some("verified") => UtxoView::Verified,
+            Some("pending") => UtxoView::Pending,
+            Some("mismatch") => UtxoView::Mismatch,
+            Some(_) => {
+                return Err(ApiError::bad_request(
+                    "view must be all, verified, pending or mismatch",
+                ))
+            }
+        };
+        let number = |name: &str, default: usize, max: usize| -> ApiResult<usize> {
+            let Some(value) = params.get(name) else {
+                return Ok(default);
+            };
+            value
+                .parse::<usize>()
+                .ok()
+                .filter(|value| (1..=max).contains(value))
+                .ok_or_else(|| {
+                    ApiError::bad_request(if max == usize::MAX {
+                        format!("{name} must be a positive integer")
+                    } else {
+                        format!("{name} must be an integer from 1 to {max}")
+                    })
+                })
+        };
+        Ok(Self {
+            view,
+            search: params
+                .get("search")
+                .map(|search| search.trim().to_lowercase())
+                .unwrap_or_default(),
+            page: number("page", 1, usize::MAX)?,
+            limit: number("limit", UTXOS_DEFAULT_LIMIT, UTXOS_MAX_LIMIT)?,
+        })
+    }
+}
+
+/// A federation's full comparison, computed once per refresh and paged per
+/// request
+struct UtxoReport {
+    threshold: usize,
+    guardians: Vec<GuardianUtxoReport>,
+    /// Most severe status first, then largest amount first
+    rows: Vec<UtxoComparisonRow>,
+    counts: UtxoStatusCounts,
+}
+
+impl UtxoReport {
+    /// The requested page of the rows matching the view and search
+    fn page(&self, request: &UtxoPageRequest) -> FederationUtxosResponse {
+        let matching = self
+            .rows
+            .iter()
+            .filter(|row| row_matches(row, request.view, &request.search))
+            .collect::<Vec<_>>();
+        let page_count = matching.len().div_ceil(request.limit).max(1);
+        // Clamped so a refresh that shrinks the list never serves an empty page
+        let page = request.page.min(page_count);
+        FederationUtxosResponse {
+            threshold: self.threshold,
+            guardians: self.guardians.clone(),
+            utxos: matching
+                .iter()
+                .skip((page - 1) * request.limit)
+                .take(request.limit)
+                .map(|row| (*row).clone())
+                .collect(),
+            counts: self.counts,
+            total_rows: matching.len(),
+            page,
+            limit: request.limit,
+            page_count,
+        }
+    }
+}
+
+/// Whether a row is in `view` and matches `search` (trimmed and lowercased):
+/// its outpoint, address or amount in BTC with 8 decimals (`0.00150000`)
+/// contains it
+fn row_matches(row: &UtxoComparisonRow, view: UtxoView, search: &str) -> bool {
+    let in_view = match view {
+        UtxoView::All => true,
+        UtxoView::Verified => row.status == UtxoComparisonStatus::Verified,
+        UtxoView::Pending => row.status == UtxoComparisonStatus::Pending,
+        UtxoView::Mismatch => row.status == UtxoComparisonStatus::Mismatch,
     };
-    let (observed, guardian_claims) = tokio::try_join!(
-        utxos.federation_utxos(federation_id),
-        utxos.guardian_utxo_claims(federation_id),
-    )?;
-    let mut comparison = compare_utxos(&observed, &guardian_claims);
-    let onchain = utxos
-        .onchain_outputs(comparison.onchain_check_requests())
-        .await;
-    comparison.apply_onchain_evidence(&onchain);
-    Ok(comparison.into_response().into())
+    in_view
+        && (search.is_empty()
+            || row.out_point.to_string().to_lowercase().contains(search)
+            || row.address.as_ref().is_some_and(|address| {
+                address
+                    .assume_checked_ref()
+                    .to_string()
+                    .to_lowercase()
+                    .contains(search)
+            })
+            || btc_amount(row.amount).contains(search))
+}
+
+/// An amount in BTC with 8 decimals, as the frontend shows it (`0.00150000`)
+fn btc_amount(amount: Amount) -> String {
+    let sats = amount.msats.saturating_add(500) / 1000;
+    format!("{}.{:08}", sats / 100_000_000, sats % 100_000_000)
+}
+
+fn status_counts(rows: &[UtxoComparisonRow]) -> UtxoStatusCounts {
+    let count = |status| rows.iter().filter(|row| row.status == status).count();
+    UtxoStatusCounts {
+        all: rows.len(),
+        verified: count(UtxoComparisonStatus::Verified),
+        pending: count(UtxoComparisonStatus::Pending),
+        mismatch: count(UtxoComparisonStatus::Mismatch),
+    }
+}
+
+/// `n - f`: what Fedimint, tolerating f = (n - 1) / 3 faulty guardians, acts on
+fn agreement_threshold(num_guardians: usize) -> usize {
+    num_guardians - num_guardians.saturating_sub(1) / 3
 }
 
 /// Every output judged against what a threshold of guardians agrees on, and
@@ -139,7 +380,7 @@ fn compare_utxos(
     // Fedimint tolerates f = (n - 1) / 3 faulty guardians and acts on what
     // n - f of them agree on, so that agreement is what honest guardians hold
     let num_guardians = guardian_claims.len();
-    let threshold = num_guardians - num_guardians.saturating_sub(1) / 3;
+    let threshold = agreement_threshold(num_guardians);
     let responding = guardian_claims
         .iter()
         .filter(|claim| matches!(claim.status, GuardianUtxoClaimStatus::Ok))
@@ -595,24 +836,91 @@ impl UtxoComparison {
         }
     }
 
-    fn into_response(mut self) -> FederationUtxosResponse {
+    fn into_report(mut self) -> UtxoReport {
         self.rows.sort_by(|left, right| {
             left.status
                 .cmp(&right.status)
                 .then(right.amount.cmp(&left.amount))
         });
-        FederationUtxosResponse {
+        UtxoReport {
             threshold: self.threshold,
             guardians: self.guardians,
-            utxos: self.rows,
+            counts: status_counts(&self.rows),
+            rows: self.rows,
         }
     }
 }
 
-impl Utxos<'_> {
-    pub(crate) async fn federation_utxos(
+impl Utxos {
+    /// The federation's comparison: cached, refreshed in the background once
+    /// stale, and computed while the viewer waits only when there is none to
+    /// serve
+    async fn report(&self, target: Target) -> anyhow::Result<Arc<UtxoReport>> {
+        let slot = self
+            .caches
+            .reports
+            .lock()
+            .expect("UTXO report cache lock poisoned")
+            .entry(target.federation_id)
+            .or_default()
+            .clone();
+
+        if let Some(cached) = slot.servable(Instant::now()) {
+            if Instant::now() >= cached.fresh_until {
+                // Stale while revalidate: one refresh at a time per federation
+                if let Ok(computing) = slot.computing.clone().try_lock_owned() {
+                    let this = self.clone();
+                    let slot = slot.clone();
+                    tokio::spawn(async move {
+                        let _computing = computing;
+                        match this.compute(&target, Mode::Background).await {
+                            Ok((report, complete)) => {
+                                slot.store(report, complete);
+                            }
+                            Err(error) => warn!(
+                                federation_id = %target.federation_id,
+                                ?error,
+                                "UTXO comparison refresh failed; serving the previous one"
+                            ),
+                        }
+                    });
+                }
+            }
+            return Ok(cached.report);
+        }
+
+        // Concurrent misses wait here for the first one's computation
+        let _computing = slot.computing.lock().await;
+        if let Some(cached) = slot.servable(Instant::now()) {
+            return Ok(cached.report);
+        }
+        let (report, complete) = self.compute(&target, Mode::Interactive).await?;
+        Ok(slot.store(report, complete))
+    }
+
+    /// The full comparison, and whether nothing was left out of it for time
+    async fn compute(&self, target: &Target, mode: Mode) -> anyhow::Result<(UtxoReport, bool)> {
+        let (observed, (guardian_claims, claims_complete)) = tokio::try_join!(
+            self.federation_utxos(target.federation_id, target.network),
+            self.guardian_utxo_claims(target, mode),
+        )?;
+        let mut comparison = compare_utxos(&observed, &guardian_claims);
+        let (onchain, onchain_complete) = self
+            .onchain_outputs(comparison.onchain_check_requests(), mode.onchain_deadline())
+            .await;
+        comparison.apply_onchain_evidence(&onchain);
+        Ok((
+            comparison.into_report(),
+            claims_complete && onchain_complete,
+        ))
+    }
+
+    /// The outputs in the observer's history, with addresses for the
+    /// federation's network
+    async fn federation_utxos(
         &self,
         federation_id: FederationId,
+        network: Network,
     ) -> anyhow::Result<Vec<FederationUtxo>> {
         #[derive(Debug, FromRow)]
         struct FederationUtxoRaw {
@@ -624,14 +932,13 @@ impl Utxos<'_> {
 
         query::<FederationUtxoRaw>(
             &self.services.connection().await?,
-            // The wallet module's view, read here until the UTXO endpoint
-            // moves into the module
             // language=postgresql
             "SELECT on_chain_txid, on_chain_vout, address, amount_msat FROM fmo_wallet.utxos WHERE federation_id = $1 ORDER BY amount_msat DESC",
             &[&federation_id.consensus_encode_to_vec()],
         ).await?.into_iter().map(|utxo| {
             Result::<_, anyhow::Error>::Ok(FederationUtxo {
-                address: Address::from_str(&utxo.address)?,
+                // Older rows hold mainnet renderings whatever the network
+                address: address_on_network(&utxo.address, network)?,
                 out_point: OutPoint {
                     txid: Txid::from_slice(&utxo.on_chain_txid)?,
                     vout: utxo.on_chain_vout.try_into()?,
@@ -641,132 +948,99 @@ impl Utxos<'_> {
         }).collect()
     }
 
-    pub(crate) async fn guardian_utxo_claims(
+    /// Every guardian's wallet summary, and whether every guardian got its
+    /// full time to answer
+    async fn guardian_utxo_claims(
         &self,
-        federation_id: FederationId,
-    ) -> anyhow::Result<Vec<GuardianUtxoClaim>> {
-        // Unknown ids from the request path must not get a cache slot each
-        self.services.ensure_observed(federation_id).await?;
-        let slot = self
-            .caches
-            .guardian_claims
-            .lock()
-            .expect("guardian claims cache lock poisoned")
-            .entry(federation_id)
-            .or_default()
-            .clone();
-        // Held across the fetch so concurrent misses share one round of requests
-        let mut cached = slot.lock().await;
-        if let Some((fetched_at, claims)) = cached.as_ref() {
-            if fetched_at.elapsed() < GUARDIAN_CLAIMS_TTL {
-                return Ok(claims.clone());
-            }
-        }
+        target: &Target,
+        mode: Mode,
+    ) -> anyhow::Result<(Vec<GuardianUtxoClaim>, bool)> {
+        let endpoints = &target.config.global.api_endpoints;
+        // The process-wide client: one per request would leak a connection to
+        // every guardian each time
+        let api = self.services.federation_api(&target.config.global)?;
+        let module_api = api.with_module(target.wallet_id);
 
-        let claims = self.fetch_guardian_utxo_claims(federation_id).await?;
-        *cached = Some((Instant::now(), claims.clone()));
-        Ok(claims)
-    }
-
-    async fn fetch_guardian_utxo_claims(
-        &self,
-        federation_id: FederationId,
-    ) -> anyhow::Result<Vec<GuardianUtxoClaim>> {
-        let federation = self
-            .services
-            .federation(federation_id)
-            .await?
-            .context("Federation not observed")?;
-        let config = federation.config;
-
-        let Some(wallet_module_id) = module_instance_id(&config, "wallet") else {
-            return Ok(config
-                .global
-                .api_endpoints
-                .keys()
-                .map(|peer_id| GuardianUtxoClaim {
-                    guardian_id: peer_id.to_usize() as u16,
-                    status: GuardianUtxoClaimStatus::Unavailable,
-                    session_count: None,
-                    utxos: Vec::new(),
-                    error: Some("federation config has no wallet module".to_owned()),
-                })
-                .collect());
-        };
-
-        let api = federation_api(self.services.connectors(), &config.global)?;
-        let module_api = api.with_module(wallet_module_id);
-
-        let mut claims = join_all(config.global.api_endpoints.keys().map(|&peer_id| {
-            let api = api.clone();
-            let module_api = module_api.clone();
-            async move {
-                let summary = module_api.request_single_peer::<WalletSummary>(
-                    WALLET_SUMMARY_ENDPOINT.to_owned(),
-                    ApiRequestErased::default(),
-                    peer_id,
-                );
-                let status = api.request_single_peer::<serde_json::Value>(
-                    STATUS_ENDPOINT.to_owned(),
-                    ApiRequestErased::default(),
-                    peer_id,
-                );
-                // Timed out separately so a slow status call can't discard a
-                // wallet summary that did arrive
-                let (summary, status) = futures::future::join(
-                    tokio::time::timeout(Duration::from_secs(10), summary),
-                    tokio::time::timeout(Duration::from_secs(10), status),
-                )
-                .await;
-
+        let requests = endpoints
+            .keys()
+            .map(|&peer_id| {
+                let api = api.clone();
+                let module_api = module_api.clone();
                 let guardian_id = peer_id.to_usize() as u16;
-                let (status, session_count, utxos, error) = match summary {
-                    Ok(Ok(summary)) => {
-                        let session_count = status.ok().and_then(Result::ok).and_then(|status| {
-                            status.get("federation")?.get("session_count")?.as_u64()
-                        });
-                        (
-                            GuardianUtxoClaimStatus::Ok,
-                            session_count,
-                            wallet_summary_claimed_utxos(summary),
-                            None,
-                        )
-                    }
-                    Ok(Err(error)) => (
-                        GuardianUtxoClaimStatus::Error,
-                        None,
-                        Vec::new(),
-                        Some(error.to_string()),
-                    ),
-                    Err(_) => (
-                        GuardianUtxoClaimStatus::Error,
-                        None,
-                        Vec::new(),
-                        Some("Guardian wallet summary timed out".to_owned()),
-                    ),
-                };
-                GuardianUtxoClaim {
-                    guardian_id,
-                    status,
-                    session_count,
-                    utxos,
-                    error,
-                }
-            }
-        }))
-        .await;
-        mark_lagging_guardians(&mut claims, config.global.api_endpoints.len());
+                let claim = async move {
+                    let summary = module_api.request_single_peer::<WalletSummary>(
+                        WALLET_SUMMARY_ENDPOINT.to_owned(),
+                        ApiRequestErased::default(),
+                        peer_id,
+                    );
+                    let status = api.request_single_peer::<serde_json::Value>(
+                        STATUS_ENDPOINT.to_owned(),
+                        ApiRequestErased::default(),
+                        peer_id,
+                    );
+                    // Timed out separately so a slow status call can't discard a
+                    // wallet summary that did arrive
+                    let (summary, status) = futures::future::join(
+                        tokio::time::timeout(GUARDIAN_REQUEST_TIMEOUT, summary),
+                        tokio::time::timeout(GUARDIAN_REQUEST_TIMEOUT, status),
+                    )
+                    .await;
 
-        Ok(claims)
+                    let (status, session_count, utxos, error) = match summary {
+                        Ok(Ok(summary)) => {
+                            let session_count =
+                                status.ok().and_then(Result::ok).and_then(|status| {
+                                    status.get("federation")?.get("session_count")?.as_u64()
+                                });
+                            (
+                                GuardianUtxoClaimStatus::Ok,
+                                session_count,
+                                wallet_summary_claimed_utxos(summary),
+                                None,
+                            )
+                        }
+                        Ok(Err(error)) => (
+                            GuardianUtxoClaimStatus::Error,
+                            None,
+                            Vec::new(),
+                            Some(error.to_string()),
+                        ),
+                        Err(_) => (
+                            GuardianUtxoClaimStatus::Error,
+                            None,
+                            Vec::new(),
+                            Some("Guardian wallet summary timed out".to_owned()),
+                        ),
+                    };
+                    GuardianUtxoClaim {
+                        guardian_id,
+                        status,
+                        session_count,
+                        utxos,
+                        error,
+                    }
+                };
+                (guardian_id, claim)
+            })
+            .collect::<Vec<_>>();
+        let quorum = mode
+            .guardian_grace()
+            .map(|grace| (agreement_threshold(endpoints.len()), grace));
+        let (mut claims, complete) = gather_claims(requests, quorum).await;
+        mark_lagging_guardians(&mut claims, endpoints.len());
+
+        Ok((claims, complete))
     }
 
     /// Looks up outputs on-chain. Each request says whether the output's amount
     /// is needed too, which costs an extra request. Outputs whose lookup fails
-    /// or does not finish within [`ONCHAIN_CHECK_DEADLINE`] are left out.
-    pub(crate) async fn onchain_outputs(
+    /// or does not finish by `deadline` are left out, and the result says
+    /// whether any were.
+    async fn onchain_outputs(
         &self,
         requests: Vec<(OutPoint, bool)>,
-    ) -> HashMap<OutPoint, OnChainOutput> {
+        deadline: Duration,
+    ) -> (HashMap<OutPoint, OnChainOutput>, bool) {
         let mut results = HashMap::new();
         let mut to_fetch = Vec::new();
         {
@@ -792,9 +1066,10 @@ impl Utxos<'_> {
             }
         }
         if to_fetch.is_empty() {
-            return results;
+            return (results, true);
         }
 
+        let wanted = results.len() + to_fetch.len();
         let mut lookups = futures::stream::iter(to_fetch)
             .map(|(out_point, with_amount)| {
                 let client = self.services.esplora();
@@ -804,7 +1079,7 @@ impl Utxos<'_> {
                 }
             })
             .buffer_unordered(ONCHAIN_CHECK_CONCURRENCY);
-        let _ = tokio::time::timeout(ONCHAIN_CHECK_DEADLINE, async {
+        let _ = tokio::time::timeout(deadline, async {
             while let Some((out_point, output)) = lookups.next().await {
                 match output {
                     Ok(output) => {
@@ -821,8 +1096,66 @@ impl Utxos<'_> {
         })
         .await;
 
-        results
+        let complete = results.len() == wanted;
+        (results, complete)
     }
+}
+
+/// Collects each guardian's claim, in guardian order. With a quorum
+/// `(threshold, grace)`, guardians still outstanding `grace` after `threshold`
+/// of them answered are reported as not answering in time, and the result says
+/// it is incomplete.
+async fn gather_claims<F>(
+    requests: Vec<(u16, F)>,
+    quorum: Option<(usize, Duration)>,
+) -> (Vec<GuardianUtxoClaim>, bool)
+where
+    F: Future<Output = GuardianUtxoClaim>,
+{
+    let mut outstanding = requests.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>();
+    let mut pending = requests
+        .into_iter()
+        .map(|(_, claim)| claim)
+        .collect::<FuturesUnordered<_>>();
+    let mut claims = Vec::new();
+    let mut answered = 0;
+    let mut cutoff = None;
+    loop {
+        let next = match cutoff {
+            Some(cutoff) => match tokio::time::timeout_at(cutoff, pending.next()).await {
+                Ok(next) => next,
+                Err(_) => break,
+            },
+            None => pending.next().await,
+        };
+        let Some(claim) = next else {
+            break;
+        };
+        outstanding.remove(&claim.guardian_id);
+        if matches!(claim.status, GuardianUtxoClaimStatus::Ok) {
+            answered += 1;
+        }
+        claims.push(claim);
+        if let (None, Some((threshold, grace))) = (cutoff, quorum) {
+            if answered >= threshold {
+                cutoff = Some(Instant::now() + grace);
+            }
+        }
+    }
+    let complete = outstanding.is_empty();
+    claims.extend(
+        outstanding
+            .into_iter()
+            .map(|guardian_id| GuardianUtxoClaim {
+                guardian_id,
+                status: GuardianUtxoClaimStatus::Error,
+                session_count: None,
+                utxos: Vec::new(),
+                error: Some("Guardian wallet summary timed out".to_owned()),
+            }),
+    );
+    claims.sort_by_key(|claim| claim.guardian_id);
+    (claims, complete)
 }
 
 async fn fetch_onchain_output(
@@ -921,4 +1254,255 @@ fn append_claimed_utxos(
         amount: Amount::from_sats(txo.amount.to_sat()),
         state,
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    use super::*;
+
+    fn row(
+        txid_byte: u8,
+        sats: u64,
+        address: Option<&str>,
+        status: UtxoComparisonStatus,
+    ) -> UtxoComparisonRow {
+        UtxoComparisonRow {
+            out_point: OutPoint {
+                txid: Txid::from_byte_array([txid_byte; 32]),
+                vout: 1,
+            },
+            amount: Amount::from_sats(sats),
+            address: address.map(|address| address.parse().unwrap()),
+            guardian_states: BTreeMap::new(),
+            status,
+            disagreement: None,
+            detail: None,
+        }
+    }
+
+    fn report(rows: Vec<UtxoComparisonRow>) -> UtxoReport {
+        UtxoReport {
+            threshold: 3,
+            guardians: Vec::new(),
+            counts: status_counts(&rows),
+            rows,
+        }
+    }
+
+    fn request(pairs: &[(&str, &str)]) -> ApiResult<UtxoPageRequest> {
+        UtxoPageRequest::parse(
+            &pairs
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn page_requests_default_and_reject_out_of_range_values() {
+        assert_eq!(
+            request(&[]).unwrap(),
+            UtxoPageRequest {
+                view: UtxoView::All,
+                search: String::new(),
+                page: 1,
+                limit: 25,
+            }
+        );
+        let parsed = request(&[
+            ("view", "mismatch"),
+            ("search", "  TB1Q  "),
+            ("page", "3"),
+            ("limit", "100"),
+        ])
+        .unwrap();
+        assert_eq!(parsed.view, UtxoView::Mismatch);
+        assert_eq!(parsed.search, "tb1q");
+        assert_eq!((parsed.page, parsed.limit), (3, 100));
+
+        for bad in [
+            ("view", "spent"),
+            ("page", "0"),
+            ("page", "-1"),
+            ("page", "x"),
+            ("limit", "0"),
+            ("limit", "101"),
+            ("limit", ""),
+        ] {
+            let status = request(&[bad]).unwrap_err().into_response().status();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn rows_are_filtered_searched_and_paged_on_the_server() {
+        use UtxoComparisonStatus::*;
+        let report = report(vec![
+            row(
+                0x11,
+                150_000,
+                Some("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"),
+                Mismatch,
+            ),
+            row(
+                0x22,
+                2_000_000,
+                Some("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"),
+                Pending,
+            ),
+            row(0x33, 1_000, None, Pending),
+            row(0x44, 50_000, None, Verified),
+            row(0x55, 60_000, None, Verified),
+            row(0x66, 70_000, None, Verified),
+        ]);
+        let page = |pairs: &[(&str, &str)]| report.page(&request(pairs).unwrap());
+
+        let all = page(&[]);
+        assert_eq!(
+            all.counts,
+            UtxoStatusCounts {
+                all: 6,
+                verified: 3,
+                pending: 2,
+                mismatch: 1,
+            }
+        );
+        assert_eq!(
+            (all.total_rows, all.page, all.limit, all.page_count),
+            (6, 1, 25, 1)
+        );
+        // Same order as the full comparison
+        assert_eq!(
+            all.utxos.iter().map(|row| row.amount).collect::<Vec<_>>(),
+            report.rows.iter().map(|row| row.amount).collect::<Vec<_>>()
+        );
+
+        let verified = page(&[("view", "verified"), ("limit", "2")]);
+        assert_eq!((verified.total_rows, verified.page_count), (3, 2));
+        assert_eq!(verified.utxos.len(), 2);
+        assert_eq!(verified.counts.all, 6, "counts ignore the view");
+        let second = page(&[("view", "verified"), ("limit", "2"), ("page", "2")]);
+        assert_eq!(second.utxos.len(), 1);
+        assert_eq!(second.utxos[0].out_point, report.rows[5].out_point);
+        // Past the end: the last page, not an empty one
+        let clamped = page(&[("view", "verified"), ("limit", "2"), ("page", "9")]);
+        assert_eq!(clamped.page, 2);
+        assert_eq!(clamped.utxos.len(), 1);
+
+        // Amount in BTC with 8 decimals
+        let by_amount = page(&[("search", "0.00150000")]);
+        assert_eq!(by_amount.total_rows, 1);
+        assert_eq!(by_amount.utxos[0].status, Mismatch);
+        assert_eq!(page(&[("search", "0.02000000")]).total_rows, 1);
+        // The frontend's amounts end in an uppercase " BTC" that a lowercased
+        // query never matched, so the unit isn't searchable
+        assert_eq!(page(&[("search", "btc")]).total_rows, 0);
+        // Addresses match case-insensitively, base58 included
+        assert_eq!(page(&[("search", "BC1QW508")]).total_rows, 1);
+        assert_eq!(page(&[("search", "1bvbmseys")]).total_rows, 1);
+        // Outpoints, as txid:vout
+        assert_eq!(
+            page(&[("search", &format!("{}:1", "33".repeat(32)))]).total_rows,
+            1
+        );
+        // Search and view combine
+        assert_eq!(
+            page(&[("search", "bc1q"), ("view", "pending")]).total_rows,
+            0
+        );
+
+        let none = page(&[("search", "nothing like this")]);
+        assert_eq!((none.total_rows, none.page, none.page_count), (0, 1, 1));
+        assert!(none.utxos.is_empty());
+        assert_eq!(none.counts.all, 6);
+    }
+
+    #[test]
+    fn amounts_are_shown_like_the_frontend() {
+        assert_eq!(btc_amount(Amount::from_sats(150_000)), "0.00150000");
+        assert_eq!(
+            btc_amount(Amount::from_sats(2_100_000_000_000_000)),
+            "21000000.00000000"
+        );
+        assert_eq!(btc_amount(Amount::from_msats(0)), "0.00000000");
+    }
+
+    fn claim(guardian_id: u16) -> GuardianUtxoClaim {
+        GuardianUtxoClaim {
+            guardian_id,
+            status: GuardianUtxoClaimStatus::Ok,
+            session_count: Some(10),
+            utxos: Vec::new(),
+            error: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_waiting_viewer_does_not_wait_for_a_silent_guardian() {
+        let requests = (0..4u16)
+            .map(|id| {
+                let claim = async move {
+                    if id == 2 {
+                        std::future::pending::<()>().await;
+                    }
+                    claim(id)
+                };
+                (id, Box::pin(claim))
+            })
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let (claims, complete) = gather_claims(
+            requests,
+            Some((agreement_threshold(4), Duration::from_millis(50))),
+        )
+        .await;
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(!complete);
+        assert_eq!(
+            claims
+                .iter()
+                .map(|claim| claim.guardian_id)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        assert!(matches!(claims[2].status, GuardianUtxoClaimStatus::Error));
+        assert!(matches!(claims[3].status, GuardianUtxoClaimStatus::Ok));
+    }
+
+    #[tokio::test]
+    async fn without_a_quorum_every_guardian_is_awaited() {
+        let requests = (0..4u16)
+            .rev()
+            .map(|id| {
+                let claim = async move {
+                    tokio::time::sleep(Duration::from_millis(u64::from(id) * 20)).await;
+                    claim(id)
+                };
+                (id, Box::pin(claim))
+            })
+            .collect::<Vec<_>>();
+        let (claims, complete) = gather_claims(requests, None).await;
+        assert!(complete);
+        assert_eq!(claims.len(), 4);
+        assert!(claims
+            .iter()
+            .all(|claim| matches!(claim.status, GuardianUtxoClaimStatus::Ok)));
+    }
+
+    #[test]
+    fn incomplete_reports_go_stale_sooner() {
+        let slot = ReportSlot::default();
+        let now = Instant::now();
+        slot.store(report(Vec::new()), false);
+        let cached = slot.servable(now).unwrap();
+        assert!(cached.fresh_until <= now + UTXO_REPORT_INCOMPLETE_FRESH + Duration::from_secs(1));
+        assert!(slot
+            .servable(now + UTXO_REPORT_MAX_STALE + Duration::from_secs(1))
+            .is_none());
+        slot.store(report(Vec::new()), true);
+        assert!(slot.servable(now).unwrap().fresh_until >= now + UTXO_REPORT_FRESH);
+    }
 }

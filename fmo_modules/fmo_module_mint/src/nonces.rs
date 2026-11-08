@@ -2,18 +2,17 @@
 
 use std::collections::HashMap;
 
-use anyhow::ensure;
 use axum::extract::{Path, State};
 use axum::routing::post;
 use axum::{Json, Router};
 use fedimint_core::config::FederationId;
 use fedimint_core::encoding::Encodable;
 use fmo_api_types::{NonceSpendInfo, NoncesRequest};
-use fmo_core::module::{query, ApiResult, Services};
+use fmo_core::module::{query, ApiResult, ClientError, Services};
 use postgres_from_row::FromRow;
 
 /// Each nonce is matched against the federation's mint inputs
-const MAX_NONCES_PER_REQUEST: usize = 1000;
+pub(crate) const MAX_NONCES_PER_REQUEST: usize = 1000;
 
 /// `POST /federations/:federation_id/nonces/spend`
 pub(crate) fn federation_routes() -> Router<Services> {
@@ -30,22 +29,30 @@ async fn get_nonces_spend_info(
         .into())
 }
 
-pub(crate) async fn nonces_spend_info(
+/// Too many nonces is the client's error (400), not the server's
+pub(crate) fn check_nonce_count(nonces: &[String]) -> anyhow::Result<()> {
+    if nonces.len() > MAX_NONCES_PER_REQUEST {
+        return Err(ClientError::bad_request(format!(
+            "At most {MAX_NONCES_PER_REQUEST} nonces can be checked per request"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+async fn nonces_spend_info(
     services: &Services,
     federation_id: FederationId,
     nonces: &[String],
 ) -> anyhow::Result<std::collections::HashMap<String, NonceSpendInfo>> {
     use chrono::{DateTime, Utc};
 
+    check_nonce_count(nonces)?;
+    // 404 for unknown federations, even when no nonces are asked about
+    services.ensure_observed(federation_id).await?;
     if nonces.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    ensure!(
-        nonces.len() <= MAX_NONCES_PER_REQUEST,
-        "At most {MAX_NONCES_PER_REQUEST} nonces can be checked per request"
-    );
-
-    services.ensure_observed(federation_id).await?;
 
     #[derive(Debug, FromRow)]
     struct NonceSpendRow {

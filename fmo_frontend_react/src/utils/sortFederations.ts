@@ -41,7 +41,7 @@ function compareNullable<T>(a: T | null, b: T | null, compare: (a: T, b: T) => n
 
 const byName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' });
 
-export function compareFederations(a: FederationSummary, b: FederationSummary, key: SortKey, direction: SortDirection): number {
+function compareFederations(a: FederationSummary, b: FederationSummary, key: SortKey, direction: SortDirection): number {
   const dir = direction === 'asc' ? 1 : -1;
   const primary = key === 'name'
     ? compareNullable(a.name || null, b.name || null, byName, dir)

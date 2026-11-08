@@ -7,7 +7,6 @@ mod projector;
 mod session;
 mod transaction;
 
-use anyhow::Context;
 use axum::extract::{Path, State};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -18,6 +17,7 @@ use fedimint_core::invite_code::InviteCode;
 use fmo_api_types::{FederationOverview, FederationSummary, FedimintTotals};
 use serde::Deserialize;
 
+use crate::error::ClientError;
 use crate::federation::guardians::get_federation_health;
 use crate::federation::meta::get_federation_meta;
 use crate::federation::observer::FederationObserver;
@@ -81,12 +81,11 @@ pub async fn add_observed_federation(
 ) -> crate::error::Result<Json<FederationId>> {
     state.federation_observer.check_auth(&auth)?;
 
-    let invite: InviteCode = serde_json::from_value(
-        body.get("invite")
-            .context("Request did not contain invite field")?
-            .clone(),
-    )
-    .context("Invalid invite code")?;
+    let invite = body
+        .get("invite")
+        .ok_or_else(|| ClientError::bad_request("Request did not contain invite field"))?;
+    let invite = serde_json::from_value::<InviteCode>(invite.clone())
+        .map_err(|_| ClientError::bad_request("Invalid invite code"))?;
     Ok(state
         .federation_observer
         .add_federation(&invite)
@@ -110,11 +109,7 @@ pub(crate) async fn observed_config_json(
     observer: &FederationObserver,
     federation_id: FederationId,
 ) -> anyhow::Result<JsonClientConfig> {
-    let config = observer
-        .get_federation(federation_id)
-        .await?
-        .context("Federation not observed, you might want to try /config/:federation_invite")?
-        .config;
+    let config = observer.observed_federation(federation_id).await?.config;
     config_to_json(config, observer.modules())
 }
 
@@ -123,6 +118,7 @@ async fn get_federation_overview(
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<FederationOverview>> {
     let observer = &state.federation_observer;
+    observer.ensure_observed(federation_id).await?;
     Ok(FederationOverview {
         session_count: observer.federation_session_count(federation_id).await?,
         total_assets_msat: observer.get_federation_assets(federation_id).await?,
@@ -150,19 +146,24 @@ struct BackfillParams {
     session_end: Option<i32>,
 }
 
+/// Admin: reprocesses stored sessions in the background, answering 202
+/// Accepted with the sessions it covers once it has started
 async fn backfill_federation(
     Path(federation_id): Path<FederationId>,
     AuthBearer(auth): AuthBearer,
     State(state): State<AppState>,
     Json(params): Json<BackfillParams>,
-) -> crate::error::Result<()> {
+) -> crate::error::Result<(axum::http::StatusCode, Json<serde_json::Value>)> {
     state.federation_observer.check_auth(&auth)?;
 
-    Ok(state
+    let (session_start, session_end) = state
         .federation_observer
-        .worker()
-        .backfill_federation(federation_id, params.session_start, params.session_end)
-        .await?)
+        .start_backfill(federation_id, params.session_start, params.session_end)
+        .await?;
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "session_start": session_start, "session_end": session_end })),
+    ))
 }
 
 #[derive(Deserialize, Debug)]

@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test:charts": "node --experimental-strip-types --test scripts/test-charts.mjs",
     "test:pagination": "node --experimental-strip-types --test scripts/test-page-requests.mjs",
-    "test:config": "node --experimental-strip-types --test scripts/test-config.mjs"
+    "test:config": "node --experimental-strip-types --test scripts/test-config.mjs",
+    "test:format": "node --experimental-strip-types --test scripts/test-format.mjs"
   },
   "dependencies": {
     "echarts": "^6.1.0",
