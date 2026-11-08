@@ -241,9 +241,13 @@ impl FederationObserver {
                 g.guardian_id,
                 latest.block_height,
                 -- Reported by the guardian: clamped, so an absurd value
-                -- can't fail the whole federation's health
-                LEAST(GREATEST((latest.status -> 'federation' ->> 'session_count')::numeric, 0),
-                      4294967295)::bigint AS session_count,
+                -- can't fail the whole federation's health. NULL (no answer
+                -- in the window) must stay NULL, and GREATEST/LEAST skip NULLs:
+                -- unguarded, an offline guardian would read as online at session 0.
+                CASE WHEN latest.status IS NOT NULL THEN
+                    LEAST(GREATEST((latest.status -> 'federation' ->> 'session_count')::numeric, 0),
+                          4294967295)::bigint
+                END AS session_count,
                 latest.software_version,
                 last30d.uptime,
                 last30d.latency_ms

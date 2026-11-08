@@ -435,8 +435,8 @@ export function FederationDetail() {
       {expiryDate && (
         <div className={`mb-4 rounded-lg border p-3 text-sm ${
           expiryDate.getTime() <= Date.now()
-            ? 'border-red-500/60 bg-red-900/20 text-red-300'
-            : 'border-yellow-500/60 bg-yellow-900/20 text-yellow-300'
+            ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-500/60 dark:bg-red-900/20 dark:text-red-300'
+            : 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-500/60 dark:bg-amber-900/20 dark:text-amber-300'
         }`}>
           <strong>{expiryDate.getTime() <= Date.now() ? 'Shut down' : 'Shutting down'}</strong>
           {' '}on {formatUtcDateTime(expiryDate)}.

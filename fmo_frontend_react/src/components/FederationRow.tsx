@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import type { FederationActivity, FederationHealth } from '../types/api';
 import { Badge } from './Badge';
 import { asBitcoin } from '../utils/format';
-import { formatUtcDate } from '../utils/time';
+import { formatUtcDate, formatUtcDateTime } from '../utils/time';
 import { CombinedMiniChart } from './MiniChart';
 
 interface FederationRowProps {
@@ -53,7 +53,7 @@ export const FederationRow = memo(function FederationRow({
   const showWarning = health === 'degraded' || health === 'offline';
   const badgeLevel = health === 'degraded' ? 'warning' : 'error';
   const healthMessage = showWarning ? HEALTH_MESSAGES[health] : '';
-  const expiryDate = expiryTimestamp ? `${formatUtcDate(expiryTimestamp * 1000)} UTC` : null;
+  const isShutDown = !!expiryTimestamp && expiryTimestamp * 1000 <= Date.now();
 
   return (
     <Link
@@ -65,17 +65,26 @@ export const FederationRow = memo(function FederationRow({
         {/* Name */}
         <div className="font-medium text-gray-900 dark:text-white min-w-0">
           <span className="text-[10px] uppercase text-gray-600 dark:text-gray-300 block mb-1 md:hidden">Name</span>
-          <div className="flex items-center gap-1.5">
-            <span className="font-medium text-gray-900 dark:text-white wrap-break-word">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="font-medium text-gray-900 dark:text-white wrap-break-word min-w-0">
               {name}
             </span>
             {showWarning && <Badge level={badgeLevel} tooltip={healthMessage} showIcon />}
-            {expiryDate && (
-              <Badge level={expiryTimestamp! * 1000 <= Date.now() ? 'error' : 'warning'}>
-                {expiryTimestamp! * 1000 <= Date.now() ? 'Shut down' : `Shutting down ${expiryDate}`}
-              </Badge>
-            )}
           </div>
+          {/* Always on its own line under the name, never broken, so every row and screen width shows it the same way */}
+          {expiryTimestamp ? (
+            <span
+              title={`${isShutDown ? 'Shut down' : 'Shuts down'} on ${formatUtcDateTime(expiryTimestamp * 1000)}`}
+              className={`mt-1.5 inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset ${
+                isShutDown
+                  ? 'bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/30'
+                  : 'bg-amber-50 text-amber-800 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30'
+              }`}
+            >
+              <span aria-hidden="true" className={`size-1.5 shrink-0 rounded-full ${isShutDown ? 'bg-red-500' : 'bg-amber-500'}`} />
+              {isShutDown ? 'Shut down' : `Shuts down ${formatUtcDate(expiryTimestamp * 1000)}`}
+            </span>
+          ) : null}
         </div>
 
         {/* Total Assets */}
