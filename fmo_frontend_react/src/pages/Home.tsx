@@ -7,6 +7,7 @@ import { FederationRow } from '../components/FederationRow';
 import { Alert } from '../components/Alert';
 import { startAutoRefresh } from '../utils/autoRefresh';
 import { formatUtcTime } from '../utils/time';
+import { federationNames } from '../utils/migration';
 import {
   DEFAULT_SORT_KEY,
   SORT_OPTIONS,
@@ -98,6 +99,9 @@ export function Home() {
     }
     return [active, offline, shutDown];
   }, [federations, searchQuery, sortKey, sortDirection, updatedAt]);
+
+  // Names of every federation, so a migrating one can name a successor the observer tracks
+  const successorNames = useMemo(() => federationNames(federations), [federations]);
 
   // Compute global maxes across all federations for consistent chart scale
   const { globalMaxTransaction, globalMaxVolume } = useMemo(() => {
@@ -258,6 +262,8 @@ export function Home() {
                 totalAssets={fed.deposits}
                 health={fed.health}
                 expiryTimestamp={fed.expiry_timestamp}
+                successorId={fed.successor_id}
+                successorName={fed.successor_id ? successorNames.get(fed.successor_id) : null}
                 activityData={fed.last_7d_activity}
                 maxTransaction={globalMaxTransaction}
                 maxVolume={globalMaxVolume}
@@ -277,6 +283,7 @@ export function Home() {
         loadError={failed ? loadError : null}
         maxTransaction={globalMaxTransaction}
         maxVolume={globalMaxVolume}
+        successorNames={successorNames}
       />
 
       <CollapsibleFederations
@@ -289,6 +296,7 @@ export function Home() {
         loadError={failed ? loadError : null}
         maxTransaction={globalMaxTransaction}
         maxVolume={globalMaxVolume}
+        successorNames={successorNames}
       />
     </div>
   );
@@ -304,6 +312,8 @@ interface CollapsibleFederationsProps {
   loadError: ReactNode;
   maxTransaction: number;
   maxVolume: number;
+  /** Names of all federations by ID, not only these, to name each successor */
+  successorNames: Map<string, string>;
 }
 
 /** A secondary federation list, collapsed until opened */
@@ -317,6 +327,7 @@ function CollapsibleFederations({
   loadError,
   maxTransaction,
   maxVolume,
+  successorNames,
 }: CollapsibleFederationsProps) {
   const [collapsed, setCollapsed] = useState(true);
   const message = (text: string) => (
@@ -374,6 +385,8 @@ function CollapsibleFederations({
                         totalAssets={fed.deposits}
                         health={fed.health}
                         expiryTimestamp={fed.expiry_timestamp}
+                        successorId={fed.successor_id}
+                        successorName={fed.successor_id ? successorNames.get(fed.successor_id) : null}
                         activityData={fed.last_7d_activity}
                         maxTransaction={maxTransaction}
                         maxVolume={maxVolume}

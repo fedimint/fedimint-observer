@@ -94,7 +94,10 @@ export interface FederationSummary {
   nostr_votes: FederationRating;
   health: FederationHealth;
   expiry_timestamp: number | null;
+  /** `federation_successor` meta field as published, normally an invite code */
   successor: string | null;
+  /** Federation the successor invite code points to, when it parses as one */
+  successor_id: string | null;
 }
 
 export interface FederationRating {

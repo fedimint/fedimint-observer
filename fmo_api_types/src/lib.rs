@@ -57,7 +57,10 @@ pub struct FederationSummary {
     pub nostr_votes: FederationRating,
     pub health: FederationHealth,
     pub expiry_timestamp: Option<u64>,
+    /// `federation_successor` meta field as published, normally an invite code
     pub successor: Option<String>,
+    /// Federation the successor invite code points to, when it parses as one
+    pub successor_id: Option<FederationId>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

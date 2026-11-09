@@ -732,6 +732,13 @@ impl FederationObserver {
                         .copied()
                         .unwrap_or(FederationHealth::Offline),
                     expiry_timestamp,
+                    // A successor that is not an invite code, or names this
+                    // federation itself, points nowhere users can move to
+                    successor_id: successor
+                        .as_deref()
+                        .and_then(|successor| successor.trim().parse::<InviteCode>().ok())
+                        .map(|invite| invite.federation_id())
+                        .filter(|successor_id| *successor_id != federation_id),
                     successor,
                 })
             })
