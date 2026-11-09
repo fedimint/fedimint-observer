@@ -25,6 +25,8 @@ import { asBitcoin, MSATS_PER_BTC, shortMiddle } from '../utils/format';
 import { explorerAddressUrl, explorerTxUrl, nostrNetworkTag } from '../utils/network';
 import { toHistogramEntries } from '../utils/histogram';
 import { formatUtcDateTime } from '../utils/time';
+import { federationNames, isMigrating } from '../utils/migration';
+import { MigrationNotice } from '../components/MigrationNotice';
 
 const UTXOS_PER_PAGE = 25;
 const UTXO_SEARCH_DEBOUNCE_MS = 300;
@@ -74,6 +76,8 @@ const TransactionChart = lazy(() => import('../components/TransactionChart').the
 export function FederationDetail() {
   const { id } = useParams<{ id: string }>();
   const [federation, setFederation] = useState<FederationSummary | null>(null);
+  // The federation its guardians named as successor, when the observer tracks it
+  const [successor, setSuccessor] = useState<{ id: string; name: string } | null>(null);
   const [config, setConfig] = useState<FederationConfig | null>(null);
   // One page of the UTXO comparison; the server filters, counts and pages it
   const [utxoData, setUtxoData] = useState<FederationUtxosResponse | null>(null);
@@ -224,6 +228,7 @@ export function FederationDetail() {
     setLoading(true);
     setError(null);
     setConfig(null);
+    setSuccessor(null);
     setOverview(null);
     setOverviewFailed(false);
     setHistogram([]);
@@ -247,18 +252,22 @@ export function FederationDetail() {
       if (!fed) {
         throw new Error('Federation not found');
       }
-      return fed;
+      // The successor gets a link and a name only when the observer tracks it
+      const successorName = fed.successor_id ? federationNames(federations).get(fed.successor_id) : undefined;
+      const successor = fed.successor_id && successorName !== undefined ? { id: fed.successor_id, name: successorName } : null;
+      return { fed, successor };
     });
     // Fetch config using federation ID first (works for actively observed federations),
     // falling back to the invite code, which works for any federation with a valid invite
     const configRequest = api.getFederationConfig(id, signal)
-      .catch(async () => api.getFederationConfigByInvite((await federationRequest).invite, signal))
+      .catch(async () => api.getFederationConfigByInvite((await federationRequest).fed.invite, signal))
       .then(parseConfig);
 
     Promise.all([federationRequest, configRequest])
-      .then(([fed, configData]) => {
+      .then(([{ fed, successor }, configData]) => {
         if (signal.aborted) return;
         setFederation(fed);
+        setSuccessor(successor);
         setConfig(configData);
         setLoading(false);
       })
@@ -432,7 +441,9 @@ export function FederationDetail() {
       <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-6 sm:mb-8 wrap-break-word">
         {federation.name || 'Unnamed Federation'}
       </h1>
-      {expiryDate && (
+      {expiryDate && federation.successor && isMigrating(federation) ? (
+        <MigrationNotice expiry={expiryDate} successorInvite={federation.successor} successor={successor} />
+      ) : expiryDate && (
         <div className={`mb-4 rounded-lg border p-3 text-sm ${
           expiryDate.getTime() <= Date.now()
             ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-500/60 dark:bg-red-900/20 dark:text-red-300'
