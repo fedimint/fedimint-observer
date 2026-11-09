@@ -30,12 +30,13 @@
             nativeBuildInputs = with pkgs; [
               # cmake is required for building aws-lc-sys (fedimint dependency)
               cmake
+              pkg-config
             ];
+            buildInputs = with pkgs; [ openssl ];
           };
           targets = (pkgs.lib.getAttrs
             ([
               "default"
-              "wasm32-unknown"
             ])
             (flakeboxLib.mkStdTargets { })
           );
@@ -48,6 +49,8 @@
             ./Cargo.lock
             (lib.fileset.maybeMissing ./.cargo)
             ./fmo_api_types
+            ./fmo_core
+            ./fmo_modules
             ./fmo_server
           ];
         };
@@ -57,7 +60,7 @@
             let
               craneLib = (craneLib'.overrideArgs {
                 pname = "fmo_server";
-                version = "0.1.0";
+                version = "0.2.0";
                 src = rustSrc;
                 cargoExtraArgs = "--package=fmo_server";
                 RUSTFLAGS = "--cfg tokio_unstable";
@@ -71,8 +74,9 @@
               fmo_server = craneLib.buildPackage { };
               fmo_server_image = pkgs.dockerTools.buildLayeredImage {
                 name = "fmo_server";
-                contents = [ fmo_server pkgs.bash pkgs.coreutils ];
+                contents = [ fmo_server pkgs.bash pkgs.coreutils pkgs.cacert ];
                 config = {
+                  Env = [ "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
                   Cmd = [
                     "${fmo_server}/bin/fmo_server"
                   ];
@@ -86,7 +90,7 @@
             # Get the npm dependencies hash
             # To update: nix build .#fmo_frontend_react_default --impure
             # and use the hash from the error message
-            npmDepsHash = "sha256-d04Zjrg1mOhnO7FgG6rvDSh0ovt+z7PqIE8FCSG2Czk=";
+            npmDepsHash = "sha256-8RhrOvqF5PJ797ZzD57UmvvIEzoVYhJAZ/H55uY+oys=";
           in
           rec {
             fmo_frontend_react = api: pkgs.buildNpmPackage {
@@ -121,7 +125,7 @@
               installPhase = ''
                 runHook preInstall
                 mkdir -p $out
-                cp -r dist/* $out/
+                cp -r dist/. $out/
                 # Copy index.html to 404.html for client-side routing (as done in CI)
                 cp $out/index.html $out/404.html
                 runHook postInstall
@@ -142,19 +146,19 @@
 
           nativeBuildInputs = [
             pkgs.postgresql
-            # sqlite is used only for creating the dump file for migrating existing instances
-            pkgs.sqlite
             pkgs.nixpkgs-fmt
             # cmake is required for building aws-lc-sys (fedimint dependency)
             pkgs.cmake
+            pkgs.pkg-config
           ];
+          buildInputs = [ pkgs.openssl ];
 
           shellHook = ''
             source scripts/pg_dev/env.sh
             echo "Type 'just pg_start' to start the $PGDATABASE database, use 'pg' to connect to it"
           '';
 
-          RUSTFLAGS = "--cfg=web_sys_unstable_apis --cfg=tokio_unstable";
+          RUSTFLAGS = "--cfg=tokio_unstable";
         };
 
         legacyPackages = nativePackages // reactPackages;

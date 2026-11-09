@@ -13,15 +13,51 @@ pub struct FedimintTotals {
     pub tx_count: u64,
 }
 
+/// `GET /federations/:federation_id`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationOverview {
+    pub session_count: u64,
+    pub total_assets_msat: Option<Amount>,
+    /// Sessions each module has processed, by module kind: behind
+    /// `session_count` while the module catches up with the stored sessions
+    pub module_sessions: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletV2OnChainTransaction {
+    pub index: u64,
+    pub txid: String,
+    pub input_msat: u64,
+    pub output_msat: u64,
+    pub fee_msat: u64,
+    pub vbytes: u64,
+    pub created: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalletV2History {
+    pub module_instance_id: u16,
+    pub transactions: Vec<WalletV2OnChainTransaction>,
+    pub next_before: Option<u64>,
+    pub observed_at: Option<DateTime<Utc>>,
+    pub stale: bool,
+    pub balance_msat: Option<u64>,
+    pub balance_observed_at: Option<DateTime<Utc>>,
+    pub balance_stale: bool,
+    pub accounting_pending: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederationSummary {
     pub id: FederationId,
     pub name: Option<String>,
     pub last_7d_activity: Vec<FederationActivity>,
-    pub deposits: Amount,
+    pub deposits: Option<Amount>,
     pub invite: String,
     pub nostr_votes: FederationRating,
     pub health: FederationHealth,
+    pub expiry_timestamp: Option<u64>,
+    pub successor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -34,6 +70,33 @@ pub struct FederationRating {
 pub struct FederationActivity {
     pub num_transactions: u64,
     pub amount_transferred: Amount,
+}
+
+/// `GET /federations/:id/transactions/histogram`: funded transactions per UTC
+/// day, from the first day with any through today
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransactionHistogram {
+    /// Every UTC calendar day of the range, days without activity included
+    pub days: Vec<TransactionHistogramDay>,
+    /// Of all days, outliers left out if they were excluded
+    pub total_count: u64,
+    pub total_volume_msat: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TransactionHistogramDay {
+    /// `YYYY-MM-DD`, UTC
+    pub date: chrono::NaiveDate,
+    /// Funded transactions
+    pub count: u64,
+    pub volume_msat: u64,
+    /// Trailing moving averages over the requested number of days, `None`
+    /// unless averages were requested
+    pub avg_count: Option<f64>,
+    pub avg_volume_msat: Option<f64>,
+    /// Volume of at least 10 times the 95th percentile of days with activity;
+    /// only flagged if outliers were excluded
+    pub outlier: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,8 +112,39 @@ pub struct FederationUtxosResponse {
     /// held: `n - f`, the same threshold the federation itself acts on
     pub threshold: usize,
     pub guardians: Vec<GuardianUtxoReport>,
-    /// One row per output, most severe status first, then largest amount first
+    /// The requested page of the rows matching `view` and `search`, one row
+    /// per output, most severe status first, then largest amount first
     pub utxos: Vec<UtxoComparisonRow>,
+    /// Rows per status over every output, before `view` and `search`
+    pub counts: UtxoStatusCounts,
+    /// Rows matching `view` and `search`, across all pages
+    pub total_rows: usize,
+    /// The 1-based page served: the requested one, clamped to the last page
+    pub page: usize,
+    /// Rows per page
+    pub limit: usize,
+    /// Pages of rows matching `view` and `search`, at least 1
+    pub page_count: usize,
+}
+
+/// Which rows `GET /federations/:id/utxos?view=` lists
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UtxoView {
+    #[default]
+    All,
+    Verified,
+    Pending,
+    Mismatch,
+}
+
+/// How many outputs have each status
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UtxoStatusCounts {
+    pub all: usize,
+    pub verified: usize,
+    pub pending: usize,
+    pub mismatch: usize,
 }
 
 /// How a guardian took part in the comparison
@@ -161,7 +255,6 @@ pub struct GuardianHealth {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardianHealthLatest {
-    /// `None` for federations without a v1 wallet module
     pub block_height: Option<u32>,
     pub block_outdated: bool,
     pub session_count: u32,
@@ -222,6 +315,40 @@ pub struct GatewayInfo {
     /// `7d`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics_window: Option<String>,
+    /// The fields below are set in the overview only, measured at its
+    /// `computed_at` over its window.
+    /// How recently the gateway was announced: online within 15 minutes,
+    /// degraded within 30, retired after 7 days, offline otherwise; unknown if
+    /// never seen
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<GatewayStatus>,
+    /// Share of the window covered by polls, 0-100
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage_pct: Option<f64>,
+    /// Online share of the polled minutes, 0-100 (0 without polls)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_uptime_pct: Option<f64>,
+    /// Polled minutes the gateway was seen, scaled to fit the window
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_online_minutes: Option<f64>,
+    /// Polled minutes it was not seen, plus, for an offline gateway, the
+    /// unpolled minutes since it was last seen
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_offline_minutes: Option<f64>,
+    /// The rest of the window
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_unknown_minutes: Option<f64>,
+}
+
+/// A Lightning v1 gateway's status by how recently guardians announced it
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayStatus {
+    Online,
+    Degraded,
+    Offline,
+    Unknown,
+    Retired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -239,11 +366,23 @@ pub struct GatewayUptimeMetrics {
     pub online_minutes: u64,
     pub offline_minutes: u64,
     pub uptime_pct: f64,
+    /// The window split into equal time slots, oldest first, each with the
+    /// polls recorded in it. A slot without polls was not observed.
+    #[serde(default)]
+    pub buckets: Vec<GatewayUptimeBucket>,
+}
+
+/// Polls of one gateway recorded in one slot of the window
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct GatewayUptimeBucket {
+    pub seen_samples: u64,
+    pub total_samples: u64,
 }
 
 /// Federation-wide gateway availability aggregated into daily buckets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayUptimeTrendPoint {
+    /// The UTC day, as its midnight (`2026-11-08T00:00:00Z`)
     pub day: DateTime<Utc>,
     pub seen_samples: u64,
     pub total_samples: u64,
@@ -263,4 +402,110 @@ pub struct GatewayOverview {
     /// Left out when `include` doesn't ask for `trend`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime_trend: Option<Vec<GatewayUptimeTrendPoint>>,
+    /// Over all the federation's gateways, whatever `include` asks for
+    pub summary: GatewayOverviewSummary,
+}
+
+/// A federation's gateways summed up for the overview's window. Retired
+/// gateways count only in `retired`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GatewayOverviewSummary {
+    /// Gateways that aren't retired
+    pub total: u64,
+    pub online: u64,
+    pub degraded: u64,
+    pub offline: u64,
+    pub unknown: u64,
+    pub retired: u64,
+    /// Of the gateways that aren't retired
+    pub vetted: u64,
+    /// Mean `estimated_uptime_pct` of the gateways that aren't retired and
+    /// were polled in the window; `null` without any
+    pub avg_uptime_pct: Option<f64>,
+    /// Mean `coverage_pct` of the gateways that aren't retired; `null`
+    /// without any
+    pub avg_coverage_pct: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayV2Info {
+    pub status: String,
+    pub api_endpoint: String,
+    pub announcing_guardians: Vec<u16>,
+    pub registered: bool,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub routing_info: Option<serde_json::Value>,
+    pub routing_observed_at: Option<DateTime<Utc>>,
+    pub probed_at: Option<DateTime<Utc>>,
+    pub reachable: Option<bool>,
+    pub federation_supported: Option<bool>,
+    pub latency_ms: Option<i32>,
+    pub samples: u64,
+    pub online_samples: u64,
+    pub avg_latency_ms: Option<f64>,
+    pub availability: Vec<GatewayV2AvailabilityBucket>,
+    pub activity: GatewayV2Activity,
+    /// How `activity` is attributed. Gateways self-report their module key
+    /// and the observer cannot verify ownership: `self_reported` credits
+    /// contracts under keys this endpoint alone claims, `contested` means some
+    /// of its keys are also claimed by another registered endpoint and credit
+    /// neither, `none` means no key has been reported yet.
+    pub attribution: String,
+    /// Keys this endpoint claims that another registered endpoint also claims
+    pub contested_keys: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayV2Registry {
+    pub activity_caught_up: bool,
+    pub window: String,
+    pub module_instance_id: u16,
+    pub observed_at: Option<DateTime<Utc>>,
+    pub stale: bool,
+    pub successful_guardians: i32,
+    pub total_guardians: i32,
+    /// Over every gateway of the module instance, not just this page
+    pub totals: GatewayV2Totals,
+    /// Probes of every gateway of the module instance (registered or
+    /// removed), not just this page, in the same UTC buckets as each
+    /// gateway's `availability`
+    pub availability_trend: Vec<GatewayV2AvailabilityBucket>,
+    pub gateways: Vec<GatewayV2Info>,
+    pub next_after: Option<String>,
+}
+
+/// A module instance's gateways summed over all pages, for the window
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GatewayV2Totals {
+    /// Gateways guardians currently announce
+    pub registered: u64,
+    /// Gateways per `GatewayV2Info::status`
+    pub online: u64,
+    pub degraded: u64,
+    pub offline: u64,
+    pub unknown: u64,
+    pub removed: u64,
+    /// Probes in the window, and the successful ones
+    pub samples: u64,
+    pub online_samples: u64,
+    /// Median of online gateways' latest successful probe latency
+    pub median_latency_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayV2AvailabilityBucket {
+    pub start: DateTime<Utc>,
+    pub samples: u64,
+    pub online_samples: u64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayV2Activity {
+    pub incoming_contracts: u64,
+    pub outgoing_contracts: u64,
+    pub incoming_msat: u64,
+    pub outgoing_msat: u64,
+    pub outgoing_claimed: u64,
+    pub outgoing_refunded: u64,
+    pub outgoing_cancelled: u64,
 }

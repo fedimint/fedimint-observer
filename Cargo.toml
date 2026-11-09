@@ -1,8 +1,17 @@
 [workspace]
 members = [
     "fmo_api_types",
+    "fmo_core",
+    "fmo_modules/fmo_module_ln",
+    "fmo_modules/fmo_module_mint",
+    "fmo_modules/fmo_module_mintv2",
+    "fmo_modules/fmo_module_walletv2",
+    "fmo_modules/fmo_module_lnv2",
+    "fmo_modules/fmo_module_wallet",
     "fmo_server",
 ]
+# Builds only with --features stability_pool_v1, see its Cargo.toml
+exclude = ["fmo_modules/fmo_module_stability_pool"]
 
 resolver = "2"
 
@@ -11,6 +20,9 @@ fedimint-api-client = { version = "0.12.0", git = "https://github.com/fedimint/f
 fedimint-connectors = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-core = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-ln-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
+fedimint-lnv2-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-meta-client = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-mint-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
+fedimint-mintv2-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-wallet-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
+fedimint-walletv2-common = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }

@@ -1,21 +1,34 @@
-import { useEffect, useState, useMemo, lazy, Suspense } from 'react';
+import { useEffect, useRef, useState, useMemo, lazy, Suspense } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { api } from '../services/api';
+import { api, ApiError } from '../services/api';
+import { errorMessage } from '../utils/errors';
+import { publishNostrEvent } from '../services/nostr';
 import type {
+  FederationOverview,
   FederationSummary,
+  FederationUtxosResponse,
   GuardianClaimedUtxoState,
+  GuardianHealth,
   GuardianUtxoReport,
-  UtxoComparisonRow,
+  HistogramAverage,
+  UtxoView,
 } from '../types/api';
+import type { HistogramEntry } from '../utils/histogram';
 import { Badge } from '../components/Badge';
 import { Alert } from '../components/Alert';
 import { Copyable } from '../components/Copyable';
+import { WalletV2Panel } from '../components/WalletV2Panel';
+import type { GatewayPageHandoff } from '../utils/gateways';
+import { guardianThreshold, parseConfig, type FederationConfig } from '../utils/config';
+import { asBitcoin, MSATS_PER_BTC, shortMiddle } from '../utils/format';
+import { explorerAddressUrl, explorerTxUrl, nostrNetworkTag } from '../utils/network';
+import { toHistogramEntries } from '../utils/histogram';
+import { formatUtcDateTime } from '../utils/time';
 
-const MSATS_PER_BTC = 100_000_000_000;
 const UTXOS_PER_PAGE = 25;
-
-type UtxoView = 'all' | 'verified' | 'pending' | 'mismatch';
+const UTXO_SEARCH_DEBOUNCE_MS = 300;
+const NO_GUARDIANS: GuardianUtxoReport[] = [];
 
 interface UtxoInventoryRow {
   outPoint: string;
@@ -58,73 +71,58 @@ function utxoPageItems(current: number, total: number): (number | 'gap')[] {
 // Lazy load the chart component for code splitting
 const TransactionChart = lazy(() => import('../components/TransactionChart').then(module => ({ default: module.TransactionChart })));
 
-interface Guardian {
-  id: number;
-  name: string;
-  url: string;
-  online: boolean;
-  session: number;
-  block: number;
-  sessionOutdated: boolean;
-  blockOutdated: boolean;
-}
-
-interface GuardianHealth {
-  avg_uptime: number;
-  avg_latency: number;
-  software_version: string | null;
-  latest: {
-    // null for federations without a v1 wallet module
-    block_height: number | null;
-    block_outdated: boolean;
-    session_count: number;
-    session_outdated: boolean;
-  } | null;
-}
-
-interface FederationConfig {
-  guardians: Guardian[];
-  modules: string[];
-  network: string;
-  confirmations_required: number;
-  rawConfig: Record<string, unknown>; // Store raw config for display
-}
-
-interface HistogramEntry {
-  date: string;
-  volume: number;
-  count: number;
-  avgVolume?: number;
-  avgCount?: number;
-  isoDate?: string;
-  timestamp?: number;
-}
-
 export function FederationDetail() {
   const { id } = useParams<{ id: string }>();
   const [federation, setFederation] = useState<FederationSummary | null>(null);
   const [config, setConfig] = useState<FederationConfig | null>(null);
-  const [utxoRows, setUtxoRows] = useState<UtxoComparisonRow[]>([]);
-  const [utxoGuardians, setUtxoGuardians] = useState<GuardianUtxoReport[]>([]);
-  const [utxoThreshold, setUtxoThreshold] = useState(0);
+  // One page of the UTXO comparison; the server filters, counts and pages it
+  const [utxoData, setUtxoData] = useState<FederationUtxosResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'activity' | 'utxos' | 'config'>('activity');
-  const [utxosLoading, setUtxosLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<'activity' | 'utxos' | 'assets' | 'config'>('activity');
+  // Once opened, the wallet panel stays mounted so switching tabs keeps its
+  // history instead of fetching it again.
+  const [assetsOpened, setAssetsOpened] = useState(false);
+  // UTXOs load the first time their tab opens, and are only ever shown there
+  const [utxosRequested, setUtxosRequested] = useState(false);
+  const [utxosLoading, setUtxosLoading] = useState(true);
+  // A 404 means the federation has no Wallet v1 module, which retrying won't change
+  const [utxosError, setUtxosError] = useState<{ message: string; retryable: boolean } | null>(null);
+  const [utxosReload, setUtxosReload] = useState(0);
+  const [overview, setOverview] = useState<FederationOverview | null>(null);
+  const [overviewFailed, setOverviewFailed] = useState(false);
   const [utxoView, setUtxoView] = useState<UtxoView>('all');
   const [utxoPage, setUtxoPage] = useState(1);
   const [utxoSearch, setUtxoSearch] = useState('');
+  // The search sent to the server, once typing pauses
+  const [utxoQuery, setUtxoQuery] = useState('');
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
   const [ratingError, setRatingError] = useState<string | null>(null);
   const [ratingSuccess, setRatingSuccess] = useState(false);
   const [histogram, setHistogram] = useState<HistogramEntry[]>([]);
-  const [histogramLoading, setHistogramLoading] = useState(false);
+  const [histogramLoading, setHistogramLoading] = useState(true);
+  const [histogramError, setHistogramError] = useState<string | null>(null);
+  const [histogramReload, setHistogramReload] = useState(0);
   const [chartMetric, setChartMetric] = useState<'volume' | 'count'>('volume');
   const [filterOutliers, setFilterOutliers] = useState(true);
-  const [movingAverageWindow, setMovingAverageWindow] = useState<number>(0); // 0 = off, 7 = 7-day, 30 = 30-day
+  const [movingAverageWindow, setMovingAverageWindow] = useState<HistogramAverage>(0);
+  const [histogramTotals, setHistogramTotals] = useState({ volume: 0, count: 0 });
+  // Outliers only distort the volume chart, so the transaction chart keeps them
+  const excludeOutliers = chartMetric === 'volume' && filterOutliers;
   const [useLogScale, setUseLogScale] = useState(false);
   const [guardianHealth, setGuardianHealth] = useState<Record<string, GuardianHealth>>({});
+  const [healthStatus, setHealthStatus] = useState<'loading' | 'loaded' | 'failed'>('loading');
+  const [healthReload, setHealthReload] = useState(0);
+  const network = config?.network;
+  const hasWalletV1 = config?.modules.includes('wallet') ?? false;
+  const hasWalletV2 = config?.modules.includes('walletv2') ?? false;
+  const hasLightningV1 = config?.modules.includes('ln') ?? false;
+  const hasLightningV2 = config?.modules.includes('lnv2') ?? false;
+  const expiryDate = federation?.expiry_timestamp
+    ? new Date(federation.expiry_timestamp * 1000)
+    : null;
+  const shuttingDown = expiryDate !== null;
   
   // Check if at least one guardian is online
   const hasOnlineGuardian = useMemo(() => {
@@ -132,7 +130,15 @@ export function FederationDetail() {
       (health) => health?.latest !== null && health?.latest !== undefined
     );
   }, [guardianHealth]);
+  // The invite is hidden while every guardian is known to be offline, since joining
+  // would fail. When the guardians could not be checked, the federation list's own
+  // health decides: an unknown status is no reason to withhold a working invite.
+  const showInvite = healthStatus === 'loaded'
+    ? hasOnlineGuardian
+    : healthStatus === 'failed' && federation?.health !== 'offline';
 
+  const utxoGuardians = utxoData?.guardians ?? NO_GUARDIANS;
+  const utxoThreshold = utxoData?.threshold ?? 0;
   const comparedGuardianIds = useMemo(
     () => utxoGuardians
       .filter((guardian) => guardian.status === 'ok')
@@ -142,9 +148,9 @@ export function FederationDetail() {
   );
   const successfulGuardianCount = comparedGuardianIds.length;
 
-  // The backend classifies every output; this only reshapes rows for display
-  const utxoInventory = useMemo(
-    () => utxoRows.map((row): UtxoInventoryRow => ({
+  // The rows of the page shown, reshaped for display
+  const visibleUtxos = useMemo(
+    () => (utxoData?.utxos ?? []).map((row): UtxoInventoryRow => ({
       outPoint: row.out_point,
       amount: row.amount,
       address: row.address,
@@ -154,32 +160,14 @@ export function FederationDetail() {
       kind: row.status,
       detail: row.detail ?? undefined,
     })),
-    [utxoRows]
+    [utxoData]
   );
-
-  const utxoCounts = useMemo(() => ({
-    all: utxoInventory.length,
-    verified: utxoInventory.filter((utxo) => utxo.kind === 'verified').length,
-    pending: utxoInventory.filter((utxo) => utxo.kind === 'pending').length,
-    mismatch: utxoInventory.filter((utxo) => utxo.kind === 'mismatch').length,
-  }), [utxoInventory]);
-
-  const filteredUtxos = useMemo(() => {
-    const query = utxoSearch.trim().toLowerCase();
-    return utxoInventory.filter((utxo) =>
-      (utxoView === 'all' || utxo.kind === utxoView)
-      && (!query
-        || utxo.outPoint.toLowerCase().includes(query)
-        || (utxo.address?.toLowerCase().includes(query) ?? false)
-        || formatMsatsAsBtc(utxo.amount).includes(query))
-    );
-  }, [utxoInventory, utxoView, utxoSearch]);
-
-  const utxoPageCount = Math.max(1, Math.ceil(filteredUtxos.length / UTXOS_PER_PAGE));
-  // Clamped so a refresh that shrinks the list never leaves an empty page
-  const currentUtxoPage = Math.min(utxoPage, utxoPageCount);
-  const utxoPageStart = (currentUtxoPage - 1) * UTXOS_PER_PAGE;
-  const visibleUtxos = filteredUtxos.slice(utxoPageStart, utxoPageStart + UTXOS_PER_PAGE);
+  const utxoCounts = utxoData?.counts;
+  const utxoTotalRows = utxoData?.total_rows ?? 0;
+  const utxoPageCount = Math.max(1, utxoData?.page_count ?? 1);
+  // The server clamps a page past the end, so its answer names the page shown
+  const currentUtxoPage = utxoData?.page ?? utxoPage;
+  const utxoPageStart = (currentUtxoPage - 1) * (utxoData?.limit ?? UTXOS_PER_PAGE);
   const guardianSummaryUnavailable = utxoGuardians.length > 0 && successfulGuardianCount === 0;
 
   const tooFewGuardians = successfulGuardianCount > 0 && successfulGuardianCount < utxoThreshold;
@@ -194,9 +182,16 @@ export function FederationDetail() {
   ].filter((finding): finding is string => Boolean(finding)));
   const laggingGuardians = utxoGuardians.filter((guardian) => guardian.status === 'lagging');
 
+  // A new search starts on its first page, once typing pauses
   useEffect(() => {
-    setUtxoPage(1);
-  }, [id, utxoView, utxoSearch]);
+    const query = utxoSearch.trim();
+    if (query === utxoQuery) return;
+    const timer = setTimeout(() => {
+      setUtxoQuery(query);
+      setUtxoPage(1);
+    }, UTXO_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [utxoSearch, utxoQuery]);
   
   // Calculate initial zoom to show last 3 months of data by default
   const initialZoom = useMemo(() => {
@@ -204,11 +199,11 @@ export function FederationDetail() {
     
     // Use timestamps to compute last 90 days (3 months ~ 90 days)
     const THREE_MONTHS_MS = 90 * 24 * 60 * 60 * 1000;
-    const lastTs = histogram[histogram.length - 1].timestamp || 0;
+    const lastTs = histogram[histogram.length - 1].timestamp;
     const cutoffTs = lastTs - THREE_MONTHS_MS;
     
     // Find first index with timestamp >= cutoff
-    let startIndex = histogram.findIndex((h) => (h.timestamp ?? 0) >= cutoffTs);
+    let startIndex = histogram.findIndex((h) => h.timestamp >= cutoffTs);
     if (startIndex === -1) {
       // If no entry is within the last 90 days, show all
       startIndex = 0;
@@ -223,151 +218,159 @@ export function FederationDetail() {
 
   useEffect(() => {
     if (!id) return;
+    const controller = new AbortController();
+    const { signal } = controller;
 
+    setLoading(true);
+    setError(null);
+    setConfig(null);
+    setOverview(null);
+    setOverviewFailed(false);
+    setHistogram([]);
+    setHistogramTotals({ volume: 0, count: 0 });
+    setUtxosRequested(false);
+    setUtxoData(null);
+    setUtxoView('all');
+    setUtxoSearch('');
+    setUtxoQuery('');
+    setUtxoPage(1);
+    setUtxosLoading(true);
+    setUtxosError(null);
+    setActiveTab('activity');
+    setAssetsOpened(false);
+
+    // Every request below needs only the id, so none waits for another; only the
+    // invite fallback waits for the federation list.
     // Fetch all federations and find the one matching the ID
-    api.getFederations()
-      .then((federations) => {
-        const fed = federations.find((f) => f.id === id);
-        if (!fed) {
-          throw new Error('Federation not found');
-        }
+    const federationRequest = api.getFederations(signal).then((federations) => {
+      const fed = federations.find((f) => f.id === id);
+      if (!fed) {
+        throw new Error('Federation not found');
+      }
+      return fed;
+    });
+    // Fetch config using federation ID first (works for actively observed federations),
+    // falling back to the invite code, which works for any federation with a valid invite
+    const configRequest = api.getFederationConfig(id, signal)
+      .catch(async () => api.getFederationConfigByInvite((await federationRequest).invite, signal))
+      .then(parseConfig);
+
+    Promise.all([federationRequest, configRequest])
+      .then(([fed, configData]) => {
+        if (signal.aborted) return;
         setFederation(fed);
-        // Fetch config using federation ID first, fallback to invite if needed
-        return fetchFederationConfig(id, fed.invite);
-      })
-      .then((configData) => {
         setConfig(configData);
         setLoading(false);
-        // Fetch UTXOs, histogram, and guardian health in background
-        fetchUTXOs(id);
-        fetchHistogram(id);
-        fetchGuardianHealth(id);
       })
       .catch((err) => {
+        if (signal.aborted) return;
         console.error('Failed to fetch federation details:', err);
         setError(err.message);
         setLoading(false);
       });
+
+    api.getFederationOverview(id, signal)
+      .then((data) => {
+        if (!signal.aborted) setOverview(data);
+      })
+      .catch((err) => {
+        if (signal.aborted) return;
+        console.error('Failed to fetch federation overview:', err);
+        setOverviewFailed(true);
+      });
+
+    return () => controller.abort();
   }, [id]);
 
-  // Update zoom state when histogram data loads
   useEffect(() => {
-    if (histogram.length > 0) {
+    if (!id) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setHistogramLoading(true);
+    setHistogramError(null);
+
+    api.getFederationHistogram(id, { average: movingAverageWindow, excludeOutliers }, signal)
+      .then((data) => {
+        if (signal.aborted) return;
+        setHistogram(toHistogramEntries(data, excludeOutliers));
+        setHistogramTotals({ volume: data.total_volume_msat / MSATS_PER_BTC, count: data.total_count });
+      })
+      .catch((err) => {
+        if (signal.aborted) return;
+        console.error('Failed to fetch histogram:', err);
+        setHistogramError(errorMessage(err, 'Failed to fetch activity'));
+      })
+      .finally(() => {
+        if (!signal.aborted) setHistogramLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [id, histogramReload, movingAverageWindow, excludeOutliers]);
+
+  useEffect(() => {
+    if (!id) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setGuardianHealth({});
+    setHealthStatus('loading');
+
+    api.getFederationHealth(id, signal)
+      .then((data) => {
+        if (signal.aborted) return;
+        setGuardianHealth(data);
+        setHealthStatus('loaded');
+      })
+      .catch((err) => {
+        if (signal.aborted) return;
+        console.error('Failed to fetch guardian health:', err);
+        setHealthStatus('failed');
+      });
+
+    return () => controller.abort();
+  }, [id, healthReload]);
+
+  // The server asks every guardian and mempool.space for these, so only when the tab is opened
+  useEffect(() => {
+    if (!id || !utxosRequested || !hasWalletV1) return;
+    // A newer view, search or page aborts the request it replaces
+    const controller = new AbortController();
+    const { signal } = controller;
+    setUtxosLoading(true);
+    setUtxosError(null);
+
+    api.getFederationUtxos(id, { view: utxoView, search: utxoQuery, page: utxoPage, limit: UTXOS_PER_PAGE }, signal)
+      .then((data) => {
+        if (!signal.aborted) setUtxoData(data);
+      })
+      .catch((err) => {
+        if (signal.aborted) return;
+        console.error('Failed to fetch UTXOs:', err);
+        // Rows from an earlier request would read as the answer to this one
+        setUtxoData(null);
+        setUtxosError({
+          message: errorMessage(err, 'Failed to fetch UTXOs'),
+          retryable: !(err instanceof ApiError && err.status === 404),
+        });
+      })
+      .finally(() => {
+        if (!signal.aborted) setUtxosLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [id, utxosRequested, hasWalletV1, utxoView, utxoQuery, utxoPage, utxosReload]);
+
+  const walletSessions = overview?.module_sessions.wallet;
+  const walletBehind = overview != null && walletSessions != null && walletSessions < overview.session_count;
+
+  // Zoom to the last three months when a federation's activity first loads; later
+  // reloads for another average or outlier setting keep the viewer's zoom
+  const zoomedFederation = useRef<string | null>(null);
+  useEffect(() => {
+    if (histogram.length > 0 && zoomedFederation.current !== id) {
+      zoomedFederation.current = id ?? null;
       setZoomState(initialZoom);
     }
-  }, [histogram.length, initialZoom]);
-
-  // Remove outliers (values > 10 * 95th percentile)
-  const removeOutliers = (data: HistogramEntry[]): HistogramEntry[] => {
-    if (data.length === 0) return data;
-    const values = data.map(d => d.volume).sort((a, b) => a - b);
-    const percentile95Index = Math.floor(values.length * 0.95);
-    const percentile95 = values[percentile95Index];
-    const threshold = percentile95 * 10;
-    return data.filter(d => d.volume < threshold);
-  };
-
-  // Calculate moving average with configurable window size using O(n) sliding window
-  const calculateMovingAverage = (data: HistogramEntry[], windowSize = 7) => {
-    if (data.length === 0) return data;
-    
-    let volumeSum = 0;
-    let countSum = 0;
-    const result: HistogramEntry[] = [];
-    
-    for (let i = 0; i < data.length; i++) {
-      // Add current value to the window
-      volumeSum += data[i].volume;
-      countSum += data[i].count;
-      
-      // Remove the value that falls out of the window (if window is full)
-      if (i >= windowSize) {
-        volumeSum -= data[i - windowSize].volume;
-        countSum -= data[i - windowSize].count;
-      }
-      
-      // Calculate average based on actual window size
-      const actualWindowSize = Math.min(i + 1, windowSize);
-      const avgVolume = volumeSum / actualWindowSize;
-      const avgCount = countSum / actualWindowSize;
-      
-      result.push({
-        ...data[i],
-        avgVolume,
-        avgCount,
-      });
-    }
-    
-    return result;
-  };
-
-
-  // Memoize the processed chart data to avoid recalculating on every render
-  const processedChartData = useMemo(() => {
-    let data = chartMetric === 'volume' && filterOutliers ? removeOutliers(histogram) : histogram;
-    if (movingAverageWindow > 0) {
-      data = calculateMovingAverage(data, movingAverageWindow);
-    }
-    // Don't apply log scale manually - let ECharts handle it with yAxis type: 'log'
-    return data;
-  }, [histogram, chartMetric, filterOutliers, movingAverageWindow]);
-
-  const fetchGuardianHealth = async (federationId: string) => {
-    try {
-  const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
-      const response = await fetch(`${BASE_URL}/federations/${federationId}/health`);
-      if (response.ok) {
-        const data = await response.json();
-        setGuardianHealth(data);
-      }
-    } catch (err) {
-      console.error('Failed to fetch guardian health:', err);
-    }
-  };
-
-  const fetchHistogram = async (federationId: string) => {
-    setHistogramLoading(true);
-    try {
-  const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
-      const response = await fetch(`${BASE_URL}/federations/${federationId}/transactions/histogram`);
-      if (response.ok) {
-        const data = await response.json() as Record<string, { num_transactions: number; amount_transferred: number }>;
-        // Data comes as: { "2024-05-31": { "num_transactions": 1, "amount_transferred": 2000000000 }, ... }
-        const chartData = Object.entries(data).map(([dateStr, stats]) => {
-          const date = new Date(dateStr);
-          return {
-            date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-            isoDate: dateStr,
-            timestamp: date.getTime(),
-            volume: stats.amount_transferred / 100000000000, // millisats to BTC
-            count: stats.num_transactions,
-          };
-        });
-        setHistogram(chartData);
-      }
-    } catch (error) {
-      console.error('Failed to fetch histogram:', error);
-    } finally {
-      setHistogramLoading(false);
-    }
-  };
-
-  const fetchUTXOs = async (federationId: string) => {
-    setUtxosLoading(true);
-    try {
-      const data = await api.getFederationUtxos(federationId);
-      setUtxoRows(data.utxos);
-      setUtxoGuardians(data.guardians);
-      setUtxoThreshold(data.threshold);
-    } catch (err) {
-      console.error('Failed to fetch UTXOs:', err);
-      setUtxoRows([]);
-      setUtxoGuardians([]);
-      setUtxoThreshold(0);
-    } finally {
-      setUtxosLoading(false);
-    }
-  };
+  }, [histogram.length, initialZoom, id]);
 
   const handleRateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -375,50 +378,27 @@ export function FederationDetail() {
     setRatingSuccess(false);
 
     try {
-      // Check for Nostr extension
-      if (!window.nostr) {
-        throw new Error('Nostr extension not found. Please install a Nostr browser extension like nos2x or Alby.');
-      }
+      await publishNostrEvent(() => {
+        if (!id) throw new Error('Federation ID missing');
+        // Without a known network the tag is left out rather than guessed
+        const network = nostrNetworkTag(config?.network);
 
-      const nostr = window.nostr;
-      const pubkey = await nostr.getPublicKey();
-
-      if (!id) throw new Error('Federation ID missing');
-
-      // Create unsigned event (Kind 38000 for rating)
-      const unsignedEvent = {
-        kind: 38000,
-        created_at: Math.floor(Date.now() / 1000),
-        tags: [
-          ['d', id],
-          ['n', 'mainnet'],
-          ['k', '38173'],
-        ],
-        content: `[${rating}/5] ${comment}`,
-        pubkey,
-      };
-
-      // Sign event
-      const signedEvent = await nostr.signEvent(unsignedEvent);
-
-      // Publish to backend
-  const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
-      const response = await fetch(`${BASE_URL}/federations/nostr/rating`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(signedEvent),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to publish rating: ${response.status}`);
-      }
+        // Kind 38000 for rating
+        return {
+          kind: 38000,
+          tags: [
+            ['d', id],
+            ...(network ? [['n', network]] : []),
+            ['k', '38173'],
+          ],
+          content: `[${rating}/5] ${comment}`,
+        };
+      }, (event) => api.publishNostrRating(event));
 
       setRatingSuccess(true);
       setComment('');
     } catch (err) {
-      setRatingError(err instanceof Error ? err.message : 'Failed to publish rating');
+      setRatingError(errorMessage(err, 'Failed to publish rating'));
     }
   };
 
@@ -449,9 +429,28 @@ export function FederationDetail() {
         </Link>
       </div>
 
-      <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-6 sm:mb-8 break-words">
+      <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-6 sm:mb-8 wrap-break-word">
         {federation.name || 'Unnamed Federation'}
       </h1>
+      {expiryDate && (
+        <div className={`mb-4 rounded-lg border p-3 text-sm ${
+          expiryDate.getTime() <= Date.now()
+            ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-500/60 dark:bg-red-900/20 dark:text-red-300'
+            : 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-500/60 dark:bg-amber-900/20 dark:text-amber-300'
+        }`}>
+          <strong>{expiryDate.getTime() <= Date.now() ? 'Shut down' : 'Shutting down'}</strong>
+          {' '}on {formatUtcDateTime(expiryDate)}.
+          {federation.successor && (
+            <>
+              {' '}Successor: {/^https?:\/\//.test(federation.successor) ? (
+                <a className="underline" href={federation.successor}>{federation.successor}</a>
+              ) : (
+                <span className="font-mono break-all">{federation.successor}</span>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Guardians Panel */}
@@ -460,15 +459,23 @@ export function FederationDetail() {
             Guardians
             {config && (
               <span className="ml-2 text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
-                {config.guardians.length} of {config.guardians.length} Federation
+                Consensus needs {guardianThreshold(config.guardians.length)} of {config.guardians.length} guardians
               </span>
             )}
           </h2>
+          {healthStatus === 'failed' && (
+            <div className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg bg-red-50 p-3 text-xs text-red-800 dark:bg-gray-900/60 dark:text-red-400 sm:text-sm" role="alert">
+              <span><span className="font-bold">Error: </span>Could not check the guardians' status.</span>
+              <button type="button" onClick={() => setHealthReload((count) => count + 1)} className="font-medium underline hover:no-underline">
+                Try again
+              </button>
+            </div>
+          )}
           {config ? (
             <div className="space-y-3 sm:space-y-4">
               {config.guardians.map((guardian) => {
                 const health = guardianHealth[guardian.id.toString()];
-                const isLoading = !health;
+                const isLoading = healthStatus === 'loading';
                 const isOnline = health?.latest !== null && health?.latest !== undefined;
                 const session = health?.latest?.session_count || 0;
                 const block = health?.latest?.block_height ?? null;
@@ -489,6 +496,15 @@ export function FederationDetail() {
                         <span className="text-xs sm:text-sm font-medium text-gray-500 dark:text-gray-400">
                           Loading...
                         </span>
+                      ) : !health ? (
+                        <Badge
+                          level="warning"
+                          tooltip={healthStatus === 'failed'
+                            ? 'The guardian status request failed'
+                            : 'The observer has no status recorded for this guardian'}
+                        >
+                          Status unknown
+                        </Badge>
                       ) : (
                         <>
                           <Badge level={isOnline ? 'success' : 'error'}>
@@ -505,14 +521,12 @@ export function FederationDetail() {
                               >
                                 Session {session}
                               </Badge>
-                              {block !== null && (
-                                <Badge
-                                  level={blockOutdated ? 'warning' : 'info'}
-                                  tooltip={blockOutdated ? "Guardian's bitcoind is out of sync" : undefined}
-                                >
-                                  Block {block - 1}
-                                </Badge>
-                              )}
+                              <Badge
+                                level={blockOutdated ? 'warning' : 'info'}
+                                tooltip={blockOutdated ? "Guardian's bitcoind is out of sync" : undefined}
+                              >
+                                {block === null ? 'Block height unavailable' : `Block ${block}`}
+                              </Badge>
                             </>
                           )}
                         </>
@@ -556,22 +570,32 @@ export function FederationDetail() {
                   Confirmations Required
                 </div>
                 <div className="text-sm sm:text-base text-gray-900 dark:text-white">
-                  {config?.confirmations_required || 'N/A'}
+                  {config?.confirmationsRequired || 'N/A'}
                 </div>
               </div>
-              {id && (
+              {id && hasLightningV1 && (
                 <div>
                   <Link
                     to={`/federations/${id}/gateways`}
-                    className="inline-flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg focus:ring-4 focus:outline-none focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
+                    className="inline-flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg focus:ring-4 focus:outline-hidden focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
                   >
                     Gateway Details
                   </Link>
                 </div>
               )}
-              {federation?.invite && hasOnlineGuardian && (
+              {id && hasLightningV2 && (
+                <Link to={`/federations/${id}/gateways/v2`} state={{ id, name: federation?.name ?? null, config: config?.raw } satisfies GatewayPageHandoff} className="inline-flex w-full items-center justify-center rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-700">
+                  Lightning v2 Gateway Details
+                </Link>
+              )}
+              {federation?.invite && showInvite && !shuttingDown && (
                 <div>
                   <div className="text-xs sm:text-sm text-gray-500 dark:text-gray-400 mb-2">Invite Link</div>
+                  {healthStatus === 'failed' && (
+                    <p className="mb-2 text-xs text-yellow-700 dark:text-yellow-300">
+                      Guardian status could not be checked, so whether this federation accepts new users right now is unknown.
+                    </p>
+                  )}
                   <div className="flex flex-col items-center bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-600">
                     <QRCodeSVG
                       value={federation.invite}
@@ -660,16 +684,33 @@ export function FederationDetail() {
             >
               Activity
             </button>
-            <button
-              onClick={() => setActiveTab('utxos')}
-              className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
-                activeTab === 'utxos'
-                  ? 'border-blue-500 text-blue-600 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
-              }`}
-            >
-              UTXOs
-            </button>
+            {hasWalletV1 && (
+              <button
+                onClick={() => {
+                  setActiveTab('utxos');
+                  setUtxosRequested(true);
+                }}
+                className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
+                  activeTab === 'utxos'
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                }`}
+              >
+                UTXOs
+              </button>
+            )}
+            {hasWalletV2 && (
+              <button
+                onClick={() => { setActiveTab('assets'); setAssetsOpened(true); }}
+                className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
+                  activeTab === 'assets'
+                    ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+                }`}
+              >
+                Wallet Assets
+              </button>
+            )}
             <button
               onClick={() => setActiveTab('config')}
               className={`border-b-2 py-3 sm:py-4 px-1 text-xs sm:text-sm font-medium whitespace-nowrap ${
@@ -682,6 +723,7 @@ export function FederationDetail() {
             </button>
           </nav>
         </div>
+
         <div className="mt-4 sm:mt-6">
           {activeTab === 'activity' && (
             <>
@@ -695,13 +737,13 @@ export function FederationDetail() {
               <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-4 sm:p-6">
                 <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4 sm:mb-6">
                   <div className="flex-1 min-w-0">
-                    <h3 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white break-words">
-                      {chartMetric === 'volume'
-                        ? histogram.reduce((sum, entry) => sum + entry.volume, 0).toFixed(6) + ' BTC'
-                        : histogram.reduce((sum, entry) => sum + entry.count, 0).toString()}
+                    <h3 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white wrap-break-word">
+                      {histogramError || (histogramLoading && histogram.length === 0) ? '—' : chartMetric === 'volume'
+                        ? histogramTotals.volume.toFixed(6) + ' BTC'
+                        : histogramTotals.count.toString()}
                     </h3>
                     <p className="text-xs sm:text-sm text-gray-500 dark:text-gray-400">
-                      {chartMetric === 'volume' ? 'Total Volume' : 'Total Transactions'}
+                      {histogramError ? 'Unavailable: activity could not be loaded' : chartMetric === 'volume' ? 'Total Volume' : 'Total Transactions'}
                     </p>
                   </div>
                   <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4 shrink-0 relative z-10">
@@ -709,7 +751,7 @@ export function FederationDetail() {
                       <select
                         className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white text-xs sm:text-sm min-w-[140px] appearance-none cursor-pointer"
                         value={movingAverageWindow}
-                        onChange={(e) => setMovingAverageWindow(Number(e.target.value))}
+                        onChange={(e) => setMovingAverageWindow(Number(e.target.value) as HistogramAverage)}
                         aria-label="Moving average"
                       >
                         <option value="0">No Average</option>
@@ -724,7 +766,7 @@ export function FederationDetail() {
                       >
                         <input
                           type="checkbox"
-                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 shrink-0"
+                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded-sm focus:ring-blue-500 shrink-0"
                           checked={useLogScale}
                           onChange={(e) => setUseLogScale(e.target.checked)}
                         />
@@ -739,7 +781,7 @@ export function FederationDetail() {
                       >
                         <input
                           type="checkbox"
-                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 shrink-0"
+                          className="mr-2 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded-sm focus:ring-blue-500 shrink-0"
                           checked={filterOutliers}
                           onChange={(e) => setFilterOutliers(e.target.checked)}
                         />
@@ -762,14 +804,26 @@ export function FederationDetail() {
                   </div>
                 </div>
 
-                {histogramLoading ? (
+                {histogramLoading && histogram.length === 0 ? (
                   <div className="text-center text-xs sm:text-sm text-gray-500 dark:text-gray-400 py-12">
                     Loading chart data...
                   </div>
+                ) : histogramError ? (
+                  <div className="py-12 text-center text-xs text-red-700 dark:text-red-400 sm:text-sm" role="alert">
+                    <p>Could not load the activity data: {histogramError}</p>
+                    <button
+                      type="button"
+                      onClick={() => setHistogramReload((count) => count + 1)}
+                      className="mt-3 rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                    >
+                      Try again
+                    </button>
+                  </div>
                 ) : histogram.length > 0 ? (
-                  <div className="mt-4 -mx-4 sm:mx-0">
+                  <div className={`mt-4 -mx-4 sm:mx-0 transition-opacity ${histogramLoading ? 'opacity-60' : ''}`} aria-busy={histogramLoading}>
                     <h4 className="text-center text-sm sm:text-base font-normal text-gray-500 dark:text-gray-400 mb-4 px-4 sm:px-0">
                       Daily {chartMetric === 'volume' ? 'Volume' : 'Transactions'}{useLogScale && chartMetric === 'count' ? ' (Log Scale)' : ''}
+                      <span className="block text-xs text-gray-400 dark:text-gray-500">Days in UTC</span>
                     </h4>
                     <div className="w-full px-4 sm:px-0">
                       <Suspense fallback={
@@ -778,7 +832,7 @@ export function FederationDetail() {
                         </div>
                       }>
                         <TransactionChart
-                          data={processedChartData}
+                          data={histogram}
                           chartMetric={chartMetric}
                           movingAverageWindow={movingAverageWindow}
                           useLogScale={useLogScale}
@@ -797,7 +851,11 @@ export function FederationDetail() {
               </div>
             </>
           )}
-
+          {assetsOpened && hasWalletV2 && (
+            <div hidden={activeTab !== 'assets'}>
+              <WalletV2Panel id={id!} modules={config?.raw.modules ?? {}} active={activeTab === 'assets'} />
+            </div>
+          )}
           {activeTab === 'utxos' && (
             <>
               <Alert
@@ -813,10 +871,29 @@ export function FederationDetail() {
                       One row per outpoint. Guardian agreement is shown alongside the reconstructed observer record.
                     </p>
                   </div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    {successfulGuardianCount} of {utxoGuardians.length} guardians compared
-                  </div>
+                  {utxoData && (
+                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                      {successfulGuardianCount} of {utxoGuardians.length} guardians compared
+                    </div>
+                  )}
                 </div>
+
+                {utxosError && (
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300 sm:px-6" role="alert">
+                    <span><span className="font-bold">Error: </span>Could not load the UTXOs: {utxosError.message}</span>
+                    {utxosError.retryable && (
+                      <button type="button" onClick={() => setUtxosReload((count) => count + 1)} className="font-medium underline hover:no-underline">
+                        Try again
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {overviewFailed && !utxosError && (
+                  <div className="border-b border-gray-200 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300 sm:px-6">
+                    Could not check how far the observer's wallet history is indexed, so outputs from recent sessions may be missing.
+                  </div>
+                )}
 
                 {guardianSummaryUnavailable && (
                   <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200 sm:px-6">
@@ -836,6 +913,12 @@ export function FederationDetail() {
                   </div>
                 )}
 
+                {walletBehind && (
+                  <div className="border-b border-gray-200 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300 sm:px-6">
+                    The observer's wallet history is indexed to session {walletSessions} of {overview.session_count}, so outputs from later sessions are not listed yet.
+                  </div>
+                )}
+
                 {laggingGuardians.length > 0 && (
                   <div className="border-b border-gray-200 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300 sm:px-6">
                     Left out of the comparison because they are behind the federation:{' '}
@@ -846,12 +929,15 @@ export function FederationDetail() {
                   <div className="flex flex-wrap gap-2" role="group" aria-label="Filter UTXOs by status">
                     {(['all', 'verified', 'pending', 'mismatch'] as const).map((view) => {
                       const active = utxoView === view;
-                      const alert = view === 'mismatch' && utxoCounts.mismatch > 0;
+                      const alert = view === 'mismatch' && (utxoCounts?.mismatch ?? 0) > 0;
                       return (
                         <button
                           key={view}
                           type="button"
-                          onClick={() => setUtxoView(view)}
+                          onClick={() => {
+                            setUtxoView(view);
+                            setUtxoPage(1);
+                          }}
                           aria-pressed={active}
                           className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
                             active
@@ -862,7 +948,7 @@ export function FederationDetail() {
                           }`}
                         >
                           <span>{view === 'all' ? 'All' : UTXO_KIND_STYLES[view].label}</span>
-                          <span className={`tabular-nums ${active ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'}`}>{utxoCounts[view]}</span>
+                          {utxoCounts && <span className={`tabular-nums ${active ? 'text-white/80' : 'text-gray-400 dark:text-gray-500'}`}>{utxoCounts[view]}</span>}
                         </button>
                       );
                     })}
@@ -873,13 +959,15 @@ export function FederationDetail() {
                       value={utxoSearch}
                       onChange={(event) => setUtxoSearch(event.target.value)}
                       aria-label="Search UTXOs"
-                      placeholder="Search outpoint, txid, address or amount"
-                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white sm:w-80"
+                      placeholder="Search outpoint, txid, address or BTC amount"
+                      className="w-full rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 outline-hidden focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white sm:w-80"
                     />
                     <div className="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">
-                      {filteredUtxos.length === 0
-                        ? '0 UTXOs'
-                        : `${utxoPageStart + 1}–${utxoPageStart + visibleUtxos.length} of ${filteredUtxos.length}`}
+                      {!utxoData
+                        ? ''
+                        : utxoTotalRows === 0
+                          ? '0 UTXOs'
+                          : `${utxoPageStart + 1}–${utxoPageStart + visibleUtxos.length} of ${utxoTotalRows}`}
                     </div>
                   </div>
                 </div>
@@ -899,15 +987,19 @@ export function FederationDetail() {
                       <th scope="col" className="px-4 py-2 text-right sm:px-6">Amount</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-100 dark:divide-gray-700/70">
-                    {utxosLoading ? (
+                  <tbody aria-busy={utxosLoading} className={`divide-y divide-gray-100 transition-opacity dark:divide-gray-700/70 ${utxosLoading && utxoData ? 'opacity-60' : ''}`}>
+                    {utxosLoading && !utxoData ? (
                       <tr>
                         <td colSpan={4} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">Loading UTXOs...</td>
                       </tr>
-                    ) : filteredUtxos.length === 0 ? (
+                    ) : utxosError ? (
+                      <tr>
+                        <td colSpan={4} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">UTXOs unavailable</td>
+                      </tr>
+                    ) : visibleUtxos.length === 0 ? (
                       <tr>
                         <td colSpan={4} className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
-                          {utxoSearch.trim() ? `No UTXOs match "${utxoSearch.trim()}"` : 'No UTXOs found'}
+                          {utxoQuery ? `No UTXOs match "${utxoQuery}"` : 'No UTXOs found'}
                         </td>
                       </tr>
                     ) : (
@@ -920,27 +1012,23 @@ export function FederationDetail() {
                             className={`align-top transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40 ${utxo.kind === 'mismatch' ? 'bg-rose-50/50 dark:bg-rose-950/10' : ''}`}
                           >
                             <td className="px-4 py-2.5 sm:px-6">
-                              <a
-                                href={mempoolTxUrl(utxo.outPoint)}
-                                target="_blank"
-                                rel="noopener noreferrer"
+                              <ExplorerLink
+                                href={explorerTxUrl(utxo.outPoint, network)}
                                 className="block truncate font-mono text-xs text-blue-700 hover:underline dark:text-blue-400"
                                 title={utxo.outPoint}
                               >
                                 {shortOutpoint(utxo.outPoint)}
-                              </a>
+                              </ExplorerLink>
                               {utxo.address && (
-                                <a
-                                  href={mempoolAddressUrl(utxo.address)}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
+                                <ExplorerLink
+                                  href={explorerAddressUrl(utxo.address, network)}
                                   className="mt-0.5 block truncate font-mono text-[11px] text-gray-500 hover:underline dark:text-gray-400"
                                   title={utxo.address}
                                 >
                                   {shortMiddle(utxo.address, 10, 8)}
-                                </a>
+                                </ExplorerLink>
                               )}
-                              {utxo.detail && <p className={`mt-1 text-xs ${style.detail}`}>{linkTxids(utxo.detail)}</p>}
+                              {utxo.detail && <p className={`mt-1 text-xs ${style.detail}`}>{linkTxids(utxo.detail, network)}</p>}
                             </td>
                             <td className="hidden px-2 py-2.5 sm:table-cell">
                               {comparedGuardianIds.length > 0 && (
@@ -971,7 +1059,7 @@ export function FederationDetail() {
                             </td>
                             <td className="px-4 py-2.5 text-right sm:px-6">
                               <div className="whitespace-nowrap font-mono text-xs tabular-nums text-gray-900 dark:text-white">
-                                {formatMsatsAsBtc(utxo.amount)}
+                                {asBitcoin(utxo.amount, 8)}
                               </div>
                               <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium sm:hidden ${style.pill}`}>{style.label}</span>
                             </td>
@@ -1028,8 +1116,8 @@ export function FederationDetail() {
 
           {activeTab === 'config' && (
             <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 p-3 sm:p-6 overflow-hidden">
-              <pre className="text-[10px] sm:text-xs lg:text-sm text-gray-900 dark:text-white overflow-x-auto whitespace-pre break-words">
-                {config?.rawConfig ? JSON.stringify(config.rawConfig, null, 2) : 'Loading config...'}
+              <pre className="text-[10px] sm:text-xs lg:text-sm text-gray-900 dark:text-white overflow-x-auto whitespace-pre wrap-break-word">
+                {config?.raw ? JSON.stringify(config.raw, null, 2) : 'Loading config...'}
               </pre>
             </div>
           )}
@@ -1043,108 +1131,35 @@ function pluralOutputs(count: number): string {
   return `${count} ${count === 1 ? 'output' : 'outputs'}`;
 }
 
-function formatMsatsAsBtc(msats: number): string {
-  return `${(msats / MSATS_PER_BTC).toFixed(8)} BTC`;
-}
-
 // `txid:vout` with the txid shortened in the middle; the full value is in the title
 function shortOutpoint(outPoint: string): string {
   const [txid, vout] = outPoint.split(':');
   return vout === undefined ? shortMiddle(outPoint, 12, 12) : `${shortMiddle(txid, 12, 12)}:${vout}`;
 }
 
-function shortMiddle(value: string, head: number, tail: number): string {
-  return value.length <= head + tail + 1 ? value : `${value.slice(0, head)}…${value.slice(-tail)}`;
+// A link to the block explorer, or plain text on a network it has no pages for
+function ExplorerLink({ href, className, title, children }: { href: string | null; className: string; title?: string; children: React.ReactNode }) {
+  return href ? (
+    <a href={href} target="_blank" rel="noopener noreferrer" className={className} title={title}>{children}</a>
+  ) : (
+    <span className={className.replace(/\S*hover:\S+/g, '')} title={title}>{children}</span>
+  );
 }
 
-// Shortens transaction ids in backend descriptions and links them to mempool
-function linkTxids(text: string) {
+// Shortens transaction ids in backend descriptions and links them to the explorer
+function linkTxids(text: string, network: string | undefined) {
   return text.split(/\b([0-9a-f]{64})\b/).map((part, index) =>
     index % 2 === 1 ? (
-      <a
+      <ExplorerLink
         key={index}
-        href={mempoolTxUrl(part)}
-        target="_blank"
-        rel="noopener noreferrer"
+        href={explorerTxUrl(part, network)}
         className="font-mono underline hover:no-underline"
         title={part}
       >
         {shortMiddle(part, 8, 8)}
-      </a>
+      </ExplorerLink>
     ) : (
       part
     )
   );
-}
-
-function mempoolTxUrl(outPoint: string): string {
-  const txid = outPoint.split(':')[0] ?? outPoint;
-  return `https://mempool.space/tx/${txid}`;
-}
-
-function mempoolAddressUrl(address: string): string {
-  return `https://mempool.space/address/${address}`;
-}
-
-async function fetchFederationConfig(federationId: string, inviteCode: string): Promise<FederationConfig> {
-  const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
-
-  // Try fetching config using federation ID first (works for actively observed federations)
-  try {
-    const configResponse = await fetch(`${BASE_URL}/federations/${federationId}/config`);
-    if (configResponse.ok) {
-      const config = await configResponse.json();
-      return parseConfig(config);
-    }
-  } catch {
-    // Fallback below handles federations that are not actively observed.
-  }
-
-  // Fallback: fetch config using invite code (works for any federation with valid invite)
-  const configResponse = await fetch(`${BASE_URL}/config/${inviteCode}`);
-  if (!configResponse.ok) {
-    throw new Error(`Failed to fetch federation config: ${configResponse.status}`);
-  }
-  const config = await configResponse.json() as Record<string, unknown>;
-  return parseConfig(config);
-}
-
-function parseConfig(config: Record<string, unknown>): FederationConfig {
-  // Parse guardians
-  const guardians: Guardian[] = (config.global as { api_endpoints?: Record<string, { url?: string }> })?.api_endpoints
-    ? Object.entries((config.global as { api_endpoints: Record<string, { url?: string }> }).api_endpoints).map(([id, endpoint]) => ({
-        id: parseInt(id),
-        name: `Guardian ${id}`,
-        url: endpoint.url || 'Unknown',
-        online: false, // Will be determined by health endpoint
-        session: 0, // Will be updated by health endpoint
-        block: 0, // Will be updated by health endpoint
-        sessionOutdated: false,
-        blockOutdated: false,
-      }))
-    : [];
-
-  // Parse modules
-  const modules: string[] = config.modules
-    ? Object.values(config.modules as Record<string, { kind?: string }>).map((mod) => mod.kind || 'unknown')
-    : [];
-
-  // Get network from wallet module
-  const walletModule = config.modules
-    ? Object.values(config.modules as Record<string, { kind?: string; network?: string; finality_delay?: number }>).find((mod) => mod.kind === 'wallet')
-    : null;
-  const network = walletModule ? (walletModule.network || 'unknown') : 'unknown';
-
-  // Get confirmations required from wallet module (finality_delay + 1)
-  const confirmations_required = walletModule
-    ? ((walletModule.finality_delay || 0) + 1)
-    : 0;
-
-  return {
-    guardians,
-    modules,
-    network,
-    confirmations_required,
-    rawConfig: config, // Store raw config for display in Config tab
-  };
 }

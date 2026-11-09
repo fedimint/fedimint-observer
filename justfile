@@ -34,7 +34,7 @@ check_package PACKAGE *ARGS:
   cargo check -p {{PACKAGE}} {{ARGS}}
 
 check *ARGS:
-  just check_package fmo_server {{ARGS}}
+  cargo check --workspace {{ARGS}}
 
 # run all checks recommended before opening a PR
 final-check: lint clippy
@@ -75,7 +75,7 @@ test_package PACKAGE:
   cargo test -p {{PACKAGE}}
 
 test:
-  just test_package fmo_server
+  cargo test --workspace
 
 # run and restart on changes
 watch *ARGS="-x run":
@@ -92,14 +92,14 @@ clippy_package PACKAGE *ARGS="--locked":
   cargo clippy -p {{PACKAGE}} {{ARGS}}
 
 clippy *ARGS="--locked":
-  just clippy_package fmo_server {{ARGS}}
+  cargo clippy --workspace --all-targets {{ARGS}} -- -D warnings
 
 # run `cargo clippy --fix` on everything
 clippy_fix-package PACKAGE *ARGS="--locked --offline":
   cargo clippy -p {{PACKAGE}} {{ARGS}} --fix
 
 clippy-fix *ARGS="--locked --offline":
-  just clippy_fix-package fmo_server {{ARGS}}
+  cargo clippy --workspace {{ARGS}} --fix
 
 # run `semgrep`
 semgrep:

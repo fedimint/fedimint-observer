@@ -1,0 +1,25 @@
+[package]
+name = "fmo_module_walletv2"
+version = "0.2.0"
+edition = "2021"
+description = "Fedimint Observer walletv2 module"
+
+[dependencies]
+anyhow = "1.0.81"
+async-trait = "0.1.92"
+fedimint-core = { workspace = true }
+fedimint-walletv2-common = { workspace = true }
+fmo_core = { path = "../../fmo_core" }
+serde_json = "1.0.115"
+axum = { version = "0.7.5", features = ["json"] }
+fedimint-api-client = { workspace = true }
+fmo_api_types = { path = "../../fmo_api_types" }
+tokio = { version = "1.37.0", features = ["full"] }
+tracing = "0.1.40"
+chrono = { version = "0.4.38", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+futures = "0.3.30"
+
+[dev-dependencies]
+deadpool-postgres = "0.14.0"
+tokio-postgres = { version = "0.7.11", features = ["with-serde_json-1", "with-chrono-0_4"] }
