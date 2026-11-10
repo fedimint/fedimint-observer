@@ -16,11 +16,38 @@ Run the backend with `just run` from the repository root. It serves the API at
 `/federations`, `/config` and `/nostr` directly; the `/api` prefix only exists
 behind Nginx.
 
+## Code layout
+
+```
+src/
+  pages/          one thin component per route: reads the URL, calls feature hooks, composes components
+  features/<x>/   everything for one part of the site
+    components/   its components
+    hooks/        its data loading and view state
+    lib/          pure functions and constants, no React: unit-testable with `node --test`
+  components/ui/  building blocks with no domain knowledge (Panel, Tabs, FilterChips, Modal, …)
+  components/layout/  the app shell (NavBar)
+  hooks/          shared hooks: useApiResource (one request tied to a component), useCursorPages (cursor-paged lists with auto-refresh), useTheme
+  services/ types/ utils/   API client, API types, formatting and other helpers shared by features
+```
+
+Features are `federations` (the home list), `federation` (a federation's page),
+`gateways` (Lightning v1), `gateways-v2`, `wallet-v2` and `nostr`. A feature may
+use `components/ui`, `hooks` and `utils`, and another feature's components
+(the federation page embeds the wallet-v2 panel); `components/ui` never imports
+from a feature.
+
+Import modules by their file path; there are no `index.ts` barrels, which keeps
+lazy-loaded pages and charts in their own chunks. A file that exports a
+component exports only components (Fast Refresh); constants and helpers belong
+in a `lib/` or `utils/` file.
+
 ## Checks
 
 ```bash
 npm run lint
 npm run build   # type-checks with `tsc -b`, then bundles into dist/
+npm run test:config && npm run test:pagination && npm run test:charts && npm run test:format && npm run test:gateways
 ```
 
 The API types in `src/types/api.ts` mirror the backend's `fmo_api_types` crate

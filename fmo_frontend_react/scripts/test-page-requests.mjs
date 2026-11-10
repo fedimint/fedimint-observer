@@ -59,3 +59,13 @@ test('changing page generation discards an outstanding pagination response', () 
   assert.equal(gate.finishPage(newer, false), true);
   assert.notEqual(gate.refresh(), null);
 });
+
+const { pageItems } = await import('../src/utils/pagination.ts');
+
+test('numbered pagination shows the ends and the neighbours of the current page', () => {
+  assert.deepEqual(pageItems(1, 1), [1]);
+  assert.deepEqual(pageItems(2, 3), [1, 2, 3]);
+  assert.deepEqual(pageItems(5, 10), [1, 'gap', 4, 5, 6, 'gap', 10]);
+  assert.deepEqual(pageItems(1, 10), [1, 2, 'gap', 10]);
+  assert.deepEqual(pageItems(10, 10), [1, 'gap', 9, 10]);
+});
