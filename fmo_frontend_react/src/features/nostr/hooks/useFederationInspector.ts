@@ -61,7 +61,7 @@ export function useFederationInspector() {
       });
     } catch (err) {
       if (signal?.aborted) return;
-      setError(errorMessage(err, 'Failed to fetch federation info'));
+      setError(`Could not check the federation: ${errorMessage(err)}`);
     } finally {
       if (!signal?.aborted) setChecking(false);
     }
@@ -92,12 +92,7 @@ export function useFederationInspector() {
       await publishNostrEvent(async () => {
         // The server derives the federation ID from the invite code, since calculating
         // it client-side would require crypto libraries
-        let federationId: string;
-        try {
-          federationId = await api.getFederationIdByInvite(checked.invite);
-        } catch (err) {
-          throw new Error(`Failed to calculate federation ID: ${errorMessage(err, 'Unknown error')}`);
-        }
+        const federationId = await api.getFederationIdByInvite(checked.invite);
 
         if (!checked.invite.trim()) {
           throw new Error('Invite code is required');
@@ -120,7 +115,7 @@ export function useFederationInspector() {
       setAnnounced(true);
       setError(null);
     } catch (err) {
-      setError(errorMessage(err, 'Failed to announce federation'));
+      setError(`Could not announce the federation: ${errorMessage(err)}`);
       setAnnounced(false);
     } finally {
       setAnnouncing(false);

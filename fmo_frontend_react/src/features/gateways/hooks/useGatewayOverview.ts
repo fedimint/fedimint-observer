@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../../services/api';
 import type { GatewayInfo, GatewayOverviewSummary, GatewayUptimeTrendPoint, GatewayWindow } from '../../../types/api';
-import { errorMessage } from '../../../utils/errors';
+import { errorMessage, isNetworkError } from '../../../utils/errors';
 import type { LoadError } from '../lib/gatewaySelection';
 
 // Gateways are polled and their overview rebuilt every 5 minutes on the server
@@ -49,8 +49,8 @@ export function useGatewayOverview(id: string, timeWindow: GatewayWindow) {
         if (signal.aborted) return;
         setError({
           window: timeWindow,
-          message: errorMessage(err, 'Failed to fetch gateways'),
-          network: err instanceof TypeError,
+          message: errorMessage(err),
+          network: isNetworkError(err),
         });
       })
       .finally(() => {

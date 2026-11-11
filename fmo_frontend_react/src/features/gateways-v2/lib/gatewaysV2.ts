@@ -4,7 +4,7 @@ import { formatMsatsAsSats, shortMiddle } from '../../../utils/format';
 import { formatUtcDateTime } from '../../../utils/time';
 
 export type GatewayV2 = GatewayV2Registry['gateways'][number];
-export type GatewayV2Status = GatewayV2['status'];
+type GatewayV2Status = GatewayV2['status'];
 
 export const GATEWAY_V2_WINDOWS: readonly GatewayWindow[] = ['24h', '7d', '30d', '90d'];
 // 'all' means every registered gateway; removed ones have their own filter

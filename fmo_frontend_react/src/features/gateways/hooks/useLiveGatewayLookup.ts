@@ -41,7 +41,7 @@ export function useLiveGatewayLookup({ invite, offline, federationPending }: Liv
         setLive({
           status: 'done',
           gateways: [],
-          error: timedOut ? 'The live registry lookup timed out' : errorMessage(err, 'The live registry lookup failed'),
+          error: timedOut ? 'The live registry lookup timed out' : errorMessage(err),
         });
       })
       .finally(() => clearTimeout(timeout));

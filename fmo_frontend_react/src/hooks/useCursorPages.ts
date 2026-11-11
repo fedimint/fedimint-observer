@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { PageRequests } from '../utils/pageRequests';
 import { startAutoRefresh } from '../utils/autoRefresh';
 
-export interface CursorPageError {
+interface CursorPageError {
   /** Which request failed: the refresh of page 1, or a later page */
   kind: 'refresh' | 'page';
   cause: unknown;

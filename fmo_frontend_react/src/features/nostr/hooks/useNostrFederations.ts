@@ -51,11 +51,11 @@ export function useNostrFederations() {
     online,
     offline,
     loading: nostrList === null && !nostr.failed,
-    error: nostr.failed ? errorMessage(nostr.error, 'Failed to fetch Nostr federations') : null,
+    error: nostr.failed ? errorMessage(nostr.error) : null,
     retry: nostr.reload,
     /** The observer's federations by id; null until they load */
     observedById,
-    observedError: observed.failed ? errorMessage(observed.error, 'Failed to fetch observed federations') : null,
+    observedError: observed.failed ? errorMessage(observed.error) : null,
     retryObserved: observed.reload,
   };
 }

@@ -50,7 +50,7 @@ export interface GatewayWithStatus extends GatewayInfo {
   searchText: string;
 }
 
-export function parseTimestamp(value?: string): Date | null {
+function parseTimestamp(value?: string): Date | null {
   if (!value) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, ApiError } from '../../../services/api';
+import { api } from '../../../services/api';
 import type { GuardianUtxoReport, UtxoView } from '../../../types/api';
-import { errorMessage } from '../../../utils/errors';
+import { errorMessage, isRetryable } from '../../../utils/errors';
 import { useApiResource } from '../../../hooks/useApiResource';
 import { comparedGuardianIds, guardianFindings, toInventoryRows, UTXOS_PER_PAGE } from '../lib/utxos';
 
@@ -53,11 +53,11 @@ export function useFederationUtxos(id: string, enabled: boolean) {
     data,
     rows,
     loading: resource.loading,
-    // A 404 means the federation has no Wallet v1 module, which retrying won't change
+    // A rejected request (404: the federation has no Wallet v1 module) fails the same way again
     error: resource.failed
       ? {
-          message: errorMessage(resource.error, 'Failed to fetch UTXOs'),
-          retryable: !(resource.error instanceof ApiError && resource.error.status === 404),
+          message: errorMessage(resource.error),
+          retryable: isRetryable(resource.error),
         }
       : null,
     retry: resource.reload,

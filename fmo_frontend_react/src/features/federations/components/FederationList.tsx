@@ -29,7 +29,7 @@ function FederationListHeader() {
 }
 
 /** Without this, a failed request would read as an empty list */
-export function FederationsLoadError() {
+function FederationsLoadError() {
   return (
     <div className="px-3 sm:px-6 pt-4 bg-white dark:bg-gray-800">
       <Alert level="error" message="Could not load the federations. Please try again later." />

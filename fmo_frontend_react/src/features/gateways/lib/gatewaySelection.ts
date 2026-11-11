@@ -12,7 +12,7 @@ export interface GatewayWarningState {
   detail?: string;
 }
 
-export interface GatewaySelection {
+interface GatewaySelection {
   gateways: GatewayInfo[];
   warning: GatewayWarningState | null;
   retry: boolean;
@@ -29,7 +29,7 @@ export interface LoadError {
   network: boolean; // fetch itself failed, as opposed to an error answer from the API
 }
 
-export interface GatewaySources {
+interface GatewaySources {
   observed: GatewayInfo[] | null; // recorded history, null until it has loaded once
   observedError: LoadError | null; // the latest request for the selected window failed
   live: LiveLookup; // the federation's own registry, which only adds details

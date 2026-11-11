@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type DependencyList } from 'react';
 
 type Status = 'loading' | 'success' | 'error';
 
-export interface ApiResource<T> {
+interface ApiResource<T> {
   /** The last successful answer, or null before one arrived */
   data: T | null;
   /** What the latest request threw; null unless `failed` */

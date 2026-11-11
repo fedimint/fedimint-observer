@@ -1,7 +1,7 @@
 import type { FederationSummary } from '../../../types/api';
 import { sortFederations, type SortDirection, type SortKey } from '../../../utils/sortFederations';
 
-export interface FederationGroups {
+interface FederationGroups {
   active: FederationSummary[];
   offline: FederationSummary[];
   shutDown: FederationSummary[];

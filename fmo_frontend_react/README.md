@@ -42,12 +42,28 @@ lazy-loaded pages and charts in their own chunks. A file that exports a
 component exports only components (Fast Refresh); constants and helpers belong
 in a `lib/` or `utils/` file.
 
+## API errors
+
+Every request goes through `request()` in `src/services/http.ts`, never `fetch`
+directly. A failure rejects with an `ApiError` whose `kind` is `network`,
+`timeout`, `http` or `invalid_response`, and whose message is fit to show: the
+backend's `{ "error": … }` message when it sent one, otherwise a fixed message
+for the status. Response bodies that are not that JSON (proxy pages, plain text)
+are never shown. Server faults (5xx) append the response's `x-request-id` as
+`(ref N)`, which finds the request in the backend's logs. A request its caller
+cancels rejects with the caller's abort, as `fetch` does, and every request has a
+time limit (`DEFAULT_TIMEOUT_MS`).
+
+Pages say what failed and add the reason: `Could not load the UTXOs:
+${errorMessage(err)}`. `isRetryable(err)` tells whether offering Try again makes
+sense: a request the server rejected (4xx) fails the same way again.
+
 ## Checks
 
 ```bash
 npm run lint
 npm run build   # type-checks with `tsc -b`, then bundles into dist/
-npm run test:config && npm run test:pagination && npm run test:charts && npm run test:format && npm run test:gateways
+npm run test:config && npm run test:pagination && npm run test:charts && npm run test:format && npm run test:gateways && npm run test:http
 ```
 
 The API types in `src/types/api.ts` mirror the backend's `fmo_api_types` crate

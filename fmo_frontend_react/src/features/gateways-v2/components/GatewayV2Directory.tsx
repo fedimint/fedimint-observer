@@ -31,10 +31,9 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
   );
   const pages = useCursorPages({ fetchPage, nextCursor: nextAfter, refreshMs: REFRESH_MS });
   const registry = pages.page;
-  const error = pages.error && errorMessage(
-    pages.error.cause,
-    pages.error.kind === 'refresh' ? 'Could not refresh gateways' : 'Could not load that page of gateways',
-  );
+  const error = pages.error && `${
+    pages.error.kind === 'refresh' ? 'Could not refresh gateways' : 'Could not load that page of gateways'
+  }: ${errorMessage(pages.error.cause)}`;
 
   const gateways = registry?.gateways ?? [];
   // Every figure covers all of the module's gateways, as counted by the server

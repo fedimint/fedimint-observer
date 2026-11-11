@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { api } from '../services/api';
+import { ApiError } from '../services/http';
 import { errorMessage } from '../utils/errors';
 import { useApiResource } from '../hooks/useApiResource';
 import { Tabs, type TabItem } from '../components/ui/Tabs';
@@ -50,7 +51,13 @@ export function FederationDetail() {
   if (details.failed || !federation) {
     return (
       <div className="flex justify-center items-center min-h-[400px]">
-        <div className="text-red-500">Error: {errorMessage(details.error, '') || 'Federation not found'}</div>
+        <div className="text-red-500">
+          Error: {!details.failed
+            ? 'Federation not found'
+            : details.error instanceof ApiError
+              ? `Could not load the federation: ${errorMessage(details.error)}`
+              : errorMessage(details.error)}
+        </div>
       </div>
     );
   }

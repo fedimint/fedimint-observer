@@ -40,7 +40,7 @@ export function RecommendPanel({ id, network }: { id: string; network: string | 
       setPublished(true);
       setComment('');
     } catch (err) {
-      setError(errorMessage(err, 'Failed to publish rating'));
+      setError(`Could not publish the rating: ${errorMessage(err)}`);
     }
   };
 

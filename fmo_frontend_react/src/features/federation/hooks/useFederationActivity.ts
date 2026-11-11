@@ -60,7 +60,7 @@ export function useFederationActivity(id: string) {
     histogram,
     totals: loaded?.totals ?? { volume: 0, count: 0 },
     loading: resource.loading,
-    error: resource.failed ? errorMessage(resource.error, 'Failed to fetch activity') : null,
+    error: resource.failed ? errorMessage(resource.error) : null,
     retry: resource.reload,
     zoom,
     setZoom,
