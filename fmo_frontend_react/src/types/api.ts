@@ -91,18 +91,54 @@ export interface FederationSummary {
   last_7d_activity: FederationActivity[];
   deposits: number | null;
   invite: string;
-  nostr_votes: FederationRating;
   health: FederationHealth;
   expiry_timestamp: number | null;
   /** `federation_successor` meta field as published, normally an invite code */
   successor: string | null;
   /** Federation the successor invite code points to, when it parses as one */
   successor_id: string | null;
+  /** That successor's name, when the observer tracks it */
+  successor_name?: string | null;
 }
 
-export interface FederationRating {
-  count: number;
-  avg: number | null;
+/** Where a paged list stands */
+export interface ListPage {
+  /** Opaque cursor of the next page (`?after=`); null on the last page */
+  next_after: string | null;
+  /** Rows matching the request across all pages */
+  total: number;
+}
+
+export type FederationGroup = 'active' | 'offline' | 'shut_down';
+export type FederationSortKey = 'assets' | 'volume' | 'transactions' | 'name';
+export type SortDir = 'asc' | 'desc';
+
+export interface FederationPageQuery {
+  group: FederationGroup;
+  search: string;
+  sort: FederationSortKey;
+  dir: SortDir;
+  limit: number;
+  after?: string;
+}
+
+/** One page of `GET /federations/page` */
+export interface FederationPage {
+  federations: FederationSummary[];
+  next_after: string | null;
+  total: number;
+  /** Largest daily figures over every federation, so charts on every page share one scale */
+  activity_scale: { max_transactions: number; max_volume_msat: number };
+}
+
+/** Observed and answering, observed but offline, or announced but not observed */
+export type NostrGroup = 'online' | 'offline' | 'unobserved';
+
+/** One page of `GET /nostr/federations/page` */
+export interface NostrFederationPage {
+  federations: { id: string; invite: string; name: string | null; health: FederationHealth | null }[];
+  next_after: string | null;
+  total: number;
 }
 
 export interface FederationActivity {
@@ -172,7 +208,9 @@ export interface GuardianHealthLatest {
  */
 export interface ClientConfig {
   global?: {
-    api_endpoints?: Record<string, { url?: string }>;
+    api_endpoints?: Record<string, { url?: string; name?: string }>;
+    /** Each guardian's broadcast (consensus) public key, by peer id */
+    broadcast_public_keys?: Record<string, string>;
     meta?: Record<string, unknown>;
   };
   /** Keyed by module instance id */
@@ -306,6 +344,20 @@ export interface GatewayOverview {
   uptime_trend?: GatewayUptimeTrendPoint[];
   /** Over all the federation's gateways, whatever ?include= asks for */
   summary: GatewayOverviewSummary;
+  /** Where the gateway list stands; with `gateways` only */
+  page?: ListPage;
+}
+
+/** The gateway list's search, filter, order and page, applied by the backend */
+export interface GatewayListQuery {
+  /** `gateways`, `trend` or both (the default) */
+  include?: string;
+  search: string;
+  status: 'all' | 'online' | 'degraded' | 'offline' | 'unknown' | 'retired';
+  sort: 'freshness' | 'status' | 'uptime' | 'activity';
+  dir: SortDir;
+  limit: number;
+  after?: string;
 }
 
 /** A federation's gateways summed up for the overview's window; retired ones count only in `retired` */
@@ -326,3 +378,94 @@ export interface GatewayOverviewSummary {
 }
 
 export type FederationHealth = 'online' | 'degraded' | 'offline';
+
+/** Window of `/federations/:id/health/history` */
+export type GuardianHealthWindow = '24h' | '7d' | '30d';
+
+/** Each guardian's availability over a window, from the hourly rollup (historical) */
+export interface GuardianHealthHistory {
+  window: GuardianHealthWindow;
+  /** 3600 for 24h and 7d, 86400 (a UTC day) for 30d */
+  bucket_seconds: number;
+  /** RFC 3339 start of the first bucket */
+  start: string;
+  /** Buckets in the window, the current partial one included */
+  bucket_count: number;
+  generated_at: string;
+  guardians: GuardianHealthSeries[];
+}
+
+export interface GuardianHealthSeries {
+  guardian_id: number;
+  /** Online share of polled time in the window; null without samples */
+  uptime_pct: number | null;
+  avg_latency_ms: number | null;
+  /** Start of the last hour within 90 days with an answered poll */
+  last_online_hour: string | null;
+  /** Only buckets with samples, oldest first; a missing bucket was not polled */
+  buckets: GuardianHealthBucket[];
+}
+
+export interface GuardianHealthBucket {
+  start: string;
+  samples: number;
+  online_samples: number;
+  polled_s: number;
+  online_s: number;
+  avg_latency_ms: number | null;
+}
+
+/** Each guardian's latest polls, from the last hour of raw samples (live) */
+export interface FederationLiveHealth {
+  generated_at: string;
+  guardians: GuardianLiveStatus[];
+}
+
+export interface GuardianLiveStatus {
+  guardian_id: number;
+  /** Latest poll in the last hour, answered or not */
+  polled_at: string | null;
+  /** Latest answered poll in the last hour; the fields below are from it */
+  answered_at: string | null;
+  latency_ms: number | null;
+  session_count: number | null;
+  peers_online: number | null;
+  peers_offline: number | null;
+  peers_flagged: number | null;
+  scheduled_shutdown: number | null;
+  /** How this guardian sees its peers' P2P connections */
+  peers: GuardianPeerView[];
+}
+
+export interface GuardianPeerView {
+  peer_id: number;
+  connected: boolean;
+  flagged: boolean;
+  last_contribution: number | null;
+}
+
+export type SeatBindingsStatus = 'not_observed' | 'not_published' | 'invalid' | 'verified';
+
+/** `fedi:fman_seat_bindings` from consensus meta, verified by the observer */
+export interface ManifoldSeatBindingsReport {
+  has_meta_module: boolean;
+  observed_at: string | null;
+  status: SeatBindingsStatus;
+  /** Why the directory is invalid; only for `invalid` */
+  error: string | null;
+  /** Only when every binding verified: an invalid directory binds no seat */
+  bindings: ManifoldSeatBinding[];
+  distinct_guardians: number;
+}
+
+export interface ManifoldSeatBinding {
+  peer_id: number;
+  /** Lowercase x-only hex Nostr key of the Manifold Guardian */
+  fman_pubkey: string;
+  /** Manifold's deterministic name for the key; presentation only */
+  display_name: string;
+  guardian_identity: string;
+  guardian_fee_pubkey: string;
+  /** Unix seconds */
+  issued_at: number;
+}

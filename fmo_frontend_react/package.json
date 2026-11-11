@@ -13,7 +13,9 @@
     "test:config": "node --experimental-strip-types --test scripts/test-config.mjs",
     "test:format": "node --experimental-strip-types --test scripts/test-format.mjs",
     "test:gateways": "node --experimental-strip-types --test scripts/test-gateways.mjs",
-    "test:http": "node --experimental-strip-types --test scripts/test-http.mjs"
+    "test:http": "node --experimental-strip-types --test scripts/test-http.mjs",
+    "test:guardians": "node --experimental-strip-types --test scripts/test-guardians.mjs",
+    "test:manifold": "node --experimental-strip-types --test scripts/test-manifold.mjs"
   },
   "dependencies": {
     "echarts": "^6.1.0",

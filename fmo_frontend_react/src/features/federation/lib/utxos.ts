@@ -1,7 +1,8 @@
+import type { PageSize } from '../../../utils/pageSize';
 import type { FederationUtxosResponse, GuardianClaimedUtxoState, GuardianUtxoReport, UtxoView } from '../../../types/api';
 import { shortMiddle } from '../../../utils/format';
 
-export const UTXOS_PER_PAGE = 25;
+export const UTXOS_PER_PAGE: PageSize = 25;
 export const UTXO_VIEWS = ['all', 'verified', 'pending', 'mismatch'] as const satisfies readonly UtxoView[];
 
 export type UtxoKind = Exclude<UtxoView, 'all'>;

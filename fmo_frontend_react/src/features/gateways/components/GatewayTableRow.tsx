@@ -1,6 +1,5 @@
 import type { GatewayWindow } from '../../../types/api';
 import { formatMsatsCompact, shortMiddle } from '../../../utils/format';
-import { formatUtcDateTime } from '../../../utils/time';
 import { formatCompactDuration, formatRelative, statusClasses, type GatewayWithStatus, type UptimeStripStatus } from '../lib/gatewayRows';
 import { UptimeStrip } from './UptimeStrip';
 
@@ -12,7 +11,8 @@ interface GatewayTableRowProps {
   windowMinutes: number;
   /** The window the activity figures cover, e.g. "7D" */
   metricsWindow: string;
-  onViewRaw: (gatewayName: string, raw: Record<string, unknown>) => void;
+  /** Opens the gateway's details in the side panel */
+  onSelect: () => void;
 }
 
 /** Labels each cell on phones, where the row is a stacked card without column headings */
@@ -22,13 +22,20 @@ function MobileLabel({ children }: { children: string }) {
 
 const cell = 'block px-4 py-2 sm:table-cell sm:px-5 sm:py-4';
 
-export function GatewayTableRow({ gateway, strip, now, dataWindow, windowMinutes, metricsWindow, onViewRaw }: GatewayTableRowProps) {
+export function GatewayTableRow({ gateway, strip, now, dataWindow, windowMinutes, metricsWindow, onSelect }: GatewayTableRowProps) {
   return (
-    <tr className="block py-2 align-top border-b border-gray-200 bg-white transition-colors last:border-b-0 hover:bg-blue-50/40 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-blue-950/20 sm:table-row sm:py-0">
+    <tr onClick={onSelect} className="block cursor-pointer py-2 align-top border-b border-gray-200 bg-white transition-colors last:border-b-0 hover:bg-blue-50/40 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-blue-950/20 sm:table-row sm:py-0">
       <td className={cell}>
-        <div className="truncate font-semibold text-gray-950 dark:text-white" title={gateway.lightning_alias || 'Unnamed Gateway'}>
+        {/* The row opens the details too; the button makes that reachable by keyboard */}
+        <button
+          type="button"
+          onClick={(event) => { event.stopPropagation(); onSelect(); }}
+          className="block max-w-full truncate text-left font-semibold text-gray-950 hover:underline dark:text-white"
+          title={gateway.lightning_alias || 'Unnamed Gateway'}
+          aria-label={`Details for ${gateway.lightning_alias || 'unnamed gateway'}`}
+        >
           {gateway.lightning_alias || 'Unnamed Gateway'}
-        </div>
+        </button>
         <div className="text-xs font-mono text-gray-600 dark:text-gray-400 mt-1" title={gateway.gateway_id}>
           {shortMiddle(gateway.gateway_id, 8, 8, '...')}
         </div>
@@ -73,28 +80,10 @@ export function GatewayTableRow({ gateway, strip, now, dataWindow, windowMinutes
         )}
       </td>
       <td className={cell}>
-        <MobileLabel>Trust & history</MobileLabel>
+        <MobileLabel>Trust</MobileLabel>
         <span className={`text-sm font-medium ${gateway.vetted ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'}`}>
           {gateway.vetted ? '✓ Vetted' : 'Not vetted'}
         </span>
-        <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">First seen<br /><span className="text-gray-700 dark:text-gray-300">{formatUtcDateTime(gateway.firstSeenDate)}</span></div>
-        <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">Last seen<br /><span className="text-gray-700 dark:text-gray-300">{formatUtcDateTime(gateway.lastSeenDate)}</span></div>
-      </td>
-      <td className={cell}>
-        <MobileLabel>Endpoint</MobileLabel>
-        {/* Gateway APIs (iroh:// or /v1 endpoints) are not pages, so show them as text to copy */}
-        <span title={gateway.api_endpoint} className="block select-all truncate font-mono text-xs text-gray-700 dark:text-gray-300">
-          {gateway.api_endpoint}
-        </span>
-        {gateway.raw && (
-          <button
-            type="button"
-            onClick={() => onViewRaw(gateway.lightning_alias || shortMiddle(gateway.gateway_id, 8, 8, '...'), gateway.raw!)}
-            className="mt-2 text-xs text-gray-600 hover:text-blue-700 hover:underline dark:text-gray-400 dark:hover:text-blue-300"
-          >
-            View raw announcement
-          </button>
-        )}
       </td>
     </tr>
   );

@@ -1,61 +1,53 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../../services/api';
-import { errorMessage } from '../../../utils/errors';
-import { useApiResource } from '../../../hooks/useApiResource';
+import type { NostrFederationPage, NostrGroup } from '../../../types/api';
+import { useCursorPages } from '../../../hooks/useCursorPages';
 import { lookUpNames, type NostrFederation } from '../lib/federationNames';
 
+const REFRESH_MS = 60_000;
+const nextAfter = (page: NostrFederationPage) => page.next_after;
+
 /**
- * Federations announced on Nostr, named and with health where the observer
- * knows them. The announced list and the observer's own list load
- * independently: the observer's list only adds names and health. Names it
- * lacks are then looked up from each invite code in the background.
+ * One group of the federations announced on Nostr, one backend page at a time.
+ * The backend groups them and adds the name and health of those the observer
+ * tracks; names it lacks are looked up from each invite code in the
+ * background, for this page's rows only.
  */
-export function useNostrFederations() {
-  const nostr = useApiResource((signal) => api.getNostrFederations(signal), [], { label: 'nostr federations' });
-  const observed = useApiResource((signal) => api.getFederations(signal), [], { label: 'observed federations' });
-  const [lookedUpNames, setLookedUpNames] = useState<Map<string, string>>(() => new Map());
-  const nostrList = nostr.data;
-
-  const observedById = useMemo(
-    () => (observed.data ? new Map(observed.data.map((fed) => [fed.id, fed])) : null),
-    [observed.data]
+export function useNostrFederations(group: NostrGroup, limit: number) {
+  const fetchPage = useCallback(
+    (after: string | undefined, signal: AbortSignal) => api.getNostrFederationsPage(group, limit, after, signal),
+    [group, limit],
   );
+  const pages = useCursorPages({ fetchPage, nextCursor: nextAfter, refreshMs: REFRESH_MS });
+  const [lookedUpNames, setLookedUpNames] = useState<Map<string, string>>(() => new Map());
+  const rows = pages.page?.federations;
 
-  // Names the observer's list lacks are fetched from /config/{invite}/meta in the
-  // background, once that list has loaded or failed
-  const observedSettled = observed.data !== null || observed.failed;
   useEffect(() => {
-    if (!nostrList || !observedSettled) return;
+    if (!rows) return;
     const controller = new AbortController();
-    const unnamed = Object.entries(nostrList)
-      .filter(([id]) => !observedById?.get(id)?.name)
-      .map(([id, invite]) => ({ id, name: null, invite }));
+    const unnamed = rows.filter((fed) => !fed.name).map(({ id, invite }) => ({ id, name: null, invite }));
     void lookUpNames(unnamed, controller.signal, (names) => {
       setLookedUpNames((previous) => new Map([...previous, ...names]));
     });
     return () => controller.abort();
-  }, [nostrList, observedById, observedSettled]);
+  }, [rows]);
 
   const federations = useMemo<NostrFederation[]>(
-    () => Object.entries(nostrList ?? {}).map(([id, invite]) => {
-      const federation = observedById?.get(id);
-      return { id, invite, name: federation?.name || lookedUpNames.get(id) || null, health: federation?.health };
-    }),
-    [nostrList, observedById, lookedUpNames]
+    () => (rows ?? []).map((fed) => ({
+      id: fed.id,
+      invite: fed.invite,
+      name: fed.name || lookedUpNames.get(fed.id) || null,
+      health: fed.health ?? undefined,
+      observed: fed.health !== null,
+    })),
+    [rows, lookedUpNames],
   );
 
-  const online = useMemo(() => federations.filter((fed) => fed.name && fed.health !== 'offline'), [federations]);
-  const offline = useMemo(() => federations.filter((fed) => !fed.name || fed.health === 'offline'), [federations]);
-
   return {
-    online,
-    offline,
-    loading: nostrList === null && !nostr.failed,
-    error: nostr.failed ? errorMessage(nostr.error) : null,
-    retry: nostr.reload,
-    /** The observer's federations by id; null until they load */
-    observedById,
-    observedError: observed.failed ? errorMessage(observed.error) : null,
-    retryObserved: observed.reload,
+    ...pages,
+    federations,
+    total: pages.page?.total ?? null,
+    loading: pages.page === null && !pages.error,
+    failed: pages.page === null && pages.error !== null,
   };
 }

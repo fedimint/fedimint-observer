@@ -5,9 +5,6 @@ import { GATEWAY_WINDOWS } from '../lib/gatewayRows';
 interface GatewayPageHeaderProps {
   /** Takes keyboard focus after a successful retry removes the focused button */
   headingRef: Ref<HTMLHeadingElement>;
-  /** The federation's name, a placeholder while it loads, or null to say "Federation" */
-  name: string | null;
-  nameLoading: boolean;
   timeWindow: GatewayWindow;
   onSelectWindow: (window: GatewayWindow) => void;
   /** Loading, freshness or fallback note under the window buttons */
@@ -16,18 +13,14 @@ interface GatewayPageHeaderProps {
   children?: ReactNode;
 }
 
-/** The federation's name, the time window buttons and the gateway counts */
-export function GatewayPageHeader({ headingRef, name, nameLoading, timeWindow, onSelectWindow, windowStatus, children }: GatewayPageHeaderProps) {
+/** The section title, the time window buttons and the gateway counts */
+export function GatewayPageHeader({ headingRef, timeWindow, onSelectWindow, windowStatus, children }: GatewayPageHeaderProps) {
   return (
-    <header className="mt-4 mb-4 rounded-2xl border border-slate-200 bg-linear-to-br from-white to-blue-50 p-5 shadow-xs dark:border-gray-700 dark:from-gray-800 dark:to-blue-950/30 sm:p-6">
+    <header className="mb-4 rounded-2xl border border-slate-200 bg-linear-to-br from-white to-blue-50 p-5 shadow-xs dark:border-gray-700 dark:from-gray-800 dark:to-blue-950/30 sm:p-6">
       <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
         <div>
-          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700 dark:text-blue-300">Lightning gateway observatory</div>
-          <h1 ref={headingRef} tabIndex={-1} className="mt-2 wrap-break-word text-3xl font-bold tracking-tight text-gray-950 outline-hidden dark:text-white">
-            {name || (nameLoading
-              ? <span aria-hidden="true" className="inline-block h-8 w-56 max-w-full animate-pulse rounded-lg bg-slate-200 align-middle dark:bg-gray-700" />
-              : 'Federation')}
-          </h1>
+          <h2 ref={headingRef} tabIndex={-1} className="text-lg font-semibold text-gray-950 outline-hidden dark:text-white">Lightning gateways</h2>
+          <p className="mt-1 text-xs text-gray-600 dark:text-gray-400">Gateways registered with the federation's Lightning module, as the observer polls them</p>
         </div>
         <div className="rounded-xl bg-slate-100 p-1 dark:bg-gray-900">
           <div className="flex gap-1" role="group" aria-label="Time window">

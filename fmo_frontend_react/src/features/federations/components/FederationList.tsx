@@ -13,8 +13,8 @@ interface FederationListProps {
   failed: boolean;
   emptyText: string;
   scale: ActivityScale;
-  /** Names of all federations by ID, not only these, to name each successor */
-  successorNames: Map<string, string>;
+  /** Rows per page and previous/next, under the rows */
+  pager?: ReactNode;
 }
 
 /** Column headings over the rows; phones show each row's labels instead */
@@ -52,7 +52,7 @@ export function FederationListSkeleton({ rows = 6 }: { rows?: number }) {
 }
 
 /** A headed list of federation rows, or its loading, error or empty state */
-export function FederationList({ federations, loading, failed, emptyText, scale, successorNames }: FederationListProps) {
+export function FederationList({ federations, loading, failed, emptyText, scale, pager }: FederationListProps) {
   return (
     <>
       <FederationListHeader />
@@ -73,7 +73,7 @@ export function FederationList({ federations, loading, failed, emptyText, scale,
               health={fed.health}
               expiryTimestamp={fed.expiry_timestamp}
               successorId={fed.successor_id}
-              successorName={fed.successor_id ? successorNames.get(fed.successor_id) : null}
+              successorName={fed.successor_name ?? null}
               activityData={fed.last_7d_activity}
               maxTransaction={scale.maxTransaction}
               maxVolume={scale.maxVolume}
@@ -81,6 +81,7 @@ export function FederationList({ federations, loading, failed, emptyText, scale,
           ))
         )}
       </div>
+      {pager && <div className="border-t border-gray-200 bg-white px-3 py-3 sm:px-6 dark:border-gray-700 dark:bg-gray-800">{pager}</div>}
     </>
   );
 }

@@ -52,6 +52,25 @@ export function useCursorPages<P, C>({
 
   useEffect(() => () => pageRequest.current?.abort(), []);
 
+  // Another query (a filter, the order, the page size) is another list: back
+  // to its page 1, dropping the old list's rows and cursors
+  const [source, setSource] = useState(() => fetchPage);
+  if (source !== fetchPage) {
+    setSource(() => fetchPage);
+    setCursors([]);
+    setLater(null);
+    setLatest(null);
+    setError(null);
+    setLoadingPage(false);
+  }
+  useEffect(() => {
+    // The old list's page request must not land in the new one
+    pageRequest.current?.abort();
+    pageRequest.current = null;
+    requests.current.reset();
+    lastSuccess.current = null;
+  }, [fetchPage]);
+
   useEffect(() => {
     if (!enabled || onLaterPage) return;
     const controller = new AbortController();

@@ -66,9 +66,9 @@ export function ActivityTab({ activity }: { activity: FederationActivity }) {
 
   return (
     <>
-      <div className="bg-blue-900/20 border border-blue-500 rounded-lg p-3 sm:p-4 mb-4 sm:mb-6">
-        <span className="text-xs sm:text-sm text-blue-400 font-semibold">Info:</span>
-        <span className="text-xs sm:text-sm text-blue-400 ml-2">
+      <div className="bg-blue-50 border border-blue-200 dark:bg-blue-900/20 dark:border-blue-800 rounded-lg p-3 sm:p-4 mb-4 sm:mb-6">
+        <span className="text-xs sm:text-sm text-blue-800 dark:text-blue-300 font-semibold">Info:</span>
+        <span className="text-xs sm:text-sm text-blue-800 dark:text-blue-300 ml-2">
           Some transaction types, like Lightning transactions, cause more than one Fedimint transaction.
         </span>
       </div>

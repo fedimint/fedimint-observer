@@ -1,6 +1,7 @@
 import type { FederationOverview } from '../../../../types/api';
 import { Alert } from '../../../../components/ui/Alert';
 import { NumberedPagination } from '../../../../components/ui/NumberedPagination';
+import { PageSizeSelect } from '../../../../components/ui/PageSizeSelect';
 import type { FederationUtxos } from '../../hooks/useFederationUtxos';
 import { UtxoNotices } from './UtxoNotices';
 import { UtxoToolbar } from './UtxoToolbar';
@@ -40,7 +41,10 @@ export function UtxoInventory({ utxos, overview, overviewFailed, network }: Utxo
         <UtxoNotices utxos={utxos} overview={overview} overviewFailed={overviewFailed} />
         <UtxoToolbar utxos={utxos} />
         <UtxoTable utxos={utxos} network={network} />
-        <NumberedPagination label="UTXO pages" page={utxos.currentPage} pageCount={utxos.pageCount} onChange={utxos.setPage} />
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 pb-4 sm:px-5">
+          <PageSizeSelect value={utxos.pageSize} onChange={utxos.setPageSize} disabled={utxos.loading} />
+          <NumberedPagination label="UTXO pages" page={utxos.currentPage} pageCount={utxos.pageCount} onChange={utxos.setPage} />
+        </div>
       </section>
     </>
   );

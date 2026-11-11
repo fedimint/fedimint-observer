@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   buildUptimeStrip,
-  filterAndSortGateways,
   formatCompactDuration,
   getGatewayStatus,
   toGatewayRow,
@@ -64,17 +63,6 @@ test('a row without activity has no score, and live rows count the whole window 
   assert.equal(active.realActivityScore, 5, 'funds + 3 × settles');
 });
 
-test('"all" hides retired gateways, and sorting by status puts the worst first', () => {
-  const rows = [
-    toGatewayRow(gateway('online', { last_seen: minutesAgo(1).toISOString() }), NOW, 1440),
-    toGatewayRow(gateway('retired', { last_seen: minutesAgo(8 * 24 * 60).toISOString() }), NOW, 1440),
-    toGatewayRow(gateway('offline', { last_seen: minutesAgo(60).toISOString() }), NOW, 1440),
-  ];
-  assert.deepEqual(filterAndSortGateways(rows, 'all', '', 'status', 'asc').map((row) => row.gateway_id), ['offline', 'online']);
-  assert.deepEqual(filterAndSortGateways(rows, 'retired', '', 'status', 'asc').map((row) => row.gateway_id), ['retired']);
-  assert.deepEqual(filterAndSortGateways(rows, 'all', 'ALIAS-ONLINE', 'status', 'asc').map((row) => row.gateway_id), ['online']);
-});
-
 test('live registry details win, recorded history keeps its timings, and recorded-only gateways stay', () => {
   const observed = [gateway('a', { lightning_alias: 'old', last_seen: 'recorded' }), gateway('b')];
   const live = [gateway('a', { lightning_alias: 'new', last_seen: 'live' })];
@@ -82,6 +70,36 @@ test('live registry details win, recorded history keeps its timings, and recorde
   assert.deepEqual(merged.map((row) => row.gateway_id), ['a', 'b']);
   assert.equal(merged[0].lightning_alias, 'new');
   assert.equal(merged[0].last_seen, 'recorded');
+});
+
+test('a recorded page gets live details for its own rows only', () => {
+  const page = [gateway('a')];
+  const live = [gateway('a', { lightning_alias: 'live-a' }), gateway('z', { lightning_alias: 'live-only' })];
+  assert.deepEqual(mergeGatewayData(page, live).map((row) => row.lightning_alias), ['live-a']);
+  // Nothing recorded at all: the live registry stands in, unless the list was narrowed
+  assert.deepEqual(mergeGatewayData([], live).map((row) => row.gateway_id), ['a', 'z']);
+  assert.deepEqual(mergeGatewayData([], live, false), []);
+  const narrowed = selectGatewayData(sources({ observed: [], live: { status: 'done', gateways: live, error: null }, listNarrowed: true }));
+  assert.deepEqual(narrowed.gateways, []);
+  assert.equal(narrowed.warning, null);
+});
+
+test('merging keeps the recorded uptime figures, not only the strip', () => {
+  const recorded = {
+    status: 'online',
+    coverage_pct: 36.8,
+    estimated_uptime_pct: 100,
+    estimated_online_minutes: 530,
+    estimated_offline_minutes: 0,
+    estimated_unknown_minutes: 910,
+    uptime_window: { sample_count: 106, seen_samples: 106, online_minutes: 530, offline_minutes: 0, uptime_pct: 100, buckets: [] },
+  };
+  const [merged] = mergeGatewayData([gateway('a', recorded)], [gateway('a', { lightning_alias: 'live' })]);
+  assert.equal(merged.lightning_alias, 'live');
+  for (const [key, value] of Object.entries(recorded)) assert.deepEqual(merged[key], value, key);
+  const row = toGatewayRow(merged, NOW, 1440);
+  assert.equal(row.coveragePct, 36.8);
+  assert.equal(row.estimatedUnknownMinutes, 910);
 });
 
 test('a normal page shows no banner', () => {
