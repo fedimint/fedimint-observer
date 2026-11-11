@@ -197,6 +197,19 @@ impl ConsensusMetaCache {
         config: &JsonClientConfig,
         observer: &FederationObserver,
     ) -> anyhow::Result<Option<MetaFields>> {
+        Ok(Self::try_fetch_consensus_meta_raw(config, observer)
+            .await?
+            .map(parse_meta_lenient))
+    }
+
+    /// The meta module's consensus value as the guardians agreed on it, each
+    /// field still the exact string they signed off on. Signed values such as
+    /// `fedi:fman_seat_bindings` must be verified against these bytes, which
+    /// `parse_meta_lenient` does not keep.
+    pub(crate) async fn try_fetch_consensus_meta_raw(
+        config: &JsonClientConfig,
+        observer: &FederationObserver,
+    ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
         let Some((meta_instance_id, _)) = config
             .modules
             .iter()
@@ -222,7 +235,7 @@ impl ConsensusMetaCache {
             .as_object()
             .context("Failed to parse consensus meta as JSON object")?;
 
-        Ok(Some(parse_meta_lenient(consensus_meta_map.clone())))
+        Ok(Some(consensus_meta_map.clone()))
     }
 }
 

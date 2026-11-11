@@ -21,6 +21,9 @@ use tracing::info;
 use crate::federation::observer::FederationObserver;
 use crate::util::{module_instance_id, query};
 
+mod history;
+pub(super) use history::{get_guardian_health_history, get_guardian_live_health};
+
 impl FederationObserver {
     pub async fn monitor_health(
         &self,

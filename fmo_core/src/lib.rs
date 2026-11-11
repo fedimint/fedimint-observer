@@ -36,6 +36,7 @@ mod config;
 mod error;
 mod federation;
 mod http;
+mod manifold;
 mod meta;
 pub mod module;
 mod observations;
@@ -151,8 +152,13 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
         .route("/metrics", get(http::metrics))
         .nest("/config", get_config_routes())
         .nest("/federations", get_federations_routes())
+        .nest("/manifold", manifold::routes())
         // TODO: move into nostr service/module
         .route("/nostr/federations", get(get_nostr_federations))
+        .route(
+            "/nostr/federations/page",
+            get(federation::list::list_nostr_federation_page),
+        )
         .route("/nostr/federations", put(publish_federation_event));
     // The modules' endpoints, at the same paths core served them from
     if let Some(routes) = modules.federation_routes() {
