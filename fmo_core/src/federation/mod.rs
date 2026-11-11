@@ -1,5 +1,6 @@
 pub mod db;
 mod guardians;
+pub(crate) mod list;
 mod meta;
 pub(crate) mod nostr;
 pub mod observer;
@@ -18,7 +19,9 @@ use fmo_api_types::{FederationOverview, FederationSummary, FedimintTotals};
 use serde::Deserialize;
 
 use crate::error::ClientError;
-use crate::federation::guardians::get_federation_health;
+use crate::federation::guardians::{
+    get_federation_health, get_guardian_health_history, get_guardian_live_health,
+};
 use crate::federation::meta::get_federation_meta;
 use crate::federation::observer::FederationObserver;
 use crate::federation::session::{count_sessions, list_sessions};
@@ -35,13 +38,24 @@ pub fn get_federations_routes() -> Router<AppState> {
         .route("/totals", get(get_federation_totals))
         // TODO: move to nostr module
         .route("/nostr/rating", put(publish_rating_event))
+        .route("/page", get(list::list_federation_page))
         .route("/:federation_id", get(get_federation_overview))
+        .route("/:federation_id/summary", get(list::get_federation_summary))
         .route(
             "/:federation_id/config",
             get(federation::get_federation_config),
         )
         .route("/:federation_id/meta", get(get_federation_meta))
         .route("/:federation_id/health", get(get_federation_health))
+        .route(
+            "/:federation_id/health/history",
+            get(get_guardian_health_history),
+        )
+        .route("/:federation_id/health/live", get(get_guardian_live_health))
+        .route(
+            "/:federation_id/manifold/seat-bindings",
+            get(crate::manifold::get_seat_bindings),
+        )
         .route("/:federation_id/transactions", get(list_transactions))
         .route(
             "/:federation_id/transactions/:transaction_id",

@@ -45,6 +45,9 @@ tower-http = { version = "0.5.2", features = ["cors", "trace", "compression-gzip
 chrono = { version = "0.4.38", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 regex = "1.10.4"
+base64 = "0.22.1"
+# Pinned like Manifold: its MG display names index these exact word lists
+petname = { version = "=3.1.0", default-features = false, features = ["default-words"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

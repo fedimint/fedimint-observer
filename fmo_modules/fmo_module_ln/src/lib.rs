@@ -18,6 +18,7 @@ use fmo_core::module::{
 
 use crate::gateways::{GatewayOverviewCache, Gateways};
 
+mod directory;
 mod gateways;
 
 #[derive(Default)]

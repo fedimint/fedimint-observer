@@ -2688,6 +2688,7 @@ dependencies = [
  "async-trait",
  "axum 0.7.9",
  "axum-auth",
+ "base64 0.22.1",
  "bitcoin 0.32.102",
  "chrono",
  "clap",
@@ -2703,6 +2704,7 @@ dependencies = [
  "hex",
  "native-tls",
  "nostr-sdk",
+ "petname",
  "postgres-from-row",
  "postgres-native-tls",
  "regex",
@@ -6111,6 +6113,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adba4db388f687393c18c51348d44a41d870ca9df71a2c98172ea3035dc6936e"
 dependencies = [
  "pest",
+]
+
+[[package]]
+name = "petname"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1201345ec6f6630308d0549e198c58aff61df8033afe094f072def1ebe43eafa"
+dependencies = [
+ "petname-macros",
+ "rand 0.10.2",
+]
+
+[[package]]
+name = "petname-macros"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78c406fb544296f598ccf69b82bcf1b12440c8f23ebf75946105f86304f16eb2"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]

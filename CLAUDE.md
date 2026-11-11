@@ -89,11 +89,14 @@ Required environment variables (`sample.env` is a template; the server does not 
 - `FO_DATABASE`: PostgreSQL connection string
 - `FO_ADMIN_AUTH`: Admin authentication password
 - `FO_MEMPOOL_URL`: Mempool API URL (default: "https://mempool.space/api")
+- `FO_MANIFOLD_RELAYS`: Comma-separated relays the Manifold discovery collector reads (default: Manifold's production relays); empty turns the collector off
+- `FO_MANIFOLD_TRUSTED_ISSUERS`: Comma-separated PeerBadge issuer keys treated as trust roots (default: none, as Manifold's production environment pins none yet)
 
 ### API Endpoints
 - **Config API** (`/config/*`): Stable API for federation configuration inspection
 - **Federations API** (`/federations/*`): Unstable API for federation monitoring data
 - **Admin endpoints**: Require bearer token authentication via `FO_ADMIN_AUTH`
+- **Paging**: every list the frontend shows is paged by the backend (`?limit=` 1-500, default 100, and an opaque `?after=` cursor; responses carry `next_after`, null on the last page, and `total`). Lists whose order is computed (health, uptime, freshness, price) page with `pagination::keyset_page`, whose cursor is the last row's sort key, so rows changing between requests never shift a page. Search, filters and order run on the backend: `/federations/page` (`group`, `search`, `sort`, `dir`), `/nostr/federations/page`, `/manifold/guardians` (`search`, `verification`, `version`, `size`, `fresh_only`, `sort`), `/manifold/flip-providers`, `/federations/:id/gateways/overview` (`search`, `status`, `sort`, `dir`). `GET /federations` and `GET /nostr/federations` stay unpaged for existing API clients; one federation's summary is `GET /federations/:id/summary`
 
 ### Database Schema
 PostgreSQL. Key tables:
