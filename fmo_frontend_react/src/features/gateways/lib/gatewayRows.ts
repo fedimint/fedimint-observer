@@ -22,15 +22,7 @@ export const WINDOW_MINUTES: Record<GatewayWindow, number> = {
 };
 export const UPTIME_SEGMENTS = 30;
 /** Rows rendered at first, and added by each "Show more" */
-export const GATEWAYS_PER_BATCH = 50;
 const RETIRED_AFTER_MINUTES = 7 * 24 * 60;
-const STATUS_RANK: Record<GatewayStatus, number> = {
-  offline: 0,
-  degraded: 1,
-  unknown: 2,
-  online: 3,
-  retired: 4,
-};
 
 export interface GatewayWithStatus extends GatewayInfo {
   firstSeenDate: Date | null;
@@ -243,39 +235,4 @@ export function toGatewayRow(gateway: GatewayInfo, now: number, windowMinutes: n
     totalVolumeMsatWindow,
     searchText,
   };
-}
-
-/** The rows matching the status filter and search, in the chosen order */
-export function filterAndSortGateways(
-  rows: GatewayWithStatus[],
-  filter: GatewayFilter,
-  search: string,
-  sort: GatewaySort,
-  direction: SortDirection,
-): GatewayWithStatus[] {
-  const query = search.trim().toLowerCase();
-  const filtered = rows.filter((row) => (
-    (filter === 'all' ? row.status !== 'retired' : row.status === filter)
-    && (!query || row.searchText.includes(query))
-  ));
-
-  return filtered.sort((left, right) => {
-    let comparison: number;
-    switch (sort) {
-      case 'status':
-        comparison = STATUS_RANK[left.status] - STATUS_RANK[right.status]
-          || (left.minutesSinceLastSeen ?? 0) - (right.minutesSinceLastSeen ?? 0);
-        break;
-      case 'uptime':
-        comparison = left.estimatedUptimePct - right.estimatedUptimePct;
-        break;
-      case 'activity':
-        comparison = (left.realActivityScore ?? -1) - (right.realActivityScore ?? -1);
-        break;
-      case 'freshness':
-      default:
-        comparison = (left.lastSeenDate?.getTime() ?? 0) - (right.lastSeenDate?.getTime() ?? 0);
-    }
-    return direction === 'asc' ? comparison : -comparison;
-  });
 }

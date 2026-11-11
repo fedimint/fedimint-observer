@@ -4,6 +4,7 @@ import type { ClientConfig, WalletV2History } from '../../../types/api';
 import { WalletV2Assets } from './WalletV2Assets';
 import { CursorPager } from '../../../components/ui/CursorPager';
 import { useCursorPages } from '../../../hooks/useCursorPages';
+import { usePageSize } from '../../../hooks/usePageSize';
 import type { HistoryError } from '../../../utils/walletHistory';
 
 const REFRESH_MS = 60_000;
@@ -24,9 +25,10 @@ export function WalletV2Panel({ id, modules, active }: { id: string; modules: No
 }
 
 function WalletInstance({ id, instance, network, active }: { id: string; instance: number; network?: string; active: boolean }) {
+  const [pageSize, setPageSize] = usePageSize('wallet-v2-history', 25);
   const fetchPage = useCallback(
-    (before: number | undefined, signal: AbortSignal) => api.getWalletV2OnChain(id, instance, before, signal),
-    [id, instance],
+    (before: number | undefined, signal: AbortSignal) => api.getWalletV2OnChain(id, instance, pageSize, before, signal),
+    [id, instance, pageSize],
   );
   // Keep an older page stable while it is read; going back to page 1 resumes
   // automatic updates.
@@ -39,6 +41,6 @@ function WalletInstance({ id, instance, network, active }: { id: string; instanc
     {pages.onLaterPage && <p className="text-xs text-gray-500 dark:text-gray-400">Automatic refresh is paused while reading older operations. <button type="button" className="text-blue-600 dark:text-blue-400" onClick={pages.restart}>Show latest</button></p>}
     <WalletV2Assets balance={latest ? latest.balance_msat : undefined} transactions={page?.transactions ?? []} loaded={page !== null} error={error} network={network}
       observedAt={page?.observed_at} stale={page?.stale} balanceStale={latest?.balance_stale} balanceObservedAt={latest?.balance_observed_at}
-      pager={page && <CursorPager label="Wallet operation pages" page={pages.pageNumber} hasNext={pages.hasNext} loading={pages.loadingPage} onPrevious={pages.previous} onNext={pages.next} />} />
+      pager={page && <CursorPager label="Wallet operation pages" page={pages.pageNumber} hasNext={pages.hasNext} loading={pages.loadingPage} onPrevious={pages.previous} onNext={pages.next} pageSize={pageSize} onPageSizeChange={setPageSize} />} />
   </>;
 }

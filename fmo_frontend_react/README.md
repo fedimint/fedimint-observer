@@ -16,6 +16,13 @@ Run the backend with `just run` from the repository root. It serves the API at
 `/federations`, `/config` and `/nostr` directly; the `/api` prefix only exists
 behind Nginx.
 
+### Manifold data
+
+The Manifold pages (Guardian directory, operator profiles, FLIP providers)
+read `/manifold/*`, which the backend serves from advertisements its collector
+verified and stored from Nostr relays (`fmo_core/src/manifold/`). Seats come
+only from federations' verified `fedi:fman_seat_bindings`.
+
 ## Code layout
 
 ```
@@ -41,6 +48,16 @@ Import modules by their file path; there are no `index.ts` barrels, which keeps
 lazy-loaded pages and charts in their own chunks. A file that exports a
 component exports only components (Fast Refresh); constants and helpers belong
 in a `lib/` or `utils/` file.
+
+## Paged lists
+
+Lists load one page at a time from the backend: `useCursorPages` asks for
+page 1 (refreshed each minute) and, on Next, for the page after the last
+cursor; another query or page size starts again at page 1. `CursorPager`
+shows previous/next and "Rows per page" (`PAGE_SIZES`, sent as `limit`), which
+`usePageSize` remembers per list in this browser. Search, filters and order
+are query parameters the backend applies, never filtering in the browser, and
+searches are sent once typing pauses (`useDebouncedValue`).
 
 ## API errors
 

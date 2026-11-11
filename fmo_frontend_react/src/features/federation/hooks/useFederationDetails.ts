@@ -1,6 +1,5 @@
 import { api } from '../../../services/api';
 import { parseConfig } from '../../../utils/config';
-import { federationNames } from '../../../utils/migration';
 import { useApiResource } from '../../../hooks/useApiResource';
 
 /**
@@ -10,15 +9,13 @@ import { useApiResource } from '../../../hooks/useApiResource';
 export function useFederationDetails(id: string) {
   return useApiResource(async (signal) => {
     // Every request needs only the id, so none waits for another; only the
-    // invite fallback waits for the federation list.
-    const federationRequest = api.getFederations(signal).then((federations) => {
-      const fed = federations.find((f) => f.id === id);
-      if (!fed) {
-        throw new Error('Federation not found');
-      }
-      // The successor gets a link and a name only when the observer tracks it
-      const successorName = fed.successor_id ? federationNames(federations).get(fed.successor_id) : undefined;
-      const successor = fed.successor_id && successorName !== undefined ? { id: fed.successor_id, name: successorName } : null;
+    // invite fallback waits for the summary.
+    // Only this federation's summary, not the whole list; the backend names
+    // the successor when it tracks that one too
+    const federationRequest = api.getFederationSummary(id, signal).then((fed) => {
+      const successor = fed.successor_id && fed.successor_name
+        ? { id: fed.successor_id, name: fed.successor_name }
+        : null;
       return { fed, successor };
     });
     // The config by federation ID works for actively observed federations; the

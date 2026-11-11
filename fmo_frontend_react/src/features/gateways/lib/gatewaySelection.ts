@@ -36,27 +36,37 @@ interface GatewaySources {
   federationFailed: boolean;
   federationOffline: boolean;
   dataWindow: GatewayWindow;
+  /** A search, a status filter or a later page: an empty answer means no match, not no gateways */
+  listNarrowed?: boolean;
 }
 
-/** The live registry's fresher details over the recorded history, which keeps its own timings and activity */
-export function mergeGatewayData(observedGateways: GatewayInfo[], liveGateways: GatewayInfo[]): GatewayInfo[] {
-  if (observedGateways.length === 0) return liveGateways;
+/**
+ * The live registry's fresher details over the recorded page of gateways,
+ * which keeps its own timings and activity. The live registry lists every
+ * gateway, so it only refreshes rows of the page; it stands in for the list
+ * only when nothing was recorded at all.
+ */
+export function mergeGatewayData(observedGateways: GatewayInfo[], liveGateways: GatewayInfo[], fallbackToLive = true): GatewayInfo[] {
+  if (observedGateways.length === 0) return fallbackToLive ? liveGateways : observedGateways;
   if (liveGateways.length === 0) return observedGateways;
 
-  const observedById = new Map(observedGateways.map((gateway) => [gateway.gateway_id, gateway] as const));
-  const liveIds = new Set(liveGateways.map((gateway) => gateway.gateway_id));
-
-  const merged = liveGateways.map((liveGateway) => {
-    const observedGateway = observedById.get(liveGateway.gateway_id);
-    if (!observedGateway) return liveGateway;
-
+  const liveById = new Map(liveGateways.map((gateway) => [gateway.gateway_id, gateway] as const));
+  return observedGateways.map((observedGateway) => {
+    const liveGateway = liveById.get(observedGateway.gateway_id);
+    if (!liveGateway) return observedGateway;
+    // Everything the observer recorded and computed (timings, activity, uptime,
+    // coverage and the online/offline/unknown minutes) comes from the recorded row;
+    // the live registry only refreshes the gateway's own details. Copying a subset
+    // of the recorded fields left a green strip beside "No samples, Unknown 1d".
     return {
       ...liveGateway,
+      ...observedGateway,
       lightning_alias: liveGateway.lightning_alias || observedGateway.lightning_alias,
       api_endpoint: liveGateway.api_endpoint || observedGateway.api_endpoint,
       node_pub_key: liveGateway.node_pub_key || observedGateway.node_pub_key,
       vetted: liveGateway.vetted || observedGateway.vetted,
       raw: liveGateway.raw ?? observedGateway.raw,
+      // A recorded row without these keeps the live registry's
       first_seen: observedGateway.first_seen ?? liveGateway.first_seen,
       last_seen: observedGateway.last_seen ?? liveGateway.last_seen,
       activity_7d: observedGateway.activity_7d ?? liveGateway.activity_7d,
@@ -65,14 +75,6 @@ export function mergeGatewayData(observedGateways: GatewayInfo[], liveGateways: 
       metrics_window: observedGateway.metrics_window ?? liveGateway.metrics_window,
     };
   });
-
-  for (const observedGateway of observedGateways) {
-    if (!liveIds.has(observedGateway.gateway_id)) {
-      merged.push(observedGateway);
-    }
-  }
-
-  return merged;
 }
 
 // Banners are only for problems or empty states; normal pages show none
@@ -83,12 +85,13 @@ export function selectGatewayData({
   federationFailed,
   federationOffline,
   dataWindow,
+  listNarrowed = false,
 }: GatewaySources): GatewaySelection {
   const liveGateways = live.status === 'done' ? live.gateways : [];
   const liveError = live.status === 'done' ? live.error : null;
 
   if (observed !== null) {
-    const gateways = liveGateways.length > 0 ? mergeGatewayData(observed, liveGateways) : observed;
+    const gateways = liveGateways.length > 0 ? mergeGatewayData(observed, liveGateways, !listNarrowed) : observed;
     if (observedError) {
       return {
         gateways,
@@ -114,7 +117,7 @@ export function selectGatewayData({
         },
       };
     }
-    if (observed.length > 0) return { gateways, warning: null, retry: false };
+    if (observed.length > 0 || listNarrowed) return { gateways, warning: null, retry: false };
     if (liveGateways.length > 0) {
       return {
         gateways,

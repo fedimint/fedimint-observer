@@ -7,6 +7,8 @@ export interface NostrFederation {
   name: string | null;
   invite: string;
   health?: FederationHealth;
+  /** Whether this observer tracks the federation */
+  observed?: boolean;
 }
 
 // Each name lookup makes the server fetch the federation's config, so only a few run at once
