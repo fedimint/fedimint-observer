@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { PageRequests } from '../utils/pageRequests';
 import { startAutoRefresh } from '../utils/autoRefresh';
 
+const NO_CURSORS: never[] = [];
+
 interface CursorPageError {
   /** Which request failed: the refresh of page 1, or a later page */
   kind: 'refresh' | 'page';
@@ -36,33 +38,33 @@ export function useCursorPages<P, C>({
   enabled = true,
   clearErrorOnRestart = false,
 }: CursorPagesOptions<P, C>) {
+  // Everything kept is tagged with the list (`fetchPage`) it came from, and only
+  // the current list's is used: an answer for a query the reader has left can
+  // never show up under the new one, whatever order it arrives in.
   // Page 1, kept current by the refresh, and the later page shown, if any
-  const [latest, setLatest] = useState<P | null>(null);
-  const [later, setLater] = useState<P | null>(null);
-  // The cursor of each later page on the way to the one shown; page 1 has none
-  const [cursors, setCursors] = useState<C[]>([]);
-  const [error, setError] = useState<CursorPageError | null>(null);
-  const [loadingPage, setLoadingPage] = useState(false);
+  const [latest, setLatest] = useState<{ source: unknown; data: P } | null>(null);
+  const [later, setLater] = useState<{ source: unknown; cursors: C[]; data: P } | null>(null);
+  const [error, setError] = useState<{ source: unknown; error: CursorPageError } | null>(null);
+  // The list whose later page is loading, if any
+  const [loadingSource, setLoadingSource] = useState<unknown>(null);
   const [restarts, setRestarts] = useState(0);
   const requests = useRef(new PageRequests());
   const lastSuccess = useRef<number | null>(null);
   const pageRequest = useRef<AbortController | null>(null);
+  const laterPage = later?.source === fetchPage ? later : null;
+  // The cursor of each later page on the way to the one shown; page 1 has none
+  const cursors = laterPage?.cursors ?? NO_CURSORS as C[];
   const onLaterPage = cursors.length > 0;
-  const page = onLaterPage ? later : latest;
+  const latestPage = latest?.source === fetchPage ? latest.data : null;
+  const page = laterPage ? laterPage.data : latestPage;
+  const shownError = error?.source === fetchPage ? error.error : null;
+  const loadingPage = loadingSource !== null && loadingSource === fetchPage;
 
   useEffect(() => () => pageRequest.current?.abort(), []);
 
   // Another query (a filter, the order, the page size) is another list: back
-  // to its page 1, dropping the old list's rows and cursors
-  const [source, setSource] = useState(() => fetchPage);
-  if (source !== fetchPage) {
-    setSource(() => fetchPage);
-    setCursors([]);
-    setLater(null);
-    setLatest(null);
-    setError(null);
-    setLoadingPage(false);
-  }
+  // to its page 1. The old list's rows, cursors and error stop counting at once
+  // through their tags.
   useEffect(() => {
     // The old list's page request must not land in the new one
     pageRequest.current?.abort();
@@ -85,11 +87,11 @@ export function useCursorPages<P, C>({
         const data = await fetchPage(undefined, controller.signal);
         if (!controller.signal.aborted && gate.acceptsRefresh(generation)) {
           lastSuccess.current = Date.now();
-          setLatest(data);
+          setLatest({ source: fetchPage, data });
           setError(null);
         }
       } catch (cause) {
-        if (!controller.signal.aborted && gate.acceptsRefresh(generation)) setError({ kind: 'refresh', cause });
+        if (!controller.signal.aborted && gate.acceptsRefresh(generation)) setError({ source: fetchPage, error: { kind: 'refresh', cause } });
       } finally {
         inFlight = false;
       }
@@ -106,22 +108,24 @@ export function useCursorPages<P, C>({
     if (loadingPage) return;
     const generation = requests.current.beginPage();
     if (generation === null) return;
+    const source = fetchPage;
     const controller = new AbortController();
     pageRequest.current = controller;
-    setLoadingPage(true);
+    // `source` is a function: set it as a value, not as an updater
+    setLoadingSource(() => source);
     try {
       const next = await fetchPage(cursor, controller.signal);
-      if (requests.current.finishPage(generation, true)) {
-        setCursors(nextCursors);
-        setLater(next);
+      // The position moves only now that the page has arrived
+      if (!controller.signal.aborted && requests.current.finishPage(generation, true)) {
+        setLater({ source, cursors: nextCursors, data: next });
         setError(null);
       }
     } catch (cause) {
-      if (requests.current.finishPage(generation, false)) setError({ kind: 'page', cause });
+      if (!controller.signal.aborted && requests.current.finishPage(generation, false)) setError({ source, error: { kind: 'page', cause } });
     } finally {
       if (pageRequest.current === controller) {
         pageRequest.current = null;
-        setLoadingPage(false);
+        setLoadingSource(null);
       }
     }
   };
@@ -132,8 +136,7 @@ export function useCursorPages<P, C>({
     pageRequest.current = null;
     requests.current.reset();
     lastSuccess.current = null;
-    setLoadingPage(false);
-    setCursors([]);
+    setLoadingSource(null);
     setLater(null);
     if (clearErrorOnRestart) setError(null);
     setRestarts((count) => count + 1);
@@ -154,13 +157,13 @@ export function useCursorPages<P, C>({
     /** The page shown */
     page,
     /** Page 1, which stays current while a later page is shown */
-    latest,
+    latest: latestPage,
     /** 1-based number of the page shown */
     pageNumber: cursors.length + 1,
     onLaterPage,
     hasNext: page !== null && nextCursor(page) != null,
     loadingPage,
-    error,
+    error: shownError,
     next,
     previous,
     restart,

@@ -12,6 +12,7 @@ import {
   reachabilitySeries,
   resilience,
 } from '../src/features/guardians/lib/guardianModel.ts';
+import { attention, LIVE_STALE_AFTER_MS } from '../src/features/guardians/lib/attention.ts';
 
 const NOW = '2026-11-11T12:00:00Z';
 const ago = (minutes) => new Date(Date.parse(NOW) - minutes * 60_000).toISOString();
@@ -169,4 +170,48 @@ test('availability levels', () => {
   assert.equal(availabilityLevel(97.9), 'minor');
   assert.equal(availabilityLevel(89), 'major');
   assert.equal(availabilityLevel(0), 'down');
+});
+
+test('the attention list is only an all-clear on complete, current live status', () => {
+  const data = rows(live());
+  const res = resilience(data, true);
+  const now = Date.parse(NOW);
+  const base = { warnings: [], res, liveGeneratedAt: NOW, liveFailed: false, now };
+  assert.equal(attention(base).kind, 'clear');
+
+  const failed = attention({ ...base, liveGeneratedAt: null, liveFailed: true });
+  assert.equal(failed.kind, 'unknown', 'a failed live load is not an all-clear');
+  assert.match(failed.message, /could not be loaded/);
+
+  assert.equal(attention({ ...base, liveGeneratedAt: null }).kind, 'unknown', 'nothing loaded yet');
+
+  const stale = attention({ ...base, now: now + LIVE_STALE_AFTER_MS + 60_000 });
+  assert.equal(stale.kind, 'unknown', 'stale live status is not an all-clear');
+  assert.match(stale.message, /minutes old/);
+
+  const partial = rows(live({ 1: { answered_at: null, polled_at: null } }));
+  const partialRes = resilience(partial, true);
+  assert.ok(partialRes.unknown > 0);
+  assert.equal(attention({ ...base, res: partialRes }).kind, 'unknown', 'unpolled guardians leave the picture incomplete');
+});
+
+test('warnings show with a note when the evidence behind them is incomplete', () => {
+  const data = rows(live({ 2: { answered_at: ago(30) } }));
+  const res = resilience(data, true);
+  const warnings = federationWarnings(data, res, []);
+  const now = Date.parse(NOW);
+  const current = attention({ warnings, res, liveGeneratedAt: NOW, liveFailed: false, now });
+  assert.equal(current.kind, 'warnings');
+  assert.equal(current.note, null);
+  const stale = attention({ warnings, res, liveGeneratedAt: NOW, liveFailed: true, now: now + LIVE_STALE_AFTER_MS + 60_000 });
+  assert.equal(stale.kind, 'warnings');
+  assert.match(stale.note, /minutes old/);
+});
+
+test('threshold warnings speak for the observer, not for consensus itself', () => {
+  const below = rows(live({ 1: { answered_at: ago(30) }, 2: { answered_at: ago(30) } }));
+  const belowWarning = federationWarnings(below, resilience(below, true), [])[0];
+  assert.match(belowWarning.message, /answer the observer/);
+  assert.match(belowWarning.message, /may/);
+  assert.doesNotMatch(belowWarning.message, /cannot process transactions until/);
 });

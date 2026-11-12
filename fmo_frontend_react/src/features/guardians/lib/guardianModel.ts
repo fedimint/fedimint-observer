@@ -205,14 +205,14 @@ export function federationWarnings(rows: readonly GuardianRow[], res: Resilience
       id: 'below-threshold',
       tone: 'crit',
       guardianId: null,
-      message: `Only ${res.online} of ${res.total} guardians answer; consensus needs ${res.threshold}, so the federation cannot process transactions until more return.`,
+      message: `Only ${res.online} of ${res.total} guardians answer the observer, below the ${res.threshold} that consensus needs. The federation may be unable to process transactions, or the observer may only be unable to reach some guardians.`,
     });
   } else if (res.level === 'at_threshold' && res.total > 1) {
     warnings.push({
       id: 'at-threshold',
       tone: 'warn',
       guardianId: null,
-      message: `Exactly ${res.threshold} of ${res.total} guardians answer: consensus still works, but one more outage would stop it.`,
+      message: `Exactly ${res.threshold} of ${res.total} guardians answer the observer, the number consensus needs. If that is their real state, one more outage would stop consensus.`,
     });
   }
   const perGuardian = rows.flatMap((row) => row.warnings).map((warning) =>
