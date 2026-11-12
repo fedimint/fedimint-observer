@@ -46,3 +46,18 @@ export function formatUtcDayHour(value: DateInput, fallback = ''): string {
   if (!date) return fallback;
   return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'UTC' });
 }
+
+/** "just now", "4 min ago", "3 h ago", "2 d ago"; "in 5 min" for the future */
+export function formatRelative(value: DateInput, now: number = Date.now(), fallback = 'never'): string {
+  const date = toDate(value);
+  if (!date) return fallback;
+  const seconds = Math.round((now - date.getTime()) / 1000);
+  const future = seconds < 0;
+  const abs = Math.abs(seconds);
+  const text = abs < 45 ? null
+    : abs < 3600 ? `${Math.round(abs / 60)} min`
+    : abs < 86400 ? `${Math.round(abs / 3600)} h`
+    : `${Math.round(abs / 86400)} d`;
+  if (text === null) return 'just now';
+  return future ? `in ${text}` : `${text} ago`;
+}

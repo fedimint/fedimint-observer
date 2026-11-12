@@ -17,8 +17,3 @@ export function showMigrationHelp(now = Date.now()): boolean {
 export function isMigrating(federation: Pick<FederationSummary, 'expiry_timestamp' | 'successor_id'>): boolean {
   return federation.expiry_timestamp != null && federation.successor_id != null;
 }
-
-/** Display name of every federation in a list, by ID, to name a successor the observer tracks */
-export function federationNames(federations: FederationSummary[]): Map<string, string> {
-  return new Map(federations.map((federation) => [federation.id, federation.name || 'Unnamed']));
-}
