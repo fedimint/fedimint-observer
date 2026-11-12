@@ -166,3 +166,79 @@ fn nostr_groups_split_like_the_home_page_and_named_ones_come_first() {
     let names: Vec<_> = online.iter().map(|e| e.name.as_deref().unwrap()).collect();
     assert_eq!(names, ["Alpha", "zeta"]);
 }
+
+/// Every row of `rows`, read one page at a time through the cursors the
+/// server hands out
+fn walk<T: Clone, K>(rows: &[T], key: impl Fn(&T) -> K + Copy) -> Vec<T>
+where
+    K: Ord + serde::Serialize + serde::de::DeserializeOwned,
+{
+    let mut seen = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let page = keyset_page(rows.to_vec(), key, after.as_deref(), 1)
+            .expect("every cursor the server generates is accepted");
+        seen.extend(page.items);
+        match page.next_after {
+            Some(next) => after = Some(next),
+            None => return seen,
+        }
+    }
+}
+
+/// Names of any length: a 400-character name once produced a cursor the
+/// server then refused, so paging stopped at that row
+#[test]
+fn long_names_page_through_every_order() {
+    let long = |fill: &str, n: usize| fill.repeat(n);
+    let names = [
+        long("a", 400),
+        long("a", 399) + "b",
+        // JSON escapes control characters to six bytes each
+        long("\u{1}", 400),
+        long("ü", 400),
+        long("𝔽", 400),
+    ];
+    let rows: Vec<_> = names
+        .iter()
+        .enumerate()
+        .map(|(n, name)| {
+            federation(
+                n as u8 + 1,
+                Some(name),
+                Some(100 * n as u64),
+                FederationHealth::Online,
+                None,
+                n as u64,
+            )
+        })
+        .collect();
+    for sort in [
+        FederationSort::Assets,
+        FederationSort::Volume,
+        FederationSort::Transactions,
+        FederationSort::Name,
+    ] {
+        for dir in [SortDirection::Asc, SortDirection::Desc] {
+            let mut ids: Vec<_> = walk(&rows, |f| sort_key(f, sort, dir))
+                .into_iter()
+                .map(|f| f.id)
+                .collect();
+            assert_eq!(ids.len(), rows.len(), "{sort:?} {dir:?}");
+            ids.sort();
+            ids.dedup();
+            assert_eq!(ids.len(), rows.len(), "{sort:?} {dir:?} repeated a row");
+        }
+    }
+
+    let entries: Vec<_> = rows
+        .iter()
+        .map(|f| NostrFederationEntry {
+            id: f.id,
+            invite: f.invite.clone(),
+            name: f.name.clone(),
+            health: Some(f.health),
+        })
+        .collect();
+    assert_eq!(walk(&entries, nostr_sort_key).len(), entries.len());
+}

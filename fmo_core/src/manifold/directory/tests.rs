@@ -170,3 +170,42 @@ fn facets_cover_every_guardian_newest_version_first() {
     assert_eq!(facets.versions, vec!["0.12", "0.9"]);
     assert_eq!(facets.sizes, vec![4, 7]);
 }
+
+/// Display names come from advertisements, so they can be as long as a
+/// payload allows; paging must still reach every guardian
+#[test]
+fn guardians_with_huge_names_page_through_every_order() {
+    let rows: Vec<_> = (0..4u64)
+        .map(|n| {
+            guardian(
+                &format!("{}{n}", "\u{7}".repeat(20_000)),
+                &format!("{n:064x}"),
+                "0.12.0",
+                Some(1_000 + n),
+                true,
+                n,
+            )
+        })
+        .collect();
+    for sort in [
+        DirectorySort::Freshness,
+        DirectorySort::PriceAsc,
+        DirectorySort::PriceDesc,
+        DirectorySort::Name,
+    ] {
+        let mut seen = Vec::new();
+        let mut after: Option<String> = None;
+        loop {
+            let page = keyset_page(rows.clone(), |g| sort_key(g, sort), after.as_deref(), 1)
+                .expect("every cursor the server generates is accepted");
+            seen.extend(page.items.into_iter().map(|g| g.fman_pubkey));
+            match page.next_after {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), rows.len(), "{sort:?}");
+    }
+}

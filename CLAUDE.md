@@ -90,7 +90,7 @@ Required environment variables (`sample.env` is a template; the server does not 
 - `FO_ADMIN_AUTH`: Admin authentication password
 - `FO_MEMPOOL_URL`: Mempool API URL (default: "https://mempool.space/api")
 - `FO_MANIFOLD_RELAYS`: Comma-separated relays the Manifold discovery collector reads (default: Manifold's production relays); empty turns the collector off
-- `FO_MANIFOLD_TRUSTED_ISSUERS`: Comma-separated PeerBadge issuer keys treated as trust roots (default: none, as Manifold's production environment pins none yet)
+- `FO_MANIFOLD_TRUSTED_ISSUERS`: Comma-separated PeerBadge issuer keys (x-only hex) treated as trust roots, replacing the default: Manifold's production issuers, copied from the `fedibtc/manifold` revision the Fedi app pins (`MANIFOLD_PRODUCTION_ISSUERS` and `MANIFOLD_ISSUERS_REVISION` in `fmo_core/src/manifold/collector.rs`). Set empty, no issuer is trusted; an invalid key stops the server at startup. The daily `manifold-issuers` workflow (`scripts/check-manifold-issuers.sh`) opens an issue when Fedi's pinned roster differs from the copy
 
 ### API Endpoints
 - **Config API** (`/config/*`): Stable API for federation configuration inspection

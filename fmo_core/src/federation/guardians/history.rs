@@ -60,6 +60,26 @@ fn ratio(part: i64, whole: i64) -> Option<f32> {
     (whole > 0).then(|| part as f32 / whole as f32)
 }
 
+/// The mean latency over a window, from each bucket's `(latency_sum_ms,
+/// latency_samples)`: every timed request weighs the same. Weighting the
+/// buckets' means by their online samples instead biased it, since the
+/// status poll and the separately timed request succeed independently.
+fn window_latency_ms(buckets: impl IntoIterator<Item = (i64, i64)>) -> Option<f32> {
+    let (sum, samples) = buckets
+        .into_iter()
+        .filter(|&(_, samples)| samples > 0)
+        .fold(
+            (0i64, 0i64),
+            |(sum, samples), (bucket_sum, bucket_samples)| {
+                (
+                    sum.saturating_add(bucket_sum),
+                    samples.saturating_add(bucket_samples),
+                )
+            },
+        );
+    ratio(sum, samples)
+}
+
 fn non_negative(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
 }
@@ -198,16 +218,20 @@ impl FederationObserver {
             })
             .collect();
 
+        // Per guardian, as in `guardians`: each bucket's (latency sum, timed samples)
+        let mut latency: Vec<Vec<(i64, i64)>> = vec![Vec::new(); guardians.len()];
         for row in &rows {
             let guardian_id = row.get::<_, i32>("guardian_id") as u16;
-            let Some(series) = guardians
-                .iter_mut()
-                .find(|series| series.guardian_id == guardian_id)
+            let Some(index) = guardians
+                .iter()
+                .position(|series| series.guardian_id == guardian_id)
             else {
                 continue;
             };
+            let series = &mut guardians[index];
             let latency_samples: i64 = row.get("latency_samples");
             let latency_sum_ms: i64 = row.get("latency_sum_ms");
+            latency[index].push((latency_sum_ms, latency_samples));
             series.buckets.push(GuardianHealthBucket {
                 start: row.get::<_, NaiveDateTime>("bucket").and_utc(),
                 samples: clamp_u32(row.get("samples")),
@@ -218,23 +242,11 @@ impl FederationObserver {
             });
         }
 
-        for series in &mut guardians {
+        for (series, latency) in guardians.iter_mut().zip(latency) {
             let polled: u64 = series.buckets.iter().map(|b| b.polled_s).sum();
             let online: u64 = series.buckets.iter().map(|b| b.online_s).sum();
             series.uptime_pct = ratio(online as i64, polled as i64).map(|share| share * 100.0);
-            let timed: Vec<_> = series
-                .buckets
-                .iter()
-                .filter_map(|b| b.avg_latency_ms.map(|avg| (avg, b.online_samples)))
-                .collect();
-            let weight: u32 = timed.iter().map(|(_, samples)| samples).sum();
-            series.avg_latency_ms = (weight > 0).then(|| {
-                timed
-                    .iter()
-                    .map(|(avg, samples)| avg * *samples as f32)
-                    .sum::<f32>()
-                    / weight as f32
-            });
+            series.avg_latency_ms = window_latency_ms(latency);
         }
 
         Ok(GuardianHealthHistory {
@@ -382,6 +394,19 @@ mod tests {
             window_start(now, GuardianHealthWindow::Month),
             Utc.with_ymd_and_hms(2026, 10, 13, 0, 0, 0).unwrap()
         );
+    }
+
+    #[test]
+    fn window_latency_weighs_every_timed_request_alike() {
+        // Hour 1: 10 polls answered but only 1 request timed, at 1000 ms.
+        // Hour 2: 1 poll answered but 9 requests timed, at 100 ms each.
+        // Weighting the hours' means by answered polls gave
+        // (1000·10 + 100·1) / 11 ≈ 918 ms; the 10 timed requests average 190 ms.
+        assert_eq!(window_latency_ms([(1000, 1), (900, 9)]), Some(190.0));
+        // Timed requests in a bucket without answered polls still count
+        assert_eq!(window_latency_ms([(0, 0), (300, 3)]), Some(100.0));
+        assert_eq!(window_latency_ms([(0, 0)]), None);
+        assert_eq!(window_latency_ms([]), None);
     }
 
     #[test]

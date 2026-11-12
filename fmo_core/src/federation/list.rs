@@ -19,7 +19,7 @@ use fmo_api_types::{
 use serde::Deserialize;
 
 use crate::error::ClientError;
-use crate::pagination::{keyset_page, Page};
+use crate::pagination::{key_text, keyset_page, Page};
 use crate::AppState;
 
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -130,8 +130,7 @@ pub(crate) fn sort_key(
         .name
         .as_deref()
         .filter(|name| !name.is_empty())
-        .map(str::to_lowercase);
-    let tie_name = name.clone().unwrap_or_default();
+        .map(|name| key_text(&name.to_lowercase()));
     let id = federation.id.to_string();
     let signed = |value: u64| match direction {
         SortDirection::Asc => i128::from(value),
@@ -144,7 +143,8 @@ pub(crate) fn sort_key(
                 SortDirection::Asc => (name, None),
                 SortDirection::Desc => (None, name.map(Reverse)),
             };
-            (missing, 0, asc, desc, tie_name, id)
+            // The name is already in the key; the tie-breaker is the id alone
+            (missing, 0, asc, desc, String::new(), id)
         }
         metric => {
             let value = match metric {
@@ -158,7 +158,7 @@ pub(crate) fn sort_key(
                 value.map_or(0, signed),
                 None,
                 None,
-                tie_name,
+                name.unwrap_or_default(),
                 id,
             )
         }
@@ -267,7 +267,7 @@ pub(crate) fn nostr_sort_key(entry: &NostrFederationEntry) -> NostrSortKey {
         .name
         .as_deref()
         .filter(|name| !name.is_empty())
-        .map(str::to_lowercase);
+        .map(|name| key_text(&name.to_lowercase()));
     (
         name.is_none(),
         name.unwrap_or_default(),

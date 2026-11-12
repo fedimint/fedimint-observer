@@ -14,7 +14,9 @@ use anyhow::ensure;
 use nostr_sdk::{Filter, FilterOptions, Kind, RelayOptions, RelayPool, RelayPoolOptions};
 use tracing::{debug, info, warn};
 
-use super::discovery::{verify_event, FLIP_KIND, MAX_AD_AGE_SECONDS, MG_LEGACY_KIND, MG_V2_KIND};
+use super::discovery::{
+    verify_event, VerifiedAdvertisement, FLIP_KIND, MAX_AD_AGE_SECONDS, MG_LEGACY_KIND, MG_V2_KIND,
+};
 use crate::federation::observer::FederationObserver;
 
 /// Manifold's production relays (`manifold-environment`,
@@ -26,9 +28,30 @@ pub const DEFAULT_RELAYS: &[&str] = &[
 ];
 /// Comma-separated relay URLs; empty turns the collector off
 pub const RELAYS_ENV: &str = "FO_MANIFOLD_RELAYS";
-/// Comma-separated PeerBadge issuer keys trusted as roots; none by default,
-/// as Manifold's production environment pins none yet
+/// Comma-separated PeerBadge issuer keys (x-only hex) trusted as roots, in
+/// place of [`MANIFOLD_PRODUCTION_ISSUERS`]; set empty, no issuer is trusted
 pub const TRUSTED_ISSUERS_ENV: &str = "FO_MANIFOLD_TRUSTED_ISSUERS";
+
+/// The `fedibtc/manifold` revision [`MANIFOLD_PRODUCTION_ISSUERS`] was copied
+/// from: the one the Fedi app (`fedixyz/fedi`, `flake.lock`, `manifold-src`)
+/// pins, so the observer trusts exactly the issuers Fedi's app does. The
+/// `manifold-issuers` workflow flags a newer revision whose list differs.
+pub const MANIFOLD_ISSUERS_REVISION: &str = "141d6b95ccf8ebaeec6788bdf0ae2a6f9d8543d0";
+
+/// Manifold's production PeerBadge issuers, copied in roster order from
+/// `PRODUCTION_ISSUERS` in `crates/manifold-environment/src/lib.rs` at
+/// [`MANIFOLD_ISSUERS_REVISION`] (MIT). Each is a personal issuer key whose
+/// secret its owner holds; Manifold's release process vets every entry.
+pub const MANIFOLD_PRODUCTION_ISSUERS: &[&str] = &[
+    "ac9647df59ada5c432ce7ff9a6afbac4507d29cdf6ed9e9dd26010e641ff9aeb",
+    "db37f7c6399b2eba7a5ec0cf8258c556406bf881db35e8fd0fe1499755f4850b",
+    "8cdf45bcfe110b128f5cff355b24cb85f549e79de879aa36915570fdf9b50b02",
+    "f6c7bc122e74acef6101d2e343a7e68a0de3d9dc9f357c79276743b86ffdb283",
+    "96eb3609d9cb7c07da825e43a7fa73e7e8020c999c5de00b3333476c58d840e4",
+    "ef245cb47056133e595cd54d66de8bddbe71ba8583ac2c2eede78f951981e7f6",
+    "c3cfb8370910591401f31937da09ffedc0ed4ff64e46772ba7c3e267784a4c1a",
+    "5546e9caca6b8a474da9da8799f9f8f988888018b42429ebe00dd4b9cd2f6a31",
+];
 
 /// Advertisements are republished every 30 minutes and expire after 60
 const SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
@@ -95,13 +118,54 @@ pub fn configured_relays() -> Vec<String> {
     }
 }
 
-pub fn trusted_issuers() -> Vec<String> {
-    std::env::var(TRUSTED_ISSUERS_ENV)
-        .unwrap_or_default()
+/// The trusted issuers for `setting`, the value of [`TRUSTED_ISSUERS_ENV`]:
+/// Manifold's production issuers when it is unset. A key that is not 64 hex
+/// characters is an error, not skipped, so a typo cannot pass unnoticed.
+pub fn parse_trusted_issuers(setting: Option<&str>) -> anyhow::Result<Vec<String>> {
+    let Some(setting) = setting else {
+        return Ok(MANIFOLD_PRODUCTION_ISSUERS
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect());
+    };
+    setting
         .split(',')
-        .map(|key| key.trim().to_lowercase())
-        .filter(|key| key.len() == 64)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(|key| {
+            ensure!(
+                key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{TRUSTED_ISSUERS_ENV}: {key:?} is not an x-only public key in hex (64 characters)"
+            );
+            Ok(key.to_lowercase())
+        })
         .collect()
+}
+
+/// Checked when the observer starts, so a bad setting stops it right away,
+/// and logged, so the trust roots in use are on record
+pub fn check_trusted_issuers() -> anyhow::Result<()> {
+    let setting = std::env::var(TRUSTED_ISSUERS_ENV).ok();
+    let issuers = parse_trusted_issuers(setting.as_deref())?;
+    match setting {
+        None => info!(
+            issuers = issuers.len(),
+            revision = MANIFOLD_ISSUERS_REVISION,
+            "Trusting Manifold's production PeerBadge issuers"
+        ),
+        Some(_) => info!(
+            issuers = issuers.len(),
+            "Trusting the PeerBadge issuers in {TRUSTED_ISSUERS_ENV}"
+        ),
+    }
+    Ok(())
+}
+
+/// The issuers credentials are checked against. An invalid setting stops the
+/// observer at startup ([`check_trusted_issuers`]); should it change after,
+/// no issuer is trusted, failing closed.
+pub fn trusted_issuers() -> Vec<String> {
+    parse_trusted_issuers(std::env::var(TRUSTED_ISSUERS_ENV).ok().as_deref()).unwrap_or_default()
 }
 
 fn unix_now() -> u64 {
@@ -203,12 +267,12 @@ impl FederationObserver {
             match verify_event(event) {
                 Ok(ad) if ad.created_at <= now + MAX_AD_AGE_SECONDS => {
                     let key = (ad.kind, ad.author.clone());
-                    let replace = newest.get(&key).is_none_or(
-                        |current: &super::discovery::VerifiedAdvertisement| {
+                    let replace = newest
+                        .get(&key)
+                        .is_none_or(|current: &VerifiedAdvertisement| {
                             (ad.created_at, std::cmp::Reverse(&ad.event_id))
                                 > (current.created_at, std::cmp::Reverse(&current.event_id))
-                        },
-                    );
+                        });
                     if replace {
                         newest.insert(key, ad);
                     }
@@ -223,97 +287,159 @@ impl FederationObserver {
         }
 
         let mut connection = self.connection().await?;
-        let dbtx = connection.transaction().await?;
-        for ad in newest.values() {
-            dbtx.execute(
-                "INSERT INTO fmo_manifold.advertisements
-                     (kind, author, event_id, created_at, issued_at, expires_at, payload)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 ON CONFLICT (kind, author) DO UPDATE
-                     SET event_id = EXCLUDED.event_id, created_at = EXCLUDED.created_at,
-                         issued_at = EXCLUDED.issued_at, expires_at = EXCLUDED.expires_at,
-                         payload = EXCLUDED.payload, last_seen = now()
-                     WHERE advertisements.created_at < EXCLUDED.created_at
-                        OR (advertisements.created_at = EXCLUDED.created_at
-                            AND EXCLUDED.event_id < advertisements.event_id)",
-                &[
-                    &i32::from(ad.kind),
-                    &ad.author,
-                    &ad.event_id,
-                    &(ad.created_at as i64),
-                    &(ad.issued_at as i64),
-                    &(ad.expires_at as i64),
-                    &ad.payload,
-                ],
-            )
+        let mut dbtx = connection.transaction().await?;
+        dbtx.batch_execute("SET LOCAL search_path TO fmo_manifold, public")
             .await?;
-            dbtx.execute(
-                "UPDATE fmo_manifold.advertisements SET last_seen = now()
-                 WHERE kind = $1 AND author = $2 AND event_id = $3",
-                &[&i32::from(ad.kind), &ad.author, &ad.event_id],
-            )
-            .await?;
-            if ad.kind != FLIP_KIND {
-                let fedimintd = ad
-                    .payload
-                    .pointer("/availability/fedimintd_version")
-                    .and_then(|v| v.as_str());
-                // Legacy payloads carry an integer `version`; only v2 names the MG release
-                let mg = ad
-                    .payload
-                    .pointer("/version/mg_version")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                if let Some(fedimintd) = fedimintd {
-                    dbtx.execute(
-                        "INSERT INTO fmo_manifold.version_changes (author, fedimintd_version, mg_version, first_seen)
-                         VALUES ($1, $2, $3, $4)
-                         ON CONFLICT (author, fedimintd_version, mg_version)
-                         DO UPDATE SET first_seen = LEAST(version_changes.first_seen, EXCLUDED.first_seen)",
-                        &[&ad.author, &fedimintd, &mg, &(ad.issued_at as i64)],
-                    )
-                    .await?;
-                }
-            }
-        }
-
-        let now_i64 = now as i64;
-        dbtx.execute(
-            "INSERT INTO fmo_manifold.presence_daily (author, day, polls, fresh_polls)
-             SELECT author, (now() AT TIME ZONE 'UTC')::date, 1,
-                    MAX(CASE WHEN issued_at <= $1 AND expires_at > $1 AND $1 - issued_at <= $2 THEN 1 ELSE 0 END)
-             FROM fmo_manifold.advertisements
-             WHERE kind IN (37701, 37709) AND created_at >= $1 - $3
-             GROUP BY author
-             ON CONFLICT (author, day) DO UPDATE
-                 SET polls = presence_daily.polls + 1,
-                     fresh_polls = presence_daily.fresh_polls + EXCLUDED.fresh_polls",
-            &[&now_i64, &(MAX_AD_AGE_SECONDS as i64), &(RETENTION_DAYS * 86400)],
-        )
-        .await?;
-        dbtx.execute(
-            "DELETE FROM fmo_manifold.presence_daily WHERE day < (now() AT TIME ZONE 'UTC')::date - $1::int",
-            &[&(PRESENCE_RETENTION_DAYS as i32)],
-        )
-        .await?;
-        dbtx.execute(
-            "DELETE FROM fmo_manifold.advertisements WHERE expires_at < $1",
-            &[&(now_i64 - RETENTION_DAYS * 86400)],
-        )
-        .await?;
-        dbtx.execute(
-            "INSERT INTO fmo_manifold.sync_state (singleton, last_success, relays) VALUES (true, now(), $1)
-             ON CONFLICT (singleton) DO UPDATE SET last_success = now(), relays = EXCLUDED.relays",
-            &[&relays],
-        )
-        .await?;
+        let ads: Vec<&VerifiedAdvertisement> = newest.values().collect();
+        let outcome = store_sync(&mut dbtx, &ads, relays, now).await?;
         dbtx.commit().await?;
+        let rejected = rejected + outcome.refused;
         info!(
             events = events.len(),
-            stored = newest.len(),
+            stored = outcome.stored,
             rejected,
             "Manifold discovery synced"
         );
         Ok(())
     }
 }
+
+/// What one sync wrote
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StoreOutcome {
+    pub stored: usize,
+    /// Advertisements the database refused; each was skipped alone
+    pub refused: usize,
+}
+
+/// Writes one sync: its advertisements, their versions, the day's presence,
+/// retention and the sync state. Runs in `dbtx`, whose `search_path` must
+/// lead with the Manifold schema.
+///
+/// [`verify_event`] already rejects what the database cannot store, but each
+/// advertisement still goes in under a savepoint of its own: should the
+/// database refuse one anyway, only that one is skipped, and the rest of the
+/// sync commits.
+pub(crate) async fn store_sync(
+    dbtx: &mut tokio_postgres::Transaction<'_>,
+    ads: &[&VerifiedAdvertisement],
+    relays: &[String],
+    now: u64,
+) -> anyhow::Result<StoreOutcome> {
+    let mut outcome = StoreOutcome {
+        stored: 0,
+        refused: 0,
+    };
+    for ad in ads {
+        let savepoint = dbtx.transaction().await?;
+        match store_advertisement(&savepoint, ad).await {
+            Ok(()) => {
+                savepoint.commit().await?;
+                outcome.stored += 1;
+            }
+            Err(error) => {
+                savepoint.rollback().await?;
+                warn!(%error, author = %ad.author, event = %ad.event_id, "Skipping a Manifold advertisement the database refused");
+                outcome.refused += 1;
+            }
+        }
+    }
+
+    let now = i64::try_from(now)?;
+    dbtx.execute(
+        "INSERT INTO presence_daily (author, day, polls, fresh_polls)
+         SELECT author, (now() AT TIME ZONE 'UTC')::date, 1,
+                MAX(CASE WHEN issued_at <= $1 AND expires_at > $1 AND $1 - issued_at <= $2 THEN 1 ELSE 0 END)
+         FROM advertisements
+         WHERE kind IN (37701, 37709) AND created_at >= $1 - $3
+         GROUP BY author
+         ON CONFLICT (author, day) DO UPDATE
+             SET polls = presence_daily.polls + 1,
+                 fresh_polls = presence_daily.fresh_polls + EXCLUDED.fresh_polls",
+        &[&now, &(MAX_AD_AGE_SECONDS as i64), &(RETENTION_DAYS * 86400)],
+    )
+    .await?;
+    dbtx.execute(
+        "DELETE FROM presence_daily WHERE day < (now() AT TIME ZONE 'UTC')::date - $1::int",
+        &[&(PRESENCE_RETENTION_DAYS as i32)],
+    )
+    .await?;
+    dbtx.execute(
+        "DELETE FROM advertisements WHERE expires_at < $1",
+        &[&(now - RETENTION_DAYS * 86400)],
+    )
+    .await?;
+    dbtx.execute(
+        "INSERT INTO sync_state (singleton, last_success, relays) VALUES (true, now(), $1)
+         ON CONFLICT (singleton) DO UPDATE SET last_success = now(), relays = EXCLUDED.relays",
+        &[&relays],
+    )
+    .await?;
+    Ok(outcome)
+}
+
+async fn store_advertisement(
+    savepoint: &tokio_postgres::Transaction<'_>,
+    ad: &VerifiedAdvertisement,
+) -> anyhow::Result<()> {
+    let created_at = i64::try_from(ad.created_at)?;
+    let issued_at = i64::try_from(ad.issued_at)?;
+    let expires_at = i64::try_from(ad.expires_at)?;
+    savepoint
+        .execute(
+            "INSERT INTO advertisements
+                 (kind, author, event_id, created_at, issued_at, expires_at, payload)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT (kind, author) DO UPDATE
+                 SET event_id = EXCLUDED.event_id, created_at = EXCLUDED.created_at,
+                     issued_at = EXCLUDED.issued_at, expires_at = EXCLUDED.expires_at,
+                     payload = EXCLUDED.payload, last_seen = now()
+                 WHERE advertisements.created_at < EXCLUDED.created_at
+                    OR (advertisements.created_at = EXCLUDED.created_at
+                        AND EXCLUDED.event_id < advertisements.event_id)",
+            &[
+                &i32::from(ad.kind),
+                &ad.author,
+                &ad.event_id,
+                &created_at,
+                &issued_at,
+                &expires_at,
+                &ad.payload,
+            ],
+        )
+        .await?;
+    savepoint
+        .execute(
+            "UPDATE advertisements SET last_seen = now()
+             WHERE kind = $1 AND author = $2 AND event_id = $3",
+            &[&i32::from(ad.kind), &ad.author, &ad.event_id],
+        )
+        .await?;
+    if ad.kind != FLIP_KIND {
+        let fedimintd = ad
+            .payload
+            .pointer("/availability/fedimintd_version")
+            .and_then(|v| v.as_str());
+        // Legacy payloads carry an integer `version`; only v2 names the MG release
+        let mg = ad
+            .payload
+            .pointer("/version/mg_version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if let Some(fedimintd) = fedimintd {
+            savepoint
+                .execute(
+                    "INSERT INTO version_changes (author, fedimintd_version, mg_version, first_seen)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (author, fedimintd_version, mg_version)
+                     DO UPDATE SET first_seen = LEAST(version_changes.first_seen, EXCLUDED.first_seen)",
+                    &[&ad.author, &fedimintd, &mg, &issued_at],
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

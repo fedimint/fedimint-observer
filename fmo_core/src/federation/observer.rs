@@ -127,6 +127,7 @@ impl FederationObserver {
         modules: ModuleRegistry,
         options: &crate::runtime::RuntimeOptions,
     ) -> anyhow::Result<FederationObserver> {
+        crate::manifold::check_trusted_issuers()?;
         let connection_pool = crate::runtime::pool(database, options.worker_db_connections, true)?;
         let api_pool = crate::runtime::pool(database, options.api_db_connections, false)?;
         let task_group = TaskGroup::default();

@@ -707,6 +707,9 @@ pub struct ManifoldSeatBinding {
 pub struct ManifoldDiscovery<T> {
     /// The last relay sync that succeeded; None before the first
     pub observed_at: Option<DateTime<Utc>>,
+    /// The relays the collector is configured to read, all queried on every
+    /// sync. Not the relays each event was found on: an event is accepted for
+    /// its signatures, wherever it came from.
     pub relays: Vec<String>,
     pub data: T,
     /// Paging of a list answer; absent on single-item answers

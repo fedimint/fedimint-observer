@@ -43,6 +43,10 @@ pub const MAX_AD_AGE_SECONDS: u64 = 2 * 60 * 60;
 pub const REQUIRED_TRUST_LEVEL: u64 = 9;
 /// A holder authorization may be dated at most this far in the future
 const AUTHORIZATION_FUTURE_SKEW: u64 = 60 * 60;
+/// The last second of year 9999. A signed timestamp past it is not a real
+/// date, and bounding them keeps every timestamp and the differences of two
+/// far inside PostgreSQL's `BIGINT`.
+pub const MAX_TIMESTAMP: u64 = 253_402_300_799;
 
 /// `d` and `t` tags each kind must carry
 pub fn kind_tags(kind: u16) -> Option<(&'static str, &'static str)> {
@@ -77,6 +81,10 @@ pub enum DiscoveryError {
     Malformed,
     AuthorMismatch,
     InvalidSignature,
+    /// Correctly signed, but not storable: a timestamp past
+    /// [`MAX_TIMESTAMP`], or a NUL character, which PostgreSQL's `JSONB`
+    /// cannot hold. Rejected here, it never reaches a sync's transaction.
+    Unstorable,
 }
 
 /// Verifies one relay event end to end
@@ -120,20 +128,47 @@ pub fn verify_event(event: &Event) -> Result<VerifiedAdvertisement, DiscoveryErr
         )?,
     };
     let time = |key: &str| {
-        payload
+        let time = payload
             .get(key)
             .and_then(Value::as_u64)
-            .ok_or(DiscoveryError::Malformed)
+            .ok_or(DiscoveryError::Malformed)?;
+        storable_time(time)
     };
+    let issued_at = time("issued_at")?;
+    let expires_at = time("expires_at")?;
+    let created_at = storable_time(event.created_at().as_u64())?;
+    if contains_nul(&payload) {
+        return Err(DiscoveryError::Unstorable);
+    }
     Ok(VerifiedAdvertisement {
         kind,
         author,
         event_id: event.id().to_hex(),
-        created_at: event.created_at().as_u64(),
-        issued_at: time("issued_at")?,
-        expires_at: time("expires_at")?,
+        created_at,
+        issued_at,
+        expires_at,
         payload,
     })
+}
+
+fn storable_time(time: u64) -> Result<u64, DiscoveryError> {
+    if time <= MAX_TIMESTAMP {
+        Ok(time)
+    } else {
+        Err(DiscoveryError::Unstorable)
+    }
+}
+
+/// Whether any key or string in `value` holds U+0000
+fn contains_nul(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.contains('\0'),
+        Value::Array(items) => items.iter().any(contains_nul),
+        Value::Object(fields) => fields
+            .iter()
+            .any(|(key, value)| key.contains('\0') || contains_nul(value)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
 }
 
 fn digest(domain: &[u8], bytes: &[u8]) -> Message {
@@ -316,20 +351,26 @@ pub fn credential(
 
     let pinned = issuer
         .as_ref()
-        .is_some_and(|issuer| trusted_issuers.contains(issuer));
+        .is_some_and(|issuer| trusted_issuers.contains(&issuer.to_lowercase()));
     let needs_verifier =
         || Some("Needs Manifold's PeerBadge verifier, which the observer does not run".to_owned());
-    // With no trust roots configured there is nothing to compare the issuer
-    // with, so the check is not run rather than failed
+    // With no trust roots (the setting turned them off) there is nothing to
+    // compare the issuer with, so the check is not run rather than failed
     let checks = vec![
         check(
             "issuer_root",
-            "Issuer is one of the configured trust roots",
+            "Issuer is a trusted PeerBadge issuer",
             (!trusted_issuers.is_empty()).then_some(pinned),
             if trusted_issuers.is_empty() {
-                Some("No trust root is configured; Manifold's production environment pins no PeerBadge issuer yet".to_owned())
+                Some(
+                    "No issuer is trusted: this observer's trusted issuer list is set empty"
+                        .to_owned(),
+                )
             } else {
-                (!pinned).then(|| "Not one of the configured issuers".to_owned())
+                (!pinned).then(|| {
+                    "Not one of the trusted issuers (by default, Manifold's production issuers)"
+                        .to_owned()
+                })
             },
         ),
         check(
@@ -401,11 +442,11 @@ pub fn credential(
         None => (
             CredentialState::Unavailable,
             if pinned {
-                "The issuer is pinned, but the observer cannot run the PeerBadge proof and revocation checks, so the credential is not verified.".to_owned()
+                "The issuer is trusted, but the observer cannot run the PeerBadge proof and revocation checks, so the credential is not verified.".to_owned()
             } else if trusted_issuers.is_empty() {
-                "Not verified: no PeerBadge issuer is pinned as a trust root yet, and the observer does not run the PeerBadge proof and revocation checks.".to_owned()
+                "Not verified: this observer trusts no PeerBadge issuer, and it does not run the PeerBadge proof and revocation checks.".to_owned()
             } else {
-                "Not verified: the issuer is not one of the configured trust roots, and the observer does not run the PeerBadge proof and revocation checks.".to_owned()
+                "Not verified: the issuer is not a trusted PeerBadge issuer, and the observer does not run the PeerBadge proof and revocation checks.".to_owned()
             },
         ),
     };
