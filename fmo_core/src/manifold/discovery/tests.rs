@@ -1,8 +1,9 @@
-use fmo_api_types::AdFreshness;
+use fmo_api_types::{AdFreshness, TrustCredential};
 use nostr_sdk::{EventBuilder, JsonUtil, Keys, Kind, Tag};
 use serde_json::json;
 
 use super::*;
+use crate::manifold::peerbadge::RevocationState;
 
 /// Real kind 37701, 37709 and 37702 events captured from Manifold's
 /// production relays, signed by their publishers
@@ -198,34 +199,6 @@ fn signed_but_unstorable_advertisements_are_rejected() {
     assert!(verify_event(&signed_v2(&keys, &with("10", "a\\\\u0000b"))).is_ok());
 }
 
-/// Production guardians hold credentials from Manifold's production issuers,
-/// which the observer trusts by default
-#[test]
-fn real_credentials_come_from_a_default_trusted_issuer() {
-    let trusted = crate::manifold::collector::parse_trusted_issuers(None).unwrap();
-    let mut checked = 0;
-    for event in real_events() {
-        let ad = verify_event(&event).unwrap();
-        if ad.kind == FLIP_KIND {
-            continue;
-        }
-        let credential = credential(&ad.payload, &ad.author, ad.issued_at, &trusted);
-        if credential.issuer_pubkey.is_none() {
-            continue;
-        }
-        let issuer_root = credential
-            .checks
-            .iter()
-            .find(|c| c.id == "issuer_root")
-            .and_then(|c| c.passed);
-        assert_eq!(issuer_root, Some(true), "{:?}", credential.issuer_pubkey);
-        // Trusting the issuer alone never makes a credential verified
-        assert_eq!(credential.state, CredentialState::Unavailable);
-        checked += 1;
-    }
-    assert!(checked > 0, "the fixtures carry credentials");
-}
-
 #[test]
 fn only_manifold_tagged_events_are_advertisements() {
     let keys = Keys::generate();
@@ -266,70 +239,211 @@ fn freshness_follows_the_fa_rule() {
     );
 }
 
+fn default_issuers() -> Vec<String> {
+    crate::manifold::collector::parse_trusted_issuers(None).unwrap()
+}
+
+/// Trust as of `now`: `issuers`, and revocations read completely just now
+fn trust_at(now: u64, issuers: Vec<String>) -> TrustContext {
+    TrustContext {
+        issuers,
+        revocations: RevocationState {
+            checked_at: chrono::DateTime::from_timestamp(now as i64, 0),
+            entries: Default::default(),
+        },
+    }
+}
+
+fn result(credential: &TrustCredential, id: &str) -> Option<bool> {
+    credential
+        .checks
+        .iter()
+        .find(|c| c.id == id)
+        .unwrap_or_else(|| panic!("no {id} check"))
+        .passed
+}
+
+/// The real advertisements with a credential, and the credential's digest
+fn real_credentials() -> Vec<(VerifiedAdvertisement, String)> {
+    real_events()
+        .iter()
+        .map(|event| verify_event(event).unwrap())
+        .filter_map(|ad| {
+            let signed: SignedCredential = serde_json::from_value(
+                ad.payload
+                    .pointer("/holder_authorizations/0/signed_credential")?
+                    .clone(),
+            )
+            .ok()?;
+            let digest = digest_wire(&CredentialDigest(signed.credential.digest().ok()?))?;
+            Some((ad, digest))
+        })
+        .collect()
+}
+
+/// Badges production guardians publish verify with Fedi's PeerBadge SDK,
+/// against the pinned authorities of Manifold's production issuers
 #[test]
-fn credentials_are_never_reported_verified() {
-    let events = real_events();
-    let v2 = verify_event(&events[1]).unwrap();
-    let now = v2.issued_at;
+fn real_production_credentials_verify() {
+    let credentials = real_credentials();
+    assert!(!credentials.is_empty(), "the fixtures carry credentials");
+    for (ad, _) in &credentials {
+        let now = ad.issued_at;
+        let verified = credential(
+            &ad.payload,
+            &ad.author,
+            now,
+            &trust_at(now, default_issuers()),
+        );
+        assert_eq!(
+            verified.state,
+            CredentialState::Verified,
+            "{:#?}",
+            verified.checks
+        );
+        assert!(verified.checks.iter().all(|c| c.passed == Some(true)));
+        assert!(verified
+            .issuer_label
+            .as_deref()
+            .is_some_and(|label| label.starts_with("Manifold production issuer ")));
+        assert!(verified.checked_at.is_some());
+        assert_eq!(verified.trust_level, Some(9));
+    }
+}
 
-    let real = credential(&v2.payload, &v2.author, now, &[]);
-    assert_eq!(real.state, CredentialState::Unavailable);
-    assert_eq!(real.trust_level, Some(9));
-    assert_eq!(real.schema.as_deref(), Some("fedi-trust-score-v1.0"));
-    let result = |id: &str| real.checks.iter().find(|c| c.id == id).unwrap().passed;
-    // No trust roots configured: nothing to compare with, so not run
-    assert_eq!(result("issuer_root"), None);
-    assert_eq!(result("subject"), Some(true));
-    assert_eq!(result("blind_msg"), Some(true));
-    assert_eq!(result("trust_level"), Some(true));
-    assert_eq!(result("issuance_proof"), None);
-    assert_eq!(result("revocation"), None);
+#[test]
+fn a_revoked_credential_fails_and_an_unclear_revocation_does_not_verify() {
+    let (ad, digest) = real_credentials().remove(0);
+    let now = ad.issued_at;
+    let issuer = ad
+        .payload
+        .pointer("/holder_authorizations/0/signed_credential/credential/issuer_id_pubkey")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_lowercase();
 
-    // Even a pinned issuer stays unverified without the PeerBadge proofs
-    let pinned = credential(
-        &v2.payload,
-        &v2.author,
+    let mut trust = trust_at(now, default_issuers());
+    trust
+        .revocations
+        .entries
+        .insert((issuer.clone(), digest.clone()), RevocationKind::Revoked);
+    let revoked = credential(&ad.payload, &ad.author, now, &trust);
+    assert_eq!(revoked.state, CredentialState::Failed);
+    assert_eq!(result(&revoked, "revocation"), Some(false));
+
+    // Only events that do not verify: unclear, so not verified, not revoked
+    trust
+        .revocations
+        .entries
+        .insert((issuer, digest), RevocationKind::Invalid);
+    let unclear = credential(&ad.payload, &ad.author, now, &trust);
+    assert_eq!(unclear.state, CredentialState::Unavailable);
+    assert_eq!(result(&unclear, "revocation"), None);
+}
+
+#[test]
+fn without_current_revocation_state_nothing_verifies() {
+    let (ad, _) = real_credentials().remove(0);
+    let now = ad.issued_at;
+
+    let mut never_read = trust_at(now, default_issuers());
+    never_read.revocations.checked_at = None;
+    let unread = credential(&ad.payload, &ad.author, now, &never_read);
+    assert_eq!(unread.state, CredentialState::Unavailable);
+    assert_eq!(result(&unread, "revocation"), None);
+    // Everything else did verify
+    assert_eq!(result(&unread, "issuance_proof"), Some(true));
+    assert!(unread
+        .reason
+        .unwrap()
+        .contains("revocations have not been read"));
+
+    let stale = trust_at(now - 16 * 60, default_issuers());
+    let old = credential(&ad.payload, &ad.author, now, &stale);
+    assert_eq!(old.state, CredentialState::Unavailable);
+    assert_eq!(result(&old, "revocation"), None);
+    // Fifteen minutes old still counts
+    let recent = trust_at(now - 15 * 60, default_issuers());
+    assert_eq!(
+        credential(&ad.payload, &ad.author, now, &recent).state,
+        CredentialState::Verified
+    );
+}
+
+#[test]
+fn only_trusted_issuers_with_a_pinned_authority_verify() {
+    let (ad, _) = real_credentials().remove(0);
+    let now = ad.issued_at;
+
+    // No trust roots: nothing to compare with, so not run
+    let none = credential(&ad.payload, &ad.author, now, &trust_at(now, Vec::new()));
+    assert_eq!(none.state, CredentialState::Unavailable);
+    assert_eq!(result(&none, "issuer_root"), None);
+    assert_eq!(result(&none, "issuance_proof"), None);
+
+    // Another root: a checked mismatch, still not a failed credential
+    let other = credential(
+        &ad.payload,
+        &ad.author,
         now,
-        &[real.issuer_pubkey.clone().unwrap()],
+        &trust_at(now, vec!["00".repeat(32)]),
     );
-    assert_eq!(pinned.state, CredentialState::Unavailable);
-    let pinned_result = pinned
-        .checks
-        .iter()
-        .find(|c| c.id == "issuer_root")
-        .unwrap()
-        .passed;
-    assert_eq!(pinned_result, Some(true));
-
-    // A configured root that is not this issuer is a real, checked mismatch
-    let other = credential(&v2.payload, &v2.author, now, &["00".repeat(32)]);
-    let other_result = other
-        .checks
-        .iter()
-        .find(|c| c.id == "issuer_root")
-        .unwrap()
-        .passed;
-    assert_eq!(other_result, Some(false));
     assert_eq!(other.state, CredentialState::Unavailable);
+    assert_eq!(result(&other, "issuer_root"), Some(false));
 
-    // Claims the observer can check do fail a credential
-    let mut low = v2.payload.clone();
-    low["holder_authorizations"][0]["signed_credential"]["credential"]["info"]["trust_level"] =
-        json!(7);
-    assert_eq!(
-        credential(&low, &v2.author, now, &[]).state,
-        CredentialState::Failed
+    // A trusted issuer outside Manifold's roster has no pinned authority
+    let mut unrooted = ad.payload.clone();
+    unrooted["holder_authorizations"][0]["signed_credential"]["credential"]["issuer_id_pubkey"] =
+        json!("11".repeat(32));
+    let unpinned = credential(
+        &unrooted,
+        &ad.author,
+        now,
+        &trust_at(now, vec!["11".repeat(32)]),
     );
-    assert_eq!(
-        credential(&v2.payload, &"00".repeat(32), now, &[]).state,
-        CredentialState::Failed
+    assert_eq!(result(&unpinned, "issuer_root"), Some(true));
+    assert_eq!(result(&unpinned, "issuer_pinned"), None);
+    assert_ne!(unpinned.state, CredentialState::Verified);
+}
+
+#[test]
+fn tampered_credentials_fail() {
+    let (ad, _) = real_credentials().remove(0);
+    let now = ad.issued_at;
+    let trust = trust_at(now, default_issuers());
+    let tampered = |pointer: &str, value: Value| {
+        let mut payload = ad.payload.clone();
+        *payload.pointer_mut(pointer).unwrap() = value;
+        credential(&payload, &ad.author, now, &trust)
+    };
+
+    // The issuer signed the trust level: raising it breaks the issuance proof
+    let level = "/holder_authorizations/0/signed_credential/credential/info/trust_level";
+    let raised = tampered(level, json!(12));
+    assert_eq!(raised.state, CredentialState::Failed);
+    assert_eq!(result(&raised, "issuance_proof"), Some(false));
+    let lowered = tampered(level, json!(7));
+    assert_eq!(lowered.state, CredentialState::Failed);
+    assert_eq!(result(&lowered, "trust_level"), Some(false));
+
+    // The holder signed the subject: another subject breaks the authorization
+    let resubjected = tampered(
+        "/holder_authorizations/0/holder_authorization/authorization/subject_pubkey",
+        json!("22".repeat(32)),
     );
+    assert_eq!(resubjected.state, CredentialState::Failed);
+    assert_eq!(result(&resubjected, "holder_authorization"), Some(false));
+
+    // A badge presented by another advertiser
+    let borrowed = credential(&ad.payload, &"00".repeat(32), now, &trust);
+    assert_eq!(borrowed.state, CredentialState::Failed);
+    assert_eq!(result(&borrowed, "subject"), Some(false));
 
     let none = credential(
         &json!({ "holder_authorizations": [] }),
-        &v2.author,
+        &ad.author,
         now,
-        &[],
+        &trust,
     );
     assert_eq!(none.state, CredentialState::None);
 }

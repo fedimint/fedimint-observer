@@ -12,6 +12,7 @@ on:
   pull_request:
     paths:
       - fmo_core/src/manifold/collector.rs
+      - fmo_core/src/manifold/fixtures/issuer-authority-*.json
       - scripts/check-manifold-issuers.sh
       - .github/workflows/manifold-issuers.yml
 
@@ -55,6 +56,6 @@ jobs:
             cat report.txt
             echo '```'
             echo
-            echo "Review the change in fedibtc/manifold before updating \`MANIFOLD_PRODUCTION_ISSUERS\` and \`MANIFOLD_ISSUERS_REVISION\`. Until then, \`FO_MANIFOLD_TRUSTED_ISSUERS\` overrides the list on a server."
+            echo "Review the change in fedibtc/manifold before updating \`MANIFOLD_PRODUCTION_ISSUERS\`, \`MANIFOLD_ISSUERS_REVISION\` and the pinned authorities in \`fmo_core/src/manifold/fixtures/\`. Until then, \`FO_MANIFOLD_TRUSTED_ISSUERS\` overrides the list on a server."
           } > body.md
           gh issue create --title "$title" --body-file body.md

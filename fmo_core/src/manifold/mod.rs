@@ -1,12 +1,15 @@
 //! Read-only Manifold data the observer can establish itself: which Manifold
 //! Guardian (MG) operates each guardian seat, from the federation's own
-//! consensus meta. Discovery data (Nostr advertisements), trust credentials
-//! and MG telemetry are not collected here.
+//! consensus meta; MG and FLIP advertisements from Manifold's relays
+//! ([`collector`], [`discovery`]); and their PeerBadge trust credentials,
+//! verified as the Fedi app verifies them ([`peerbadge`]). MG telemetry is not
+//! collected.
 
 mod api;
 mod collector;
 mod directory;
 pub mod discovery;
+mod peerbadge;
 pub mod seat_bindings;
 
 pub(crate) use api::routes;

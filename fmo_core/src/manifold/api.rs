@@ -18,6 +18,7 @@ use serde_json::Value;
 use super::collector::{configured_relays, trusted_issuers};
 use super::directory::{facets, matches, sort_key, DirectoryQuery};
 use super::discovery::{credential, freshness, FLIP_KIND, MG_LEGACY_KIND, MG_V2_KIND};
+use super::peerbadge::{RevocationKind, RevocationState, TrustContext};
 use super::seat_bindings::{verify_for_federation, FederationSeats};
 use super::{mg_display_name, SEAT_BINDINGS_OBSERVATION};
 use crate::error::ClientError;
@@ -91,6 +92,38 @@ async fn provenance(
     Ok(match row {
         Some(row) => (Some(row.get(0)), row.get(1)),
         None => (None, configured_relays()),
+    })
+}
+
+/// What credentials are checked against: the trusted issuers, and the
+/// revocations the collector read with when it last read them completely
+async fn trust_context(observer: &FederationObserver) -> anyhow::Result<TrustContext> {
+    let connection = observer.connection().await?;
+    let checked_at = connection
+        .query_opt(
+            "SELECT revocations_checked FROM fmo_manifold.sync_state",
+            &[],
+        )
+        .await?
+        .and_then(|row| row.get::<_, Option<DateTime<Utc>>>(0));
+    let entries = connection
+        .query(
+            "SELECT issuer, credential_digest, state FROM fmo_manifold.revocations",
+            &[],
+        )
+        .await?
+        .iter()
+        .filter_map(|row| {
+            let kind = RevocationKind::parse(row.get::<_, &str>(2))?;
+            Some(((row.get(0), row.get(1)), kind))
+        })
+        .collect();
+    Ok(TrustContext {
+        issuers: trusted_issuers(),
+        revocations: RevocationState {
+            checked_at,
+            entries,
+        },
     })
 }
 
@@ -320,7 +353,7 @@ fn summary(
     ads: &[&StoredAd],
     seats: &[OperatedSeat],
     now: u64,
-    issuers: &[String],
+    trust: &TrustContext,
 ) -> ManifoldGuardianSummary {
     let chosen = choose_ad(ads, now);
     ManifoldGuardianSummary {
@@ -332,7 +365,7 @@ fn summary(
             chosen.map_or(&Value::Null, |ad| &ad.payload),
             author,
             now,
-            issuers,
+            trust,
         ),
         seat_count: seats.len() as u32,
         federation_count: seats
@@ -363,7 +396,7 @@ async fn list_guardians(
     .await?;
     let seats = seats_by_guardian(observer).await?;
     let now = unix_now();
-    let issuers = trusted_issuers();
+    let trust = trust_context(observer).await?;
 
     let mut by_author: BTreeMap<&str, Vec<&StoredAd>> = BTreeMap::new();
     for ad in &ads {
@@ -381,7 +414,7 @@ async fn list_guardians(
                 ads,
                 seats.get(*author).map_or(&[][..], Vec::as_slice),
                 now,
-                &issuers,
+                &trust,
             )
         })
         .collect();
@@ -432,7 +465,8 @@ async fn get_guardian(
     }
     let now = unix_now();
     let refs: Vec<&StoredAd> = ads.iter().collect();
-    let summary = summary(&fman_pubkey, &refs, &seats, now, &trusted_issuers());
+    let trust = trust_context(observer).await?;
+    let summary = summary(&fman_pubkey, &refs, &seats, now, &trust);
 
     let connection = observer.connection().await?;
     // One entry per Fedimint version, with the MG release v2 named for it
@@ -508,7 +542,7 @@ async fn list_flip_providers(
     let observer = &state.federation_observer;
     let (observed_at, relays) = provenance(observer).await?;
     let now = unix_now();
-    let issuers = trusted_issuers();
+    let trust = trust_context(observer).await?;
     let providers: Vec<FlipProvider> = load_ads(observer, &[i32::from(FLIP_KIND)], None)
         .await?
         .into_iter()
@@ -516,7 +550,7 @@ async fn list_flip_providers(
             let p = &ad.payload;
             let text = |key: &str| p.pointer(key).and_then(Value::as_str).map(str::to_owned);
             FlipProvider {
-                credential: credential(p, &ad.author, now, &issuers),
+                credential: credential(p, &ad.author, now, &trust),
                 freshness: freshness(ad.issued_at, ad.expires_at, now),
                 provider_pubkey: ad.author.clone(),
                 event_id: ad.event_id.clone(),
