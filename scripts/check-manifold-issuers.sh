@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Compares the PeerBadge issuers the observer trusts by default
-# (MANIFOLD_PRODUCTION_ISSUERS in fmo_core/src/manifold/collector.rs) with
-# Manifold's production roster at the revision the Fedi app pins today.
+# (MANIFOLD_PRODUCTION_ISSUERS in fmo_core/src/manifold/collector.rs) and their
+# pinned authority documents (fmo_core/src/manifold/fixtures) with Manifold's
+# production roster at the revision the Fedi app pins today.
 #
 # Exits 0 when they match, 1 when they differ (printing what changed), and 2
 # when either source cannot be read. Needs curl and jq.
@@ -42,25 +43,46 @@ if [ -z "$theirs" ]; then
   exit 2
 fi
 
+# Each roster issuer's pinned authority document, compared as JSON
+fixtures="$(dirname "$collector")/fixtures"
+authority_drift=""
+for issuer in $theirs; do
+  short=${issuer:0:8}
+  url="https://raw.githubusercontent.com/fedibtc/manifold/$revision/crates/manifold-environment/fixtures/production-issuer-authority-$short.json"
+  if ! curl -fsSL --retry 3 "$url" -o "$workdir/authority-$short.json"; then
+    authority_drift+="  ? $short: no authority document in fedibtc/manifold@${revision:0:7}"$'\n'
+  elif [ ! -f "$fixtures/issuer-authority-$short.json" ]; then
+    authority_drift+="  + $short: authority not pinned here"$'\n'
+  elif ! cmp -s <(jq -S . "$workdir/authority-$short.json") <(jq -S . "$fixtures/issuer-authority-$short.json"); then
+    authority_drift+="  ~ $short: authority document changed"$'\n'
+  fi
+done
+
 echo "Observer list: $(wc -l <<<"$ours" | tr -d ' ') issuers, copied from fedibtc/manifold@${our_revision:0:7}"
 echo "Fedi pins:     fedibtc/manifold@${revision:0:7}, $(wc -l <<<"$theirs" | tr -d ' ') issuers"
 
-if [ "$ours" = "$theirs" ]; then
+if [ "$ours" = "$theirs" ] && [ -z "$authority_drift" ]; then
   if [ "$our_revision" != "$revision" ]; then
     echo "The roster is unchanged; MANIFOLD_ISSUERS_REVISION can move to $revision."
   fi
-  echo "The trusted issuers match."
+  echo "The trusted issuers and their pinned authorities match."
   exit 0
 fi
 
 echo
 echo "The trusted issuers differ. Review the change in fedibtc/manifold, then update"
-echo "MANIFOLD_PRODUCTION_ISSUERS and MANIFOLD_ISSUERS_REVISION ($revision)."
-echo "Added by Manifold:"
-comm -13 <(sort <<<"$ours") <(sort <<<"$theirs") | sed 's/^/  + /'
-echo "Removed by Manifold:"
-comm -23 <(sort <<<"$ours") <(sort <<<"$theirs") | sed 's/^/  - /'
-if [ "$(sort <<<"$ours")" = "$(sort <<<"$theirs")" ]; then
-  echo "  (same keys, different order)"
+echo "MANIFOLD_PRODUCTION_ISSUERS, MANIFOLD_ISSUERS_REVISION ($revision) and the"
+echo "pinned authorities in fmo_core/src/manifold/fixtures/issuer-authority-*.json."
+if [ -n "$authority_drift" ]; then
+  echo "Issuer authorities:"
+  printf '%s' "$authority_drift"
+fi
+if [ "$ours" != "$theirs" ]; then
+  echo "Issuer keys:"
+  comm -13 <(sort <<<"$ours") <(sort <<<"$theirs") | sed 's/^/  + added by Manifold: /'
+  comm -23 <(sort <<<"$ours") <(sort <<<"$theirs") | sed 's/^/  - removed by Manifold: /'
+  if [ "$(sort <<<"$ours")" = "$(sort <<<"$theirs")" ]; then
+    echo "  (same keys, different order)"
+  fi
 fi
 exit 1

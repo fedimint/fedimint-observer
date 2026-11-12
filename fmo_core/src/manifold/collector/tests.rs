@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::manifold::peerbadge::{RevocationKind, RevocationRecord};
 
 fn advertisement(
     author: char,
@@ -43,6 +44,15 @@ fn trusted_issuers_default_to_manifolds_production_roster() {
         assert!(parse_trusted_issuers(Some(bad)).is_err(), "{bad}");
     }
     assert!(parse_trusted_issuers(Some(&format!("{own},oops"))).is_err());
+}
+
+async fn checked_at(
+    client: &tokio_postgres::Client,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, tokio_postgres::Error> {
+    client
+        .query_one("SELECT revocations_checked FROM sync_state", &[])
+        .await
+        .map(|row| row.get(0))
 }
 
 /// One advertisement the database refuses must not cost the others their
@@ -122,10 +132,86 @@ async fn postgres_poison_advertisements_cannot_block_a_sync() -> anyhow::Result<
         .get(0);
     assert_eq!(synced, relays);
 
+    // Revocations: a valid one wins over invalid events for the same
+    // credential, and only a complete lookup moves the check time
+    let record = |digest: &str, kind| RevocationRecord {
+        issuer: "ab".repeat(32),
+        credential_digest: digest.to_owned(),
+        kind,
+        event_id: format!("{digest}-{}", kind.as_str()),
+    };
+    assert_eq!(checked_at(&client).await?, None);
+    for lookup in [
+        RevocationLookup {
+            records: vec![
+                record("revoked", RevocationKind::Revoked),
+                record("unclear", RevocationKind::Invalid),
+            ],
+            complete: true,
+        },
+        RevocationLookup {
+            records: vec![
+                record("revoked", RevocationKind::Invalid),
+                record("unclear", RevocationKind::Revoked),
+            ],
+            complete: false,
+        },
+    ] {
+        let dbtx = client.transaction().await?;
+        store_revocations(&dbtx, &lookup).await?;
+        dbtx.commit().await?;
+        if lookup.complete {
+            assert!(checked_at(&client).await?.is_some());
+        }
+    }
+    let first_check = checked_at(&client).await?;
+    let states: Vec<(String, String)> = client
+        .query(
+            "SELECT credential_digest, state FROM revocations ORDER BY credential_digest",
+            &[],
+        )
+        .await?
+        .iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            ("revoked".to_owned(), "revoked".to_owned()),
+            ("unclear".to_owned(), "revoked".to_owned()),
+        ]
+    );
+    // The incomplete lookup left the check time where the complete one put it
+    assert_eq!(checked_at(&client).await?, first_check);
+
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await?;
     drop(client);
     driver.await??;
+    Ok(())
+}
+
+/// Reads the production issuers' revocations from where their pinned
+/// authorities say, as each sync does
+#[tokio::test]
+#[ignore = "reads Manifold's production revocation relay over the network"]
+async fn live_revocation_lookup_completes() -> anyhow::Result<()> {
+    // As the server does at startup
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let trusted = parse_trusted_issuers(None)?;
+    let targets = revocation_targets(&trusted)?;
+    let pool = RelayPool::new(RelayPoolOptions::default());
+    for relay in targets.keys() {
+        pool.add_relay(relay.as_str(), RelayOptions::default())
+            .await?;
+    }
+    pool.connect(Some(Duration::from_secs(10))).await;
+    let lookup = fetch_revocations(&pool, &targets, &trusted).await;
+    println!(
+        "complete: {}, revocations: {:?}",
+        lookup.complete, lookup.records
+    );
+    assert!(lookup.complete);
     Ok(())
 }

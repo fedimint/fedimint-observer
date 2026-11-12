@@ -6,8 +6,13 @@
 //! ([`super::discovery::verify_event`]), and keeps the newest per kind and
 //! author. It also records, per Manifold Guardian and UTC day, how many syncs
 //! found a fresh advertisement, and each new version it advertised.
+//!
+//! Each sync also reads the trusted PeerBadge issuers' credential revocations
+//! from the revocation locations their pinned authorities name
+//! ([`super::peerbadge`]), so credentials can be verified without relay I/O
+//! per request.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use anyhow::ensure;
@@ -16,6 +21,10 @@ use tracing::{debug, info, warn};
 
 use super::discovery::{
     verify_event, VerifiedAdvertisement, FLIP_KIND, MAX_AD_AGE_SECONDS, MG_LEGACY_KIND, MG_V2_KIND,
+};
+use super::peerbadge::{
+    admit_revocation, check_pinned_authorities, revocation_targets, RevocationKind,
+    RevocationRecord, REVOCATION_KIND,
 };
 use crate::federation::observer::FederationObserver;
 
@@ -62,8 +71,12 @@ const FETCH_LIMIT: usize = 2000;
 /// are dropped
 const RETENTION_DAYS: i64 = 30;
 const PRESENCE_RETENTION_DAYS: i64 = 90;
+/// Per revocation location; an answer this long may be cut short, so it does
+/// not count as complete
+const REVOCATION_FETCH_LIMIT: usize = 5000;
 
-pub(crate) const MIGRATIONS: &[&str] = &[r"
+pub(crate) const MIGRATIONS: &[&str] = &[
+    r"
 CREATE TABLE advertisements (
     kind INTEGER NOT NULL,
     -- Lowercase x-only hex, the event author
@@ -104,7 +117,26 @@ CREATE TABLE sync_state (
     last_success TIMESTAMPTZ NOT NULL,
     relays TEXT[] NOT NULL
 );
-"];
+",
+    r"
+-- What the trusted PeerBadge issuers published about credentials, from their
+-- revocation locations. Revocations are permanent, so rows are never removed.
+CREATE TABLE revocations (
+    -- Lowercase x-only hex
+    issuer TEXT NOT NULL,
+    -- Unpadded base64url SHA-256, as in the event's d tag
+    credential_digest TEXT NOT NULL,
+    -- 'revoked': a revocation whose issuer proof verifies;
+    -- 'invalid': only events for this credential that do not verify
+    state TEXT NOT NULL CHECK (state IN ('revoked', 'invalid')),
+    event_id TEXT NOT NULL,
+    first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (issuer, credential_digest)
+);
+-- When every revocation location last answered completely
+ALTER TABLE sync_state ADD COLUMN revocations_checked TIMESTAMPTZ;
+",
+];
 
 pub fn configured_relays() -> Vec<String> {
     match std::env::var(RELAYS_ENV) {
@@ -145,6 +177,7 @@ pub fn parse_trusted_issuers(setting: Option<&str>) -> anyhow::Result<Vec<String
 /// Checked when the observer starts, so a bad setting stops it right away,
 /// and logged, so the trust roots in use are on record
 pub fn check_trusted_issuers() -> anyhow::Result<()> {
+    check_pinned_authorities()?;
     let setting = std::env::var(TRUSTED_ISSUERS_ENV).ok();
     let issuers = parse_trusted_issuers(setting.as_deref())?;
     match setting {
@@ -219,20 +252,42 @@ impl FederationObserver {
                 .await?;
         }
         pool.connect(Some(Duration::from_secs(5))).await;
-        info!(?relays, "Started Manifold discovery");
+        // Revocations are read where each issuer's pinned authority says,
+        // whatever relays discovery uses
+        let trusted = trusted_issuers();
+        let revocation_targets = revocation_targets(&trusted)?;
+        let revocation_pool = RelayPool::new(RelayPoolOptions::default());
+        for relay in revocation_targets.keys() {
+            revocation_pool
+                .add_relay(relay.as_str(), RelayOptions::default())
+                .await?;
+        }
+        revocation_pool.connect(Some(Duration::from_secs(5))).await;
+        info!(
+            ?relays,
+            revocation_relays = ?revocation_targets.keys().collect::<Vec<_>>(),
+            "Started Manifold discovery"
+        );
 
         let mut interval = tokio::time::interval(SYNC_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            if let Err(error) = self.sync_manifold_once(&pool, &relays).await {
+            let revocations =
+                fetch_revocations(&revocation_pool, &revocation_targets, &trusted).await;
+            if let Err(error) = self.sync_manifold_once(&pool, &relays, &revocations).await {
                 // One failed sync waits for the next; it never stops the task
                 warn!(%error, "Manifold discovery sync failed");
             }
         }
     }
 
-    async fn sync_manifold_once(&self, pool: &RelayPool, relays: &[String]) -> anyhow::Result<()> {
+    async fn sync_manifold_once(
+        &self,
+        pool: &RelayPool,
+        relays: &[String],
+        revocations: &RevocationLookup,
+    ) -> anyhow::Result<()> {
         let since =
             nostr_sdk::Timestamp::from(unix_now().saturating_sub(RETENTION_DAYS as u64 * 86400));
         let events = pool
@@ -292,12 +347,15 @@ impl FederationObserver {
             .await?;
         let ads: Vec<&VerifiedAdvertisement> = newest.values().collect();
         let outcome = store_sync(&mut dbtx, &ads, relays, now).await?;
+        store_revocations(&dbtx, revocations).await?;
         dbtx.commit().await?;
         let rejected = rejected + outcome.refused;
         info!(
             events = events.len(),
             stored = outcome.stored,
             rejected,
+            revocations = revocations.records.len(),
+            revocations_complete = revocations.complete,
             "Manifold discovery synced"
         );
         Ok(())
@@ -376,6 +434,104 @@ pub(crate) async fn store_sync(
     )
     .await?;
     Ok(outcome)
+}
+
+/// One sync's revocation lookup
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RevocationLookup {
+    /// One per (issuer, credential); a valid revocation wins over invalid ones
+    pub records: Vec<RevocationRecord>,
+    /// Every revocation location answered in full
+    pub complete: bool,
+}
+
+/// Reads the trusted issuers' revocations from each location. A location
+/// that fails, times out or answers at the limit leaves the lookup
+/// incomplete, so the revocation state is not refreshed by it.
+async fn fetch_revocations(
+    pool: &RelayPool,
+    targets: &BTreeMap<String, Vec<String>>,
+    trusted: &[String],
+) -> RevocationLookup {
+    let mut found: BTreeMap<(String, String), RevocationRecord> = BTreeMap::new();
+    let mut complete = !targets.is_empty();
+    for (relay, issuers) in targets {
+        let authors: Vec<nostr_sdk::PublicKey> = issuers
+            .iter()
+            .filter_map(|issuer| nostr_sdk::PublicKey::from_hex(issuer).ok())
+            .collect();
+        let filter = Filter::new()
+            .kind(Kind::Custom(REVOCATION_KIND))
+            .authors(authors)
+            .limit(REVOCATION_FETCH_LIMIT);
+        // One relay's query ends with its EOSE; a timeout or a lost
+        // connection is an error, never a silently empty answer
+        let answer = match pool.relay(relay.as_str()).await {
+            Ok(connection) => connection
+                .get_events_of(vec![filter], FETCH_TIMEOUT, FilterOptions::ExitOnEOSE)
+                .await
+                .map_err(anyhow::Error::from),
+            Err(error) => Err(error.into()),
+        };
+        match answer {
+            Ok(events) if events.len() < REVOCATION_FETCH_LIMIT => {
+                for record in events
+                    .iter()
+                    .filter_map(|event| admit_revocation(event, trusted))
+                    .filter(|record| issuers.contains(&record.issuer))
+                {
+                    let key = (record.issuer.clone(), record.credential_digest.clone());
+                    let keep_existing = found
+                        .get(&key)
+                        .is_some_and(|existing| existing.kind == RevocationKind::Revoked);
+                    if !keep_existing {
+                        found.insert(key, record);
+                    }
+                }
+            }
+            Ok(_) => {
+                warn!(%relay, "A revocation answer reached the limit and may be cut short");
+                complete = false;
+            }
+            Err(error) => {
+                warn!(%error, %relay, "Could not read PeerBadge revocations");
+                complete = false;
+            }
+        }
+    }
+    RevocationLookup {
+        records: found.into_values().collect(),
+        complete,
+    }
+}
+
+/// Stores what a lookup found, and when it was complete, records it as the
+/// current revocation state. Runs after [`store_sync`], in its transaction.
+pub(crate) async fn store_revocations(
+    dbtx: &tokio_postgres::Transaction<'_>,
+    lookup: &RevocationLookup,
+) -> anyhow::Result<()> {
+    for record in &lookup.records {
+        dbtx.execute(
+            "INSERT INTO revocations (issuer, credential_digest, state, event_id)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (issuer, credential_digest) DO UPDATE
+                 SET state = EXCLUDED.state, event_id = EXCLUDED.event_id
+                 WHERE revocations.state <> 'revoked'",
+            &[
+                &record.issuer,
+                &record.credential_digest,
+                &record.kind.as_str(),
+                &record.event_id,
+            ],
+        )
+        .await?;
+    }
+    if lookup.complete {
+        dbtx.execute("UPDATE sync_state SET revocations_checked = now()", &[])
+            .await?;
+    }
+    Ok(())
 }
 
 async fn store_advertisement(
