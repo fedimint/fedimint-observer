@@ -7,9 +7,9 @@ import { StatusPill, type Tone } from '../../../components/ui/Status';
 import { KeyChip } from '../../../components/ui/KeyChip';
 
 const HEALTH: Record<FederationSummary['health'], { tone: Tone; label: string; title: string }> = {
-  online: { tone: 'ok', label: 'Online', title: 'More guardians answer than consensus needs' },
-  degraded: { tone: 'warn', label: 'Degraded', title: 'Exactly as many guardians answer as consensus needs' },
-  offline: { tone: 'crit', label: 'Offline', title: 'Too few guardians answer to reach consensus' },
+  online: { tone: 'ok', label: 'Online', title: 'More guardians answer the observer than consensus needs' },
+  degraded: { tone: 'warn', label: 'Degraded', title: 'Exactly as many guardians answer the observer as consensus needs' },
+  offline: { tone: 'crit', label: 'Offline', title: 'Fewer guardians answer the observer than consensus needs' },
 };
 
 interface FederationHeaderProps {

@@ -121,7 +121,7 @@ export function Nostr() {
       <CollapsibleGroup
         id="offline-nostr-federations"
         title="Offline Nostr Federations"
-        description="Tracked federations with too few guardians answering in the last 5 minutes to reach consensus"
+        description="Tracked federations where fewer guardians answered the observer in the last 5 minutes than consensus needs"
         group={offline}
         label="Offline Nostr federation pages"
         emptyText="No offline Nostr federations"

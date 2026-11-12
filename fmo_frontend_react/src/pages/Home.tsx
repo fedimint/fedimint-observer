@@ -89,7 +89,7 @@ export function Home() {
       <CollapsibleFederations
         id="offline-federations"
         title="Offline Federations"
-        description="Federations with too few guardians answering in the last 5 minutes to reach consensus"
+        description="Federations where fewer guardians answered the observer in the last 5 minutes than consensus needs"
         emptyText={search ? 'No offline federations match your search' : 'No offline federations'}
         federations={offline.federations}
         total={offline.total}
