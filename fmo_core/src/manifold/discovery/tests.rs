@@ -152,6 +152,80 @@ fn v2_envelopes_bind_the_exact_payload_bytes_to_the_author() {
     );
 }
 
+/// A correctly signed v2 advertisement whose payload is `payload`
+fn signed_v2(keys: &Keys, payload: &str) -> Event {
+    signed(keys, MG_V2_KIND, envelope(keys, payload), tags(MG_V2_KIND))
+}
+
+#[test]
+fn signed_but_unstorable_advertisements_are_rejected() {
+    let keys = Keys::generate();
+    let with = |issued_at: &str, name: &str| {
+        format!(
+            r#"{{"service_pubkey":"aa","issued_at":{issued_at},"expires_at":20,"display_name":"{name}","plans":[]}}"#
+        )
+    };
+
+    // One past i64::MAX: cast to BIGINT it became i64::MIN, and the presence
+    // query's `now - issued_at` overflowed and rolled back the whole sync
+    assert_eq!(
+        verify_event(&signed_v2(&keys, &with("9223372036854775808", "a"))),
+        Err(DiscoveryError::Unstorable)
+    );
+    assert_eq!(
+        verify_event(&signed_v2(
+            &keys,
+            &with(&(MAX_TIMESTAMP + 1).to_string(), "a")
+        )),
+        Err(DiscoveryError::Unstorable)
+    );
+    // The last storable second is still a valid advertisement
+    let ad = verify_event(&signed_v2(&keys, &with(&MAX_TIMESTAMP.to_string(), "a"))).unwrap();
+    assert_eq!(ad.issued_at, MAX_TIMESTAMP);
+
+    // JSONB cannot hold U+0000, in a value or in a key
+    assert_eq!(
+        verify_event(&signed_v2(&keys, &with("10", "a\\u0000b"))),
+        Err(DiscoveryError::Unstorable)
+    );
+    let nul_key =
+        r#"{"service_pubkey":"aa","issued_at":10,"expires_at":20,"plans":[{"k\u0000":1}]}"#;
+    assert_eq!(
+        verify_event(&signed_v2(&keys, nul_key)),
+        Err(DiscoveryError::Unstorable)
+    );
+    // An escaped backslash before "u0000" is ordinary text, not a NUL
+    assert!(verify_event(&signed_v2(&keys, &with("10", "a\\\\u0000b"))).is_ok());
+}
+
+/// Production guardians hold credentials from Manifold's production issuers,
+/// which the observer trusts by default
+#[test]
+fn real_credentials_come_from_a_default_trusted_issuer() {
+    let trusted = crate::manifold::collector::parse_trusted_issuers(None).unwrap();
+    let mut checked = 0;
+    for event in real_events() {
+        let ad = verify_event(&event).unwrap();
+        if ad.kind == FLIP_KIND {
+            continue;
+        }
+        let credential = credential(&ad.payload, &ad.author, ad.issued_at, &trusted);
+        if credential.issuer_pubkey.is_none() {
+            continue;
+        }
+        let issuer_root = credential
+            .checks
+            .iter()
+            .find(|c| c.id == "issuer_root")
+            .and_then(|c| c.passed);
+        assert_eq!(issuer_root, Some(true), "{:?}", credential.issuer_pubkey);
+        // Trusting the issuer alone never makes a credential verified
+        assert_eq!(credential.state, CredentialState::Unavailable);
+        checked += 1;
+    }
+    assert!(checked > 0, "the fixtures carry credentials");
+}
+
 #[test]
 fn only_manifold_tagged_events_are_advertisements() {
     let keys = Keys::generate();

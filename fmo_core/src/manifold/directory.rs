@@ -8,6 +8,8 @@ use fmo_api_types::{
 };
 use serde::Deserialize;
 
+use crate::pagination::key_text;
+
 /// `GET /manifold/guardians` query; every filter is optional
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct DirectoryQuery {
@@ -117,7 +119,7 @@ pub(crate) fn matches(guardian: &ManifoldGuardianSummary, query: &DirectoryQuery
 pub(crate) type SortKey = (i64, i64, String, String);
 
 pub(crate) fn sort_key(guardian: &ManifoldGuardianSummary, sort: DirectorySort) -> SortKey {
-    let name = || guardian.display_name.clone();
+    let name = || key_text(&guardian.display_name);
     let key = guardian.fman_pubkey.clone();
     let signed = |msats: u64| i64::try_from(msats).unwrap_or(i64::MAX);
     match sort {

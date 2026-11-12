@@ -9,6 +9,22 @@ use serde::{Deserialize, Serialize};
 pub const MAX_PAGE_LIMIT: u16 = 500;
 /// Page size when the client names none
 pub const DEFAULT_PAGE_LIMIT: u16 = 100;
+/// Text in a sort key is cut to this many characters by [`key_text`]
+pub const KEY_TEXT_CHARS: usize = 64;
+/// Longest cursor accepted. Every cursor the server generates is far shorter:
+/// sort keys hold numbers, fixed-size ids and at most two texts cut by
+/// [`key_text`], so even text that JSON escapes 6 bytes per character fits.
+pub const MAX_CURSOR_BYTES: usize = 2048;
+
+/// `text` as it goes into a sort key: at most [`KEY_TEXT_CHARS`] characters.
+///
+/// The cursor is the last row's key, so text taken whole (a federation or
+/// guardian name of any length) could produce a cursor longer than the server
+/// accepts, ending paging at that row. Rows whose cut texts tie are still
+/// ordered by the id every key ends with.
+pub fn key_text(text: &str) -> String {
+    text.chars().take(KEY_TEXT_CHARS).collect()
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Page<C> {
@@ -67,7 +83,14 @@ where
     let mut page: Vec<T> = items.into_iter().skip(start).take(limit + 1).collect();
     let next_after = if page.len() > limit {
         page.truncate(limit);
-        page.last().map(|last| encode_cursor(&key(last)))
+        page.last().map(|last| {
+            let cursor = encode_cursor(&key(last));
+            debug_assert!(
+                cursor.len() <= MAX_CURSOR_BYTES,
+                "sort keys must cut their text with key_text"
+            );
+            cursor
+        })
     } else {
         None
     };
@@ -84,9 +107,9 @@ fn encode_cursor<K: Serialize>(key: &K) -> String {
 }
 
 fn decode_cursor<K: DeserializeOwned>(cursor: &str) -> anyhow::Result<K> {
-    // Cursors are short; anything long is not one of ours
+    // Anything longer is not one of ours
     let invalid = || crate::error::ClientError::bad_request("Invalid page cursor");
-    if cursor.len() > 1024 {
+    if cursor.len() > MAX_CURSOR_BYTES {
         return Err(invalid().into());
     }
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD

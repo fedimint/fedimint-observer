@@ -54,3 +54,34 @@ fn a_full_last_page_has_no_next_cursor_and_bad_cursors_are_rejected() {
         assert!(keyset_page(vec![1], |n| *n, Some(cursor), 2).is_err());
     }
 }
+
+#[test]
+fn key_text_cuts_by_character_not_byte() {
+    use super::{key_text, KEY_TEXT_CHARS};
+    assert_eq!(key_text("short"), "short");
+    let cut = key_text(&"𝔽".repeat(500));
+    assert_eq!(cut.chars().count(), KEY_TEXT_CHARS);
+    assert!(cut.chars().all(|c| c == '𝔽'));
+}
+
+/// The worst key a list builds: two cut texts that JSON escapes 6 bytes per
+/// character, an id and the widest numbers
+#[test]
+fn the_largest_possible_cursor_is_accepted() {
+    use super::{key_text, MAX_CURSOR_BYTES};
+    let text = key_text(&"\u{1}".repeat(10_000));
+    type Key = (bool, i128, Option<String>, String, String);
+    let key = |n: i128| -> Key { (true, n, Some(text.clone()), text.clone(), "f".repeat(64)) };
+    let rows = vec![i128::MIN, i128::MIN + 1];
+    let page = keyset_page(rows, |n| key(*n), None, 1).unwrap();
+    let cursor = page.next_after.unwrap();
+    assert!(cursor.len() <= MAX_CURSOR_BYTES, "{} bytes", cursor.len());
+    let next = keyset_page(
+        vec![i128::MIN, i128::MIN + 1],
+        |n| key(*n),
+        Some(&cursor),
+        1,
+    )
+    .unwrap();
+    assert_eq!(next.items, vec![i128::MIN + 1]);
+}
