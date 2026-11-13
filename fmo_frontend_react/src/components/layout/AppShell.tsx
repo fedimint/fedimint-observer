@@ -132,7 +132,7 @@ interface AppShellProps {
   children: ReactNode;
 }
 
-/** Persistent sidebar on large screens; a top bar with a navigation drawer below that */
+/** Persistent sidebar on large screens; below that, a top bar whose menu button opens the navigation as a dropdown under it */
 export function AppShell({ theme, onToggleTheme, children }: AppShellProps) {
   const { pathname } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -187,11 +187,12 @@ export function AppShell({ theme, onToggleTheme, children }: AppShellProps) {
       {menuOpen && (
         <div className="fixed inset-0 top-14 z-30 lg:hidden" role="presentation" onMouseDown={() => setMenuOpen(false)}>
           <div className="absolute inset-0 bg-gray-950/40" />
+          {/* A dropdown under the menu button, right-aligned with it */}
           <div
             id="mobile-navigation"
             ref={drawer}
             onMouseDown={(event) => event.stopPropagation()}
-            className="relative flex max-h-full w-72 max-w-[85vw] flex-col border-r border-line bg-surface shadow-xl"
+            className="absolute top-2 right-4 flex max-h-[calc(100%-1rem)] w-72 max-w-[calc(100vw-2rem)] origin-top-right flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-xl"
           >
             <SidebarNav onNavigate={() => setMenuOpen(false)} />
             <SidebarFooter theme={theme} onToggleTheme={onToggleTheme} />
