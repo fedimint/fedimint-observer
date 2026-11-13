@@ -1,7 +1,7 @@
 import { lazy, Suspense, type ComponentType } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation, useParams } from 'react-router-dom';
-import { NavBar } from './components/NavBar';
-import { ErrorBoundary, ReloadMessage } from './components/ErrorBoundary';
+import { NavBar } from './components/layout/NavBar';
+import { ErrorBoundary, ReloadMessage } from './components/ui/ErrorBoundary';
 import { Home } from './pages/Home';
 import { useTheme } from './hooks/useTheme';
 

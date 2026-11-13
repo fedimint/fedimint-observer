@@ -16,11 +16,55 @@ Run the backend with `just run` from the repository root. It serves the API at
 `/federations`, `/config` and `/nostr` directly; the `/api` prefix only exists
 behind Nginx.
 
+## Code layout
+
+```
+src/
+  pages/          one thin component per route: reads the URL, calls feature hooks, composes components
+  features/<x>/   everything for one part of the site
+    components/   its components
+    hooks/        its data loading and view state
+    lib/          pure functions and constants, no React: unit-testable with `node --test`
+  components/ui/  building blocks with no domain knowledge (Panel, Tabs, FilterChips, Modal, …)
+  components/layout/  the app shell (NavBar)
+  hooks/          shared hooks: useApiResource (one request tied to a component), useCursorPages (cursor-paged lists with auto-refresh), useTheme
+  services/ types/ utils/   API client, API types, formatting and other helpers shared by features
+```
+
+Features are `federations` (the home list), `federation` (a federation's page),
+`gateways` (Lightning v1), `gateways-v2`, `wallet-v2` and `nostr`. A feature may
+use `components/ui`, `hooks` and `utils`, and another feature's components
+(the federation page embeds the wallet-v2 panel); `components/ui` never imports
+from a feature.
+
+Import modules by their file path; there are no `index.ts` barrels, which keeps
+lazy-loaded pages and charts in their own chunks. A file that exports a
+component exports only components (Fast Refresh); constants and helpers belong
+in a `lib/` or `utils/` file.
+
+## API errors
+
+Every request goes through `request()` in `src/services/http.ts`, never `fetch`
+directly. A failure rejects with an `ApiError` whose `kind` is `network`,
+`timeout`, `http` or `invalid_response`, and whose message is fit to show: the
+backend's `{ "error": … }` message when it sent one, otherwise a fixed message
+for the status. Response bodies that are not that JSON (proxy pages, plain text)
+are never shown. Server faults (5xx) append the response's `x-request-id` as
+`(ref N)`, which finds the request in the backend's logs. A request its caller
+cancels rejects with the caller's abort, as `fetch` does, and every request has a
+time limit (`DEFAULT_TIMEOUT_MS`).
+
+Pages say what failed and add the reason: `Could not load the UTXOs:
+${errorMessage(err)}`. `isRetryable(err)` tells whether offering Try again makes
+sense: a request the server rejected (4xx) fails the same way again, except
+408 and 429, which are worth retrying later.
+
 ## Checks
 
 ```bash
 npm run lint
 npm run build   # type-checks with `tsc -b`, then bundles into dist/
+npm run test:config && npm run test:pagination && npm run test:charts && npm run test:format && npm run test:gateways && npm run test:http
 ```
 
 The API types in `src/types/api.ts` mirror the backend's `fmo_api_types` crate

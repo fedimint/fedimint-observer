@@ -43,9 +43,9 @@ jobs:
       working-directory: ./fmo_frontend_react
       run: npm run lint
 
-    - name: Test configuration parsing
+    - name: Run unit tests
       working-directory: ./fmo_frontend_react
-      run: npm run test:config && npm run test:pagination && npm run test:charts
+      run: npm run test:config && npm run test:pagination && npm run test:charts && npm run test:format && npm run test:gateways && npm run test:http
 
     - name: Build production bundle
       working-directory: ./fmo_frontend_react
