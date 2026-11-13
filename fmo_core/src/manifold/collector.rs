@@ -67,13 +67,38 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per request; relays cap results, and one event per author and kind is kept
 const FETCH_LIMIT: usize = 2000;
-/// Events older than this are not stored, and stored ones expired this long ago
-/// are dropped
+/// Events older than this are not fetched, and stored ones are dropped once
+/// created this long ago, whatever expiry they claim
 const RETENTION_DAYS: i64 = 30;
 const PRESENCE_RETENTION_DAYS: i64 = 90;
 /// Per revocation location; an answer this long may be cut short, so it does
 /// not count as complete
 const REVOCATION_FETCH_LIMIT: usize = 5000;
+
+/// How much discovery data the observer keeps. Anyone can publish a
+/// self-signed advertisement under a new key, so neither what an
+/// advertisement claims nor how many keys publish may decide how much is
+/// stored, or how much a request reads.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Retention {
+    /// Advertisements are dropped once created this long ago. Creation times
+    /// cannot be set in the future (verification rejects any more than
+    /// `MAX_AD_AGE_SECONDS` ahead), so a far-future expiry does not keep one.
+    pub max_age_seconds: i64,
+    /// Per kind, the newest by creation time are kept. Manifold Guardians
+    /// republish every 30 minutes, so a real one is always among the newest.
+    pub max_per_kind: i64,
+    /// Version history kept per guardian, newest first
+    pub max_versions_per_author: i64,
+}
+
+impl Retention {
+    pub(crate) const DEFAULT: Retention = Retention {
+        max_age_seconds: RETENTION_DAYS * 86400,
+        max_per_kind: 5000,
+        max_versions_per_author: 50,
+    };
+}
 
 pub(crate) const MIGRATIONS: &[&str] = &[
     r"
@@ -135,6 +160,21 @@ CREATE TABLE revocations (
 );
 -- When every revocation location last answered completely
 ALTER TABLE sync_state ADD COLUMN revocations_checked TIMESTAMPTZ;
+",
+    r"
+-- Per issuer: when every revocation location its pinned authority names last
+-- answered in full, and which locations those were. Completeness is per
+-- issuer: a lookup that covered other issuers says nothing about this one.
+CREATE TABLE revocation_checks (
+    -- Lowercase x-only hex
+    issuer TEXT PRIMARY KEY,
+    -- Normalized relay URLs, sorted
+    locations TEXT[] NOT NULL,
+    checked_at TIMESTAMPTZ NOT NULL
+);
+-- One time for every issuer could vouch for issuers it never covered
+ALTER TABLE sync_state DROP COLUMN revocations_checked;
+CREATE INDEX advertisements_kind_created_at ON advertisements (kind, created_at DESC);
 ",
 ];
 
@@ -346,7 +386,7 @@ impl FederationObserver {
         dbtx.batch_execute("SET LOCAL search_path TO fmo_manifold, public")
             .await?;
         let ads: Vec<&VerifiedAdvertisement> = newest.values().collect();
-        let outcome = store_sync(&mut dbtx, &ads, relays, now).await?;
+        let outcome = store_sync(&mut dbtx, &ads, relays, now, Retention::DEFAULT).await?;
         store_revocations(&dbtx, revocations).await?;
         dbtx.commit().await?;
         let rejected = rejected + outcome.refused;
@@ -355,7 +395,7 @@ impl FederationObserver {
             stored = outcome.stored,
             rejected,
             revocations = revocations.records.len(),
-            revocations_complete = revocations.complete,
+            revocation_issuers_read = revocations.complete.len(),
             "Manifold discovery synced"
         );
         Ok(())
@@ -383,6 +423,7 @@ pub(crate) async fn store_sync(
     ads: &[&VerifiedAdvertisement],
     relays: &[String],
     now: u64,
+    retention: Retention,
 ) -> anyhow::Result<StoreOutcome> {
     let mut outcome = StoreOutcome {
         stored: 0,
@@ -422,9 +463,44 @@ pub(crate) async fn store_sync(
         &[&(PRESENCE_RETENTION_DAYS as i32)],
     )
     .await?;
+    // The observer's own horizon: by creation time, never by claimed expiry
     dbtx.execute(
-        "DELETE FROM advertisements WHERE expires_at < $1",
-        &[&(now - RETENTION_DAYS * 86400)],
+        "DELETE FROM advertisements WHERE created_at < $1",
+        &[&(now - retention.max_age_seconds)],
+    )
+    .await?;
+    dbtx.execute(
+        "DELETE FROM advertisements a USING (
+             SELECT kind, author FROM (
+                 SELECT kind, author,
+                        row_number() OVER (PARTITION BY kind ORDER BY created_at DESC, author) AS rank
+                 FROM advertisements
+             ) ranked WHERE rank > $1
+         ) excess
+         WHERE a.kind = excess.kind AND a.author = excess.author",
+        &[&retention.max_per_kind],
+    )
+    .await?;
+    // Version history lives as long as the guardian still advertises, and
+    // only its newest versions are kept
+    dbtx.execute(
+        "DELETE FROM version_changes v
+         WHERE NOT EXISTS (SELECT 1 FROM advertisements a WHERE a.author = v.author)",
+        &[],
+    )
+    .await?;
+    dbtx.execute(
+        "DELETE FROM version_changes v USING (
+             SELECT author, fedimintd_version, mg_version FROM (
+                 SELECT author, fedimintd_version, mg_version,
+                        row_number() OVER (PARTITION BY author
+                            ORDER BY first_seen DESC, fedimintd_version, mg_version) AS rank
+                 FROM version_changes
+             ) ranked WHERE rank > $1
+         ) excess
+         WHERE v.author = excess.author AND v.fedimintd_version = excess.fedimintd_version
+           AND v.mg_version = excess.mg_version",
+        &[&retention.max_versions_per_author],
     )
     .await?;
     dbtx.execute(
@@ -441,20 +517,22 @@ pub(crate) async fn store_sync(
 pub(crate) struct RevocationLookup {
     /// One per (issuer, credential); a valid revocation wins over invalid ones
     pub records: Vec<RevocationRecord>,
-    /// Every revocation location answered in full
-    pub complete: bool,
+    /// The issuers all of whose revocation locations answered in full, each
+    /// with those locations
+    pub complete: Vec<(String, Vec<String>)>,
 }
 
-/// Reads the trusted issuers' revocations from each location. A location
-/// that fails, times out or answers at the limit leaves the lookup
-/// incomplete, so the revocation state is not refreshed by it.
+/// Reads the trusted issuers' revocations from each location. An issuer's
+/// read is complete only when every location its pinned authority names
+/// answered in full; one that fails, times out or answers at the limit
+/// leaves the issuers it serves incomplete, so their state is not refreshed.
 async fn fetch_revocations(
     pool: &RelayPool,
     targets: &BTreeMap<String, Vec<String>>,
     trusted: &[String],
 ) -> RevocationLookup {
     let mut found: BTreeMap<(String, String), RevocationRecord> = BTreeMap::new();
-    let mut complete = !targets.is_empty();
+    let mut answered = std::collections::BTreeSet::new();
     for (relay, issuers) in targets {
         let authors: Vec<nostr_sdk::PublicKey> = issuers
             .iter()
@@ -475,6 +553,7 @@ async fn fetch_revocations(
         };
         match answer {
             Ok(events) if events.len() < REVOCATION_FETCH_LIMIT => {
+                answered.insert(relay.clone());
                 for record in events
                     .iter()
                     .filter_map(|event| admit_revocation(event, trusted))
@@ -491,22 +570,36 @@ async fn fetch_revocations(
             }
             Ok(_) => {
                 warn!(%relay, "A revocation answer reached the limit and may be cut short");
-                complete = false;
             }
             Err(error) => {
                 warn!(%error, %relay, "Could not read PeerBadge revocations");
-                complete = false;
             }
         }
     }
     RevocationLookup {
         records: found.into_values().collect(),
-        complete,
+        complete: complete_issuers(trusted, &answered),
     }
 }
 
-/// Stores what a lookup found, and when it was complete, records it as the
-/// current revocation state. Runs after [`store_sync`], in its transaction.
+/// The trusted issuers whose every revocation location is in `answered`
+fn complete_issuers(
+    trusted: &[String],
+    answered: &std::collections::BTreeSet<String>,
+) -> Vec<(String, Vec<String>)> {
+    trusted
+        .iter()
+        .filter_map(|issuer| {
+            let authority = super::peerbadge::pinned_authorities().get(issuer)?;
+            let locations = super::peerbadge::revocation_locations(authority).ok()?;
+            (!locations.is_empty() && locations.iter().all(|relay| answered.contains(relay)))
+                .then(|| (issuer.clone(), locations))
+        })
+        .collect()
+}
+
+/// Stores what a lookup found, and for each issuer it read in full, when and
+/// from which locations. Runs after [`store_sync`], in its transaction.
 pub(crate) async fn store_revocations(
     dbtx: &tokio_postgres::Transaction<'_>,
     lookup: &RevocationLookup,
@@ -527,9 +620,14 @@ pub(crate) async fn store_revocations(
         )
         .await?;
     }
-    if lookup.complete {
-        dbtx.execute("UPDATE sync_state SET revocations_checked = now()", &[])
-            .await?;
+    for (issuer, locations) in &lookup.complete {
+        dbtx.execute(
+            "INSERT INTO revocation_checks (issuer, locations, checked_at) VALUES ($1, $2, now())
+             ON CONFLICT (issuer) DO UPDATE
+                 SET locations = EXCLUDED.locations, checked_at = EXCLUDED.checked_at",
+            &[issuer, locations],
+        )
+        .await?;
     }
     Ok(())
 }

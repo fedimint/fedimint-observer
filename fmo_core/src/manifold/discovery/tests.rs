@@ -3,7 +3,7 @@ use nostr_sdk::{EventBuilder, JsonUtil, Keys, Kind, Tag};
 use serde_json::json;
 
 use super::*;
-use crate::manifold::peerbadge::RevocationState;
+use crate::manifold::peerbadge::{revocation_locations, IssuerRevocationCheck, RevocationState};
 
 /// Real kind 37701, 37709 and 37702 events captured from Manifold's
 /// production relays, signed by their publishers
@@ -245,13 +245,35 @@ fn default_issuers() -> Vec<String> {
 
 /// Trust as of `now`: `issuers`, and revocations read completely just now
 fn trust_at(now: u64, issuers: Vec<String>) -> TrustContext {
+    let checked_at = chrono::DateTime::from_timestamp(now as i64, 0).unwrap();
+    let checks = issuers
+        .iter()
+        .filter_map(|issuer| {
+            let authority = crate::manifold::peerbadge::pinned_authorities().get(issuer)?;
+            Some((
+                issuer.clone(),
+                IssuerRevocationCheck {
+                    checked_at,
+                    locations: revocation_locations(authority).unwrap(),
+                },
+            ))
+        })
+        .collect();
     TrustContext {
         issuers,
         revocations: RevocationState {
-            checked_at: chrono::DateTime::from_timestamp(now as i64, 0),
+            checks,
             entries: Default::default(),
         },
     }
+}
+
+fn credential_issuer(ad: &VerifiedAdvertisement) -> String {
+    ad.payload
+        .pointer("/holder_authorizations/0/signed_credential/credential/issuer_id_pubkey")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_lowercase()
 }
 
 fn result(credential: &TrustCredential, id: &str) -> Option<bool> {
@@ -347,7 +369,7 @@ fn without_current_revocation_state_nothing_verifies() {
     let now = ad.issued_at;
 
     let mut never_read = trust_at(now, default_issuers());
-    never_read.revocations.checked_at = None;
+    never_read.revocations.checks.clear();
     let unread = credential(&ad.payload, &ad.author, now, &never_read);
     assert_eq!(unread.state, CredentialState::Unavailable);
     assert_eq!(result(&unread, "revocation"), None);
@@ -356,7 +378,7 @@ fn without_current_revocation_state_nothing_verifies() {
     assert!(unread
         .reason
         .unwrap()
-        .contains("revocations have not been read"));
+        .contains("revocations have not been read in full"));
 
     let stale = trust_at(now - 16 * 60, default_issuers());
     let old = credential(&ad.payload, &ad.author, now, &stale);
@@ -368,6 +390,38 @@ fn without_current_revocation_state_nothing_verifies() {
         credential(&ad.payload, &ad.author, now, &recent).state,
         CredentialState::Verified
     );
+}
+
+/// Completeness is per issuer: a complete read of other issuers' revocations,
+/// however recent, says nothing about an issuer added to the trusted set since
+#[test]
+fn another_issuers_revocation_read_does_not_vouch_for_this_one() {
+    let (ad, _) = real_credentials().remove(0);
+    let now = ad.issued_at;
+    let issuer = credential_issuer(&ad);
+
+    // Read in full for every production issuer except this credential's, as
+    // when the collector ran with a subset and the trusted set grew since
+    let mut subset = trust_at(now, default_issuers());
+    subset.revocations.checks.remove(&issuer);
+    assert!(!subset.revocations.checks.is_empty());
+    let expanded = credential(&ad.payload, &ad.author, now, &subset);
+    assert_eq!(expanded.state, CredentialState::Unavailable);
+    assert_eq!(result(&expanded, "revocation"), None);
+    assert_eq!(result(&expanded, "issuer_root"), Some(true));
+
+    // Read in full, but from other locations than the pinned authority names
+    let mut elsewhere = trust_at(now, default_issuers());
+    elsewhere
+        .revocations
+        .checks
+        .get_mut(&issuer)
+        .unwrap()
+        .locations = vec!["wss://relay.example.com/".to_owned()];
+    let moved = credential(&ad.payload, &ad.author, now, &elsewhere);
+    assert_eq!(moved.state, CredentialState::Unavailable);
+    assert_eq!(result(&moved, "revocation"), None);
+    assert!(moved.reason.unwrap().contains("other locations"));
 }
 
 #[test]

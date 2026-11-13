@@ -154,14 +154,39 @@ fn revocations_are_admitted_as_manifold_admits_them() {
 }
 
 #[test]
-fn revocation_state_counts_for_fifteen_minutes() {
+fn an_issuers_revocation_state_counts_only_for_it_its_locations_and_fifteen_minutes() {
     let now = Utc::now();
-    let state = |checked_at| RevocationState {
-        checked_at,
+    let issuer = MANIFOLD_PRODUCTION_ISSUERS[0];
+    let locations = revocation_locations(&pinned_authorities()[issuer]).unwrap();
+    assert_eq!(locations, ["wss://relay.dev.fedibtc.com/"]);
+    let state = |checked_at: DateTime<Utc>, locations: Vec<String>| RevocationState {
+        checks: HashMap::from([(
+            issuer.to_owned(),
+            IssuerRevocationCheck {
+                checked_at,
+                locations,
+            },
+        )]),
         entries: HashMap::new(),
     };
-    assert!(!state(None).is_current(now));
-    assert!(state(Some(now)).is_current(now));
-    assert!(state(Some(now - REVOCATION_MAX_AGE)).is_current(now));
-    assert!(!state(Some(now - REVOCATION_MAX_AGE - TimeDelta::seconds(1))).is_current(now));
+    let fresh = state(now, locations.clone());
+    assert_eq!(fresh.current_check(issuer, &locations, now), Ok(now));
+    assert_eq!(
+        fresh.current_check(MANIFOLD_PRODUCTION_ISSUERS[1], &locations, now),
+        Err(RevocationGap::NeverRead)
+    );
+    assert_eq!(
+        fresh.current_check(issuer, &["wss://relay.example.com/".to_owned()], now),
+        Err(RevocationGap::OtherLocations)
+    );
+    let edge = now - REVOCATION_MAX_AGE;
+    assert_eq!(
+        state(edge, locations.clone()).current_check(issuer, &locations, now),
+        Ok(edge)
+    );
+    assert_eq!(
+        state(edge - TimeDelta::seconds(1), locations.clone())
+            .current_check(issuer, &locations, now),
+        Err(RevocationGap::Stale)
+    );
 }

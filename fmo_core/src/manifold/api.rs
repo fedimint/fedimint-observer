@@ -15,10 +15,10 @@ use fmo_api_types::{
 };
 use serde_json::Value;
 
-use super::collector::{configured_relays, trusted_issuers};
+use super::collector::{configured_relays, trusted_issuers, Retention};
 use super::directory::{facets, matches, sort_key, DirectoryQuery};
 use super::discovery::{credential, freshness, FLIP_KIND, MG_LEGACY_KIND, MG_V2_KIND};
-use super::peerbadge::{RevocationKind, RevocationState, TrustContext};
+use super::peerbadge::{IssuerRevocationCheck, RevocationKind, RevocationState, TrustContext};
 use super::seat_bindings::{verify_for_federation, FederationSeats};
 use super::{mg_display_name, SEAT_BINDINGS_OBSERVATION};
 use crate::error::ClientError;
@@ -55,15 +55,24 @@ async fn load_ads(
     kinds: &[i32],
     author: Option<&str>,
 ) -> anyhow::Result<Vec<StoredAd>> {
-    let listed_since = (Utc::now() - LISTED_AFTER_EXPIRY).timestamp();
+    let now = Utc::now().timestamp();
+    let listed_since = now - LISTED_AFTER_EXPIRY.num_seconds();
+    // The collector keeps at most this many per kind; a request never reads
+    // more, whatever was published, and nothing past the retention horizon
+    let retention = Retention::DEFAULT;
+    let created_since = now - retention.max_age_seconds;
+    let max_rows = retention.max_per_kind.saturating_mul(kinds.len() as i64);
     Ok(observer
         .connection()
         .await?
         .query(
             "SELECT kind, author, event_id, issued_at, expires_at, payload
              FROM fmo_manifold.advertisements
-             WHERE kind = ANY($1) AND ($2::text IS NULL OR author = $2) AND expires_at >= $3",
-            &[&kinds, &author, &listed_since],
+             WHERE kind = ANY($1) AND ($2::text IS NULL OR author = $2) AND expires_at >= $3
+               AND created_at >= $4
+             ORDER BY created_at DESC
+             LIMIT $5",
+            &[&kinds, &author, &listed_since, &created_since, &max_rows],
         )
         .await?
         .into_iter()
@@ -99,17 +108,30 @@ async fn provenance(
 /// revocations the collector read with when it last read them completely
 async fn trust_context(observer: &FederationObserver) -> anyhow::Result<TrustContext> {
     let connection = observer.connection().await?;
-    let checked_at = connection
-        .query_opt(
-            "SELECT revocations_checked FROM fmo_manifold.sync_state",
-            &[],
+    let issuers = trusted_issuers();
+    let checks = connection
+        .query(
+            "SELECT issuer, locations, checked_at FROM fmo_manifold.revocation_checks
+             WHERE issuer = ANY($1)",
+            &[&issuers],
         )
         .await?
-        .and_then(|row| row.get::<_, Option<DateTime<Utc>>>(0));
+        .iter()
+        .map(|row| {
+            (
+                row.get::<_, String>(0),
+                IssuerRevocationCheck {
+                    locations: row.get(1),
+                    checked_at: row.get(2),
+                },
+            )
+        })
+        .collect();
     let entries = connection
         .query(
-            "SELECT issuer, credential_digest, state FROM fmo_manifold.revocations",
-            &[],
+            "SELECT issuer, credential_digest, state FROM fmo_manifold.revocations
+             WHERE issuer = ANY($1)",
+            &[&issuers],
         )
         .await?
         .iter()
@@ -119,11 +141,8 @@ async fn trust_context(observer: &FederationObserver) -> anyhow::Result<TrustCon
         })
         .collect();
     Ok(TrustContext {
-        issuers: trusted_issuers(),
-        revocations: RevocationState {
-            checked_at,
-            entries,
-        },
+        issuers,
+        revocations: RevocationState { checks, entries },
     })
 }
 
