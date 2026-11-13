@@ -148,3 +148,41 @@ test('a PUT sends its JSON body, and a no-content request ignores the answer bod
   await requestNoContent('https://api.test/nostr', { method: 'PUT', json: { kind: 1 } });
   assert.deepEqual(seen, { url: 'https://api.test/nostr', method: 'PUT', type: 'application/json', body: '{"kind":1}' });
 });
+
+// An error answer whose body never finishes, failing once the request's signal aborts
+function hangingErrorBody(status) {
+  globalThis.fetch = async (_url, init) => {
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"error":'));
+        init.signal.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')));
+      },
+    });
+    return new Response(body, { status, headers: json });
+  };
+}
+
+test('a timeout while reading an error body stays a timeout', async () => {
+  hangingErrorBody(500);
+  assert.equal((await failure(request('https://api.test/x', { timeoutMs: 10 }))).kind, 'timeout');
+});
+
+test('a cancel while reading an error body stays a cancel', async () => {
+  hangingErrorBody(500);
+  const controller = new AbortController();
+  const pending = request('https://api.test/x', { signal: controller.signal });
+  setTimeout(() => controller.abort(), 10);
+  const err = await failure(pending);
+  assert.ok(!(err instanceof ApiError));
+  assert.equal(err.name, 'AbortError');
+});
+
+test('an error body that breaks off keeps the HTTP error, without the server message', async () => {
+  globalThis.fetch = async () => {
+    const body = new ReadableStream({ start(controller) { controller.error(new TypeError('connection reset')); } });
+    return new Response(body, { status: 503, headers: json });
+  };
+  const err = await failure(request('https://api.test/x'));
+  assert.equal(err.kind, 'http');
+  assert.equal(err.message, 'The observer is busy or restarting, try again in a moment');
+});

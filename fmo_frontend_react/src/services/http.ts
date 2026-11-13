@@ -95,8 +95,12 @@ async function send(url: string, { signal, method = 'GET', json, timeoutMs = DEF
 
     const requestId = response.headers.get('x-request-id');
     if (!response.ok) {
-      // A body that can't be read only loses the server's message, not the error
-      const body = await response.text().catch(() => '');
+      // A body that breaks off only loses the server's message, not the error; a
+      // cancel or timeout while reading it stays a cancel or timeout
+      const body = await response.text().catch((err: unknown) => {
+        if (signal?.aborted || timedOut) throw transportError(err);
+        return '';
+      });
       throw httpError(response.status, serverMessage(response, body), requestId);
     }
     if (!parseBody) return undefined;

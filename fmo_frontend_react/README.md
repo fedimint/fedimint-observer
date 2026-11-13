@@ -56,7 +56,8 @@ time limit (`DEFAULT_TIMEOUT_MS`).
 
 Pages say what failed and add the reason: `Could not load the UTXOs:
 ${errorMessage(err)}`. `isRetryable(err)` tells whether offering Try again makes
-sense: a request the server rejected (4xx) fails the same way again.
+sense: a request the server rejected (4xx) fails the same way again, except
+408 and 429, which are worth retrying later.
 
 ## Checks
 

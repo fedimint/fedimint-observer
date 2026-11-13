@@ -134,7 +134,7 @@ export function useCursorPages<P, C>({
   return {
     /** The page shown */
     page,
-    /** Page 1, which stays current while a later page is shown */
+    /** Page 1 as last loaded; refresh pauses while a later page is shown, so it may be stale then */
     latest,
     /** 1-based number of the page shown */
     pageNumber: cursors.length + 1,
