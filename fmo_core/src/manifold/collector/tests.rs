@@ -46,13 +46,69 @@ fn trusted_issuers_default_to_manifolds_production_roster() {
     assert!(parse_trusted_issuers(Some(&format!("{own},oops"))).is_err());
 }
 
-async fn checked_at(
-    client: &tokio_postgres::Client,
-) -> Result<Option<chrono::DateTime<chrono::Utc>>, tokio_postgres::Error> {
+/// A connection whose `search_path` is a fresh schema of the test's own,
+/// with every Manifold migration applied, so nothing else is touched
+async fn test_schema(
+    name: &str,
+) -> anyhow::Result<(
+    tokio_postgres::Client,
+    tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>,
+    String,
+)> {
+    let database = std::env::var("FMO_MANIFOLD_TEST_DATABASE")?;
+    let (client, connection) = tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
+    let driver = tokio::spawn(connection);
+    let schema = format!("fmo_manifold_test_{name}_{}", std::process::id());
     client
-        .query_one("SELECT revocations_checked FROM sync_state", &[])
-        .await
+        .batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema};"
+        ))
+        .await?;
+    for migration in MIGRATIONS {
+        client.batch_execute(migration).await?;
+    }
+    Ok((client, driver, schema))
+}
+
+async fn drop_schema(
+    client: tokio_postgres::Client,
+    driver: tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>,
+    schema: &str,
+) -> anyhow::Result<()> {
+    client
+        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+        .await?;
+    drop(client);
+    driver.await??;
+    Ok(())
+}
+
+async fn sync(
+    client: &mut tokio_postgres::Client,
+    ads: &[&VerifiedAdvertisement],
+    now: u64,
+    retention: Retention,
+) -> anyhow::Result<StoreOutcome> {
+    let mut dbtx = client.transaction().await?;
+    let outcome = store_sync(
+        &mut dbtx,
+        ads,
+        &["wss://relay.example".to_owned()],
+        now,
+        retention,
+    )
+    .await?;
+    dbtx.commit().await?;
+    Ok(outcome)
+}
+
+async fn column(client: &tokio_postgres::Client, sql: &str) -> anyhow::Result<Vec<String>> {
+    Ok(client
+        .query(sql, &[])
+        .await?
+        .iter()
         .map(|row| row.get(0))
+        .collect())
 }
 
 /// One advertisement the database refuses must not cost the others their
@@ -62,20 +118,7 @@ async fn checked_at(
 #[tokio::test]
 #[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
 async fn postgres_poison_advertisements_cannot_block_a_sync() -> anyhow::Result<()> {
-    let database = std::env::var("FMO_MANIFOLD_TEST_DATABASE")?;
-    let (mut client, driver) = tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
-    let driver = tokio::spawn(driver);
-    // A schema of the test's own, so nothing else is touched
-    let schema = format!("fmo_manifold_test_{}", std::process::id());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema};"
-        ))
-        .await?;
-    for migration in MIGRATIONS {
-        client.batch_execute(migration).await?;
-    }
-
+    let (mut client, driver, schema) = test_schema("poison").await?;
     let now = unix_now();
     let valid = advertisement(
         'a',
@@ -86,14 +129,14 @@ async fn postgres_poison_advertisements_cannot_block_a_sync() -> anyhow::Result<
     // a timestamp no BIGINT holds, and a NUL that JSONB refuses
     let overflowing = advertisement('b', u64::MAX, json!({}));
     let nul = advertisement('c', now - 60, json!({"display_name": "a\u{0}b"}));
-    let relays = vec!["wss://relay.example".to_owned()];
 
-    let outcome = {
-        let mut dbtx = client.transaction().await?;
-        let outcome = store_sync(&mut dbtx, &[&overflowing, &valid, &nul], &relays, now).await?;
-        dbtx.commit().await?;
-        outcome
-    };
+    let outcome = sync(
+        &mut client,
+        &[&overflowing, &valid, &nul],
+        now,
+        Retention::DEFAULT,
+    )
+    .await?;
     assert_eq!(
         outcome,
         StoreOutcome {
@@ -101,14 +144,10 @@ async fn postgres_poison_advertisements_cannot_block_a_sync() -> anyhow::Result<
             refused: 2
         }
     );
-
-    let authors: Vec<String> = client
-        .query("SELECT author FROM advertisements ORDER BY author", &[])
-        .await?
-        .iter()
-        .map(|row| row.get(0))
-        .collect();
-    assert_eq!(authors, vec![valid.author.clone()]);
+    assert_eq!(
+        column(&client, "SELECT author FROM advertisements ORDER BY author").await?,
+        vec![valid.author.clone()]
+    );
     let presence = client
         .query_one(
             "SELECT polls, fresh_polls FROM presence_daily WHERE author = $1",
@@ -119,52 +158,176 @@ async fn postgres_poison_advertisements_cannot_block_a_sync() -> anyhow::Result<
         (presence.get::<_, i32>(0), presence.get::<_, i32>(1)),
         (1, 1)
     );
-    let versions = client
-        .query_one(
-            "SELECT count(*) FROM version_changes WHERE author = $1",
-            &[&valid.author],
-        )
-        .await?;
-    assert_eq!(versions.get::<_, i64>(0), 1);
+    assert_eq!(
+        column(&client, "SELECT author FROM version_changes").await?,
+        vec![valid.author.clone()]
+    );
     let synced: Vec<String> = client
         .query_one("SELECT relays FROM sync_state", &[])
         .await?
         .get(0);
-    assert_eq!(synced, relays);
+    assert_eq!(synced, ["wss://relay.example"]);
+    drop_schema(client, driver, &schema).await
+}
 
-    // Revocations: a valid one wins over invalid events for the same
-    // credential, and only a complete lookup moves the check time
+/// What a self-signed advertisement claims cannot decide how long it is kept
+/// or how much is stored: before, rows were dropped only by their signed
+/// expiry, so a far-future one under a fresh key stayed for good, and every
+/// directory request read all of them.
+#[tokio::test]
+#[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
+async fn postgres_retention_ignores_claimed_expiry_and_bounds_storage() -> anyhow::Result<()> {
+    let (mut client, driver, schema) = test_schema("retention").await?;
+    let retention = Retention {
+        max_age_seconds: 3600,
+        max_per_kind: 3,
+        max_versions_per_author: 2,
+    };
+    let now = unix_now();
+    let versioned = |author: char, created_at: u64, version: &str| VerifiedAdvertisement {
+        created_at,
+        issued_at: created_at,
+        ..advertisement(
+            author,
+            created_at,
+            json!({"availability": {"fedimintd_version": version}}),
+        )
+    };
+
+    // Expiring in year 9999, but created beyond the horizon
+    let far_future = VerifiedAdvertisement {
+        expires_at: crate::manifold::discovery::MAX_TIMESTAMP,
+        ..versioned('f', now - 7200, "0.1.0")
+    };
+    // Five fresh keys in repeated batches: only the newest three per kind stay
+    let fresh: Vec<_> = ['g', 'h', 'i', 'j', 'k']
+        .into_iter()
+        .zip(1u64..)
+        .map(|(author, n)| VerifiedAdvertisement {
+            expires_at: crate::manifold::discovery::MAX_TIMESTAMP,
+            ..versioned(author, now - 600 + n * 10, "0.1.0")
+        })
+        .collect();
+    sync(
+        &mut client,
+        &[&far_future, &fresh[0], &fresh[1]],
+        now,
+        retention,
+    )
+    .await?;
+    sync(&mut client, &[&fresh[2], &fresh[3]], now, retention).await?;
+    sync(&mut client, &[&fresh[4]], now, retention).await?;
+    let kept = column(
+        &client,
+        "SELECT left(author, 1) FROM advertisements ORDER BY author",
+    )
+    .await?;
+    assert_eq!(kept, ["i", "j", "k"]);
+
+    // A guardian's version history is bounded, newest kept, and goes with
+    // its advertisements
+    for (offset, version) in [(1, "0.2.0"), (2, "0.3.0"), (3, "0.4.0")] {
+        let republished = versioned('k', now - 10 + offset, version);
+        sync(&mut client, &[&republished], now, retention).await?;
+    }
+    assert_eq!(
+        column(
+            &client,
+            "SELECT fedimintd_version FROM version_changes WHERE left(author, 1) = 'k' ORDER BY first_seen"
+        )
+        .await?,
+        ["0.3.0", "0.4.0"]
+    );
+    assert_eq!(
+        column(
+            &client,
+            "SELECT DISTINCT left(author, 1) FROM version_changes ORDER BY 1"
+        )
+        .await?,
+        ["i", "j", "k"]
+    );
+
+    // An hour later, only what was republished since is left
+    let republished = versioned('k', now + 3500, "0.4.0");
+    sync(&mut client, &[&republished], now + 3600, retention).await?;
+    assert_eq!(
+        column(&client, "SELECT left(author, 1) FROM advertisements").await?,
+        ["k"]
+    );
+    drop_schema(client, driver, &schema).await
+}
+
+async fn checked(
+    client: &tokio_postgres::Client,
+    issuer: &str,
+) -> anyhow::Result<Option<(chrono::DateTime<chrono::Utc>, Vec<String>)>> {
+    Ok(client
+        .query_opt(
+            "SELECT checked_at, locations FROM revocation_checks WHERE issuer = $1",
+            &[&issuer],
+        )
+        .await?
+        .map(|row| (row.get(0), row.get(1))))
+}
+
+/// Completeness is recorded per issuer, so a lookup that did not reach an
+/// issuer's locations never refreshes it; a valid revocation wins over
+/// invalid events for the same credential
+#[tokio::test]
+#[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
+async fn postgres_revocation_checks_are_per_issuer() -> anyhow::Result<()> {
+    let (mut client, driver, schema) = test_schema("revocations").await?;
+    let (a, b) = ("aa".repeat(32), "bb".repeat(32));
+    let locations = vec!["wss://relay.example/".to_owned()];
+    client
+        .execute(
+            "INSERT INTO revocation_checks (issuer, locations, checked_at)
+             VALUES ($1, $2, '2000-01-01T00:00:00Z')",
+            &[&a, &locations],
+        )
+        .await?;
+    let seeded = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00Z")?.to_utc();
     let record = |digest: &str, kind| RevocationRecord {
-        issuer: "ab".repeat(32),
+        issuer: a.clone(),
         credential_digest: digest.to_owned(),
         kind,
         event_id: format!("{digest}-{}", kind.as_str()),
     };
-    assert_eq!(checked_at(&client).await?, None);
-    for lookup in [
-        RevocationLookup {
-            records: vec![
-                record("revoked", RevocationKind::Revoked),
-                record("unclear", RevocationKind::Invalid),
-            ],
-            complete: true,
-        },
-        RevocationLookup {
-            records: vec![
-                record("revoked", RevocationKind::Invalid),
-                record("unclear", RevocationKind::Revoked),
-            ],
-            complete: false,
-        },
-    ] {
-        let dbtx = client.transaction().await?;
-        store_revocations(&dbtx, &lookup).await?;
-        dbtx.commit().await?;
-        if lookup.complete {
-            assert!(checked_at(&client).await?.is_some());
-        }
-    }
-    let first_check = checked_at(&client).await?;
+
+    // Complete for B only: A's check stays exactly as seeded
+    let partial = RevocationLookup {
+        records: vec![
+            record("revoked", RevocationKind::Revoked),
+            record("unclear", RevocationKind::Invalid),
+        ],
+        complete: vec![(b.clone(), locations.clone())],
+    };
+    let dbtx = client.transaction().await?;
+    store_revocations(&dbtx, &partial).await?;
+    dbtx.commit().await?;
+    assert_eq!(
+        checked(&client, &a).await?,
+        Some((seeded, locations.clone()))
+    );
+    let (b_checked, _) = checked(&client, &b).await?.expect("B was read in full");
+    assert!(chrono::Utc::now() - b_checked < chrono::TimeDelta::minutes(1));
+
+    // Complete for A, from where its authority now says
+    let moved = vec!["wss://relay.other/".to_owned()];
+    let full = RevocationLookup {
+        records: vec![
+            record("revoked", RevocationKind::Invalid),
+            record("unclear", RevocationKind::Revoked),
+        ],
+        complete: vec![(a.clone(), moved.clone())],
+    };
+    let dbtx = client.transaction().await?;
+    store_revocations(&dbtx, &full).await?;
+    dbtx.commit().await?;
+    let (a_checked, a_locations) = checked(&client, &a).await?.unwrap();
+    assert!(a_checked > seeded);
+    assert_eq!(a_locations, moved);
+
     let states: Vec<(String, String)> = client
         .query(
             "SELECT credential_digest, state FROM revocations ORDER BY credential_digest",
@@ -181,15 +344,7 @@ async fn postgres_poison_advertisements_cannot_block_a_sync() -> anyhow::Result<
             ("unclear".to_owned(), "revoked".to_owned()),
         ]
     );
-    // The incomplete lookup left the check time where the complete one put it
-    assert_eq!(checked_at(&client).await?, first_check);
-
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await?;
-    drop(client);
-    driver.await??;
-    Ok(())
+    drop_schema(client, driver, &schema).await
 }
 
 /// Reads the production issuers' revocations from where their pinned
@@ -209,9 +364,9 @@ async fn live_revocation_lookup_completes() -> anyhow::Result<()> {
     pool.connect(Some(Duration::from_secs(10))).await;
     let lookup = fetch_revocations(&pool, &targets, &trusted).await;
     println!(
-        "complete: {}, revocations: {:?}",
+        "read in full: {:?}, revocations: {:?}",
         lookup.complete, lookup.records
     );
-    assert!(lookup.complete);
+    assert_eq!(lookup.complete.len(), trusted.len());
     Ok(())
 }

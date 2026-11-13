@@ -29,7 +29,8 @@ use peerbadge_schemas::parse_trust_score_badge_v1;
 use serde_json::Value;
 
 use super::peerbadge::{
-    digest_wire, issuer_label, pinned_authorities, RevocationKind, TrustContext,
+    digest_wire, issuer_label, pinned_authorities, revocation_locations, RevocationGap,
+    RevocationKind, TrustContext,
 };
 use super::seat_bindings::{canonical_json, decode_signature};
 
@@ -429,13 +430,14 @@ pub fn credential(
         Some(Ok(_)) => (Some(true), None),
         Some(Err(error)) => (Some(false), Some(format!("{error}"))),
     };
-    let revocation = revocation_check(
+    let (revocation_passed, revocation_detail, revocation_checked_at) = revocation_check(
         issuer_key.as_deref(),
         authority,
         digest.as_ref(),
         now,
         trust,
     );
+    let revocation = (revocation_passed, revocation_detail);
 
     let checks = vec![
         check(
@@ -572,7 +574,7 @@ pub fn credential(
         required_trust_level: REQUIRED_TRUST_LEVEL,
         schema,
         checked_at: (state == CredentialState::Verified)
-            .then_some(trust.revocations.checked_at)
+            .then_some(revocation_checked_at)
             .flatten(),
         checks,
         reason: Some(reason),
@@ -580,60 +582,78 @@ pub fn credential(
 }
 
 /// Whether the issuer revoked the credential, by the collector's latest
-/// complete revocation lookup; not run without one that is current
+/// complete read of this issuer's revocation locations. Not run unless that
+/// read covered this issuer, at the locations its pinned authority names now,
+/// within [`super::peerbadge::REVOCATION_MAX_AGE`]; on success, also returns
+/// when that read was.
 fn revocation_check(
     issuer: Option<&str>,
     authority: Option<&peerbadge_protocol::IssuerAuthority>,
     digest: Option<&CredentialDigest>,
     now: u64,
     trust: &TrustContext,
-) -> (Option<bool>, Option<String>) {
+) -> (
+    Option<bool>,
+    Option<String>,
+    Option<chrono::DateTime<chrono::Utc>>,
+) {
     let (Some(issuer), Some(authority), Some(digest)) = (issuer, authority, digest) else {
         return (
             None,
             Some("Needs a parsed credential from an issuer with a pinned authority".to_owned()),
+            None,
         );
     };
-    if !authority
-        .issuer
-        .revocation
-        .iter()
-        .any(|location| location.protocol == "nostr")
-    {
-        return (
-            None,
-            Some("The issuer names no Nostr revocation location".to_owned()),
-        );
-    }
+    let locations = match revocation_locations(authority) {
+        Ok(locations) if !locations.is_empty() => locations,
+        _ => {
+            return (
+                None,
+                Some("The issuer names no usable Nostr revocation location".to_owned()),
+                None,
+            )
+        }
+    };
     let now = chrono::DateTime::from_timestamp(i64::try_from(now).unwrap_or(i64::MAX), 0)
         .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC);
-    if !trust.revocations.is_current(now) {
-        return (
-            None,
-            Some(match trust.revocations.checked_at {
-                None => "The issuer's revocations have not been read yet".to_owned(),
-                Some(_) => format!(
-                    "The issuer's revocations were last read completely over {} minutes ago",
+    let checked_at = match trust.revocations.current_check(issuer, &locations, now) {
+        Ok(checked_at) => checked_at,
+        Err(gap) => {
+            let detail = match gap {
+                RevocationGap::NeverRead => {
+                    "The issuer's revocations have not been read in full yet".to_owned()
+                }
+                RevocationGap::OtherLocations => {
+                    "The issuer's revocations were read from other locations than its authority names"
+                        .to_owned()
+                }
+                RevocationGap::Stale => format!(
+                    "The issuer's revocations were last read in full over {} minutes ago",
                     super::peerbadge::REVOCATION_MAX_AGE.num_minutes()
                 ),
-            }),
-        );
-    }
+            };
+            return (None, Some(detail), None);
+        }
+    };
     let Some(wire) = digest_wire(digest) else {
         return (
             None,
             Some("The credential digest has no wire form".to_owned()),
+            None,
         );
     };
     match trust.revocations.entries.get(&(issuer.to_owned(), wire)) {
-        None => (Some(true), None),
-        Some(RevocationKind::Revoked) => (Some(false), Some("Revoked by its issuer".to_owned())),
+        None => (Some(true), None, Some(checked_at)),
+        Some(RevocationKind::Revoked) => {
+            (Some(false), Some("Revoked by its issuer".to_owned()), None)
+        }
         Some(RevocationKind::Invalid) => (
             None,
             Some(
                 "The issuer published a revocation event for this credential that does not verify"
                     .to_owned(),
             ),
+            None,
         ),
     }
 }

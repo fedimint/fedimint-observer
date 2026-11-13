@@ -106,6 +106,25 @@ pub fn issuer_label(issuer: &str) -> Option<String> {
         })
 }
 
+/// The Nostr revocation locations an authority names, normalized, sorted and
+/// without duplicates: where the issuer's revocations must be read from
+pub fn revocation_locations(authority: &IssuerAuthority) -> anyhow::Result<Vec<String>> {
+    let mut locations = authority
+        .issuer
+        .revocation
+        .iter()
+        .filter(|location| location.protocol == NOSTR_REVOCATION_PROTOCOL)
+        .map(|location| {
+            nostr_sdk::Url::parse(&location.location)
+                .map(|relay| relay.to_string())
+                .with_context(|| format!("revocation location {:?}", location.location))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    locations.sort();
+    locations.dedup();
+    Ok(locations)
+}
+
 /// The relays to read revocations from, each with the trusted issuers whose
 /// pinned authority names it. Trusted issuers without a pinned authority have
 /// none: their credentials cannot verify anyway.
@@ -115,15 +134,8 @@ pub fn revocation_targets(trusted: &[String]) -> anyhow::Result<BTreeMap<String,
         let Some(authority) = pinned_authorities().get(issuer) else {
             continue;
         };
-        for location in &authority.issuer.revocation {
-            if location.protocol == NOSTR_REVOCATION_PROTOCOL {
-                let relay = nostr_sdk::Url::parse(&location.location)
-                    .with_context(|| format!("revocation location {:?}", location.location))?;
-                targets
-                    .entry(relay.to_string())
-                    .or_default()
-                    .push(issuer.clone());
-            }
+        for relay in revocation_locations(authority)? {
+            targets.entry(relay).or_default().push(issuer.clone());
         }
     }
     Ok(targets)
@@ -222,19 +234,54 @@ pub fn admit_revocation(event: &nostr_sdk::Event, trusted: &[String]) -> Option<
     })
 }
 
-/// The revocations the collector has read, as of its latest complete lookup
+/// When one issuer's revocations were last read in full, and from where
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssuerRevocationCheck {
+    pub checked_at: DateTime<Utc>,
+    /// Every location read, as [`revocation_locations`] gives them
+    pub locations: Vec<String>,
+}
+
+/// Why an issuer's revocation state cannot be relied on
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevocationGap {
+    /// The issuer's revocations have not been read in full, for example
+    /// because it was added to the trusted issuers since
+    NeverRead,
+    /// Read from other locations than its pinned authority names now
+    OtherLocations,
+    /// Read longer ago than [`REVOCATION_MAX_AGE`]
+    Stale,
+}
+
+/// The revocations the collector has read, and per issuer, when its
+/// revocation locations last all answered in full
 #[derive(Debug, Clone, Default)]
 pub struct RevocationState {
-    /// When every revocation location last answered completely; None before
-    pub checked_at: Option<DateTime<Utc>>,
+    /// By issuer (lowercase hex)
+    pub checks: HashMap<String, IssuerRevocationCheck>,
     /// By (issuer, credential digest)
     pub entries: HashMap<(String, String), RevocationKind>,
 }
 
 impl RevocationState {
-    pub fn is_current(&self, now: DateTime<Utc>) -> bool {
-        self.checked_at
-            .is_some_and(|checked| now - checked <= REVOCATION_MAX_AGE)
+    /// When `issuer`'s revocations were read in full, provided that was from
+    /// exactly `locations` and is recent. Completeness is per issuer: a
+    /// lookup that covered other issuers says nothing about this one.
+    pub fn current_check(
+        &self,
+        issuer: &str,
+        locations: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<DateTime<Utc>, RevocationGap> {
+        let check = self.checks.get(issuer).ok_or(RevocationGap::NeverRead)?;
+        if check.locations != locations {
+            return Err(RevocationGap::OtherLocations);
+        }
+        if now - check.checked_at > REVOCATION_MAX_AGE {
+            return Err(RevocationGap::Stale);
+        }
+        Ok(check.checked_at)
     }
 }
 
