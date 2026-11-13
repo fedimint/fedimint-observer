@@ -1,0 +1,61 @@
+name: Manifold issuers
+
+# The observer trusts a copy of Manifold's production PeerBadge issuers. This
+# compares it daily with the roster at the Manifold revision the Fedi app pins,
+# and opens an issue when they differ: changing trust roots is a reviewed
+# code change, never a silent sync.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - fmo_core/src/manifold/collector.rs
+      - fmo_core/src/manifold/fixtures/issuer-authority-*.json
+      - scripts/check-manifold-issuers.sh
+      - .github/workflows/manifold-issuers.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare the trusted issuers with Fedi's pinned Manifold roster
+        id: check
+        run: |
+          set +e
+          ./scripts/check-manifold-issuers.sh > report.txt 2>&1
+          status=$?
+          cat report.txt
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit $status
+
+      # Only the scheduled run files issues; a pull request shows the failure itself
+      - name: Open an issue when the roster changed
+        if: failure() && github.event_name == 'schedule' && steps.check.outputs.status == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Manifold's production PeerBadge issuers changed"
+          if gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number' | grep -q .; then
+            echo "An issue is already open"
+            exit 0
+          fi
+          {
+            echo "The scheduled check found that the trusted issuers in \`fmo_core/src/manifold/collector.rs\` differ from Manifold's production roster at the revision the Fedi app pins."
+            echo
+            echo '```'
+            cat report.txt
+            echo '```'
+            echo
+            echo "Review the change in fedibtc/manifold before updating \`MANIFOLD_PRODUCTION_ISSUERS\`, \`MANIFOLD_ISSUERS_REVISION\` and the pinned authorities in \`fmo_core/src/manifold/fixtures/\`. Until then, \`FO_MANIFOLD_TRUSTED_ISSUERS\` overrides the list on a server."
+          } > body.md
+          gh issue create --title "$title" --body-file body.md

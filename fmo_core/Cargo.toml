@@ -25,6 +25,10 @@ fmo_api_types = { path = "../fmo_api_types" }
 futures = "0.3.30"
 hex = "0.4.3"
 nostr-sdk = "0.34.0"
+# Fedi's PeerBadge SDK, at the revision the Fedi app pins: verifies Manifold
+# Guardians' trust credentials exactly as Fedi's app does
+peerbadge-protocol = { git = "https://github.com/fedibtc/peerbadge-sdk", rev = "ad6e954301f6684dcef14b070332d7171b61a408" }
+peerbadge-schemas = { git = "https://github.com/fedibtc/peerbadge-sdk", rev = "ad6e954301f6684dcef14b070332d7171b61a408" }
 postgres-from-row = "0.5.2"
 reqwest = { version = "0.12.2", default-features = false, features = ["rustls-tls"] }
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
@@ -45,6 +49,11 @@ tower-http = { version = "0.5.2", features = ["cors", "trace", "compression-gzip
 chrono = { version = "0.4.38", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 regex = "1.10.4"
+base64 = "0.22.1"
+# Pinned like Manifold: its MG display names index these exact word lists
+petname = { version = "=3.1.0", default-features = false, features = ["default-words"] }
 
 [dev-dependencies]
+# The digest type PeerBadge credentials use, for test revocations
+sha2 = "0.10"
 tower = { version = "0.5", features = ["util"] }

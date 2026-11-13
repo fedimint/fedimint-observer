@@ -127,6 +127,7 @@ impl FederationObserver {
         modules: ModuleRegistry,
         options: &crate::runtime::RuntimeOptions,
     ) -> anyhow::Result<FederationObserver> {
+        crate::manifold::check_trusted_issuers()?;
         let connection_pool = crate::runtime::pool(database, options.worker_db_connections, true)?;
         let api_pool = crate::runtime::pool(database, options.api_db_connections, false)?;
         let task_group = TaskGroup::default();
@@ -226,6 +227,19 @@ impl FederationObserver {
             }),
         );
         slf.spawn_module_tasks();
+        // Off when FO_MANIFOLD_RELAYS is set empty
+        let manifold_relays = crate::manifold::configured_relays();
+        if !manifold_relays.is_empty() {
+            let observer = slf.clone();
+            slf.task_group.spawn_cancellable(
+                "manifold discovery",
+                supervise("Manifold discovery", move || {
+                    observer
+                        .clone()
+                        .sync_manifold_discovery(manifold_relays.clone())
+                }),
+            );
+        }
         let observer = slf.clone();
         slf.task_group.spawn_cancellable(
             "metadata snapshots",
@@ -573,7 +587,8 @@ impl FederationObserver {
                 .await?;
         }
 
-        self.setup_module_schemas().await
+        self.setup_module_schemas().await?;
+        self.setup_manifold_schema().await
     }
 
     /// Creates every registered module's schema and runs the module's own
@@ -740,9 +755,22 @@ impl FederationObserver {
                         .map(|invite| invite.federation_id())
                         .filter(|successor_id| *successor_id != federation_id),
                     successor,
+                    successor_name: None,
                 })
             })
-            .collect()
+            .collect::<anyhow::Result<Vec<FederationSummary>>>()
+            .map(|mut summaries| {
+                // A successor the observer tracks is named from its own summary
+                let names: HashMap<FederationId, String> = summaries
+                    .iter()
+                    .filter_map(|summary| Some((summary.id, summary.name.clone()?)))
+                    .collect();
+                for summary in &mut summaries {
+                    summary.successor_name =
+                        summary.successor_id.and_then(|id| names.get(&id).cloned());
+                }
+                summaries
+            })
     }
 
     /// Each federation's transactions and volume on each of the last `days`

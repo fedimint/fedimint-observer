@@ -1,2 +1,7 @@
 [default.extend-words]
 FO = "FO"
+
+[files]
+# Signed Nostr events captured from relays: their base64 signatures and
+# payloads must stay byte for byte, and read as typos to the checker
+extend-exclude = ["fmo_core/src/manifold/fixtures/*.json"]

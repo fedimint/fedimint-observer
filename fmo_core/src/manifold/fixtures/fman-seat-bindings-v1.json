@@ -1,0 +1,33 @@
+{
+  "max_seat_bindings": 64,
+  "max_value_bytes": 65536,
+  "meta_field_key": "fedi:fman_seat_bindings",
+  "vectors": [
+    {
+      "canonical_value": "{\"seat_bindings\":[{\"attestation\":{\"federation_config_hash\":[202,88,9,170,45,95,34,55,48,57,3,94,55,68,14,19,139,125,113,49,65,155,162,75,86,248,30,58,183,185,32,200],\"federation_id\":\"4e67ba247ecf81d8592d738d69a3948bbd52bd11a9ddaa6c443a3debee28ef12\",\"fman_pubkey\":\"fman-0\",\"guardian_fee_account\":{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\"],\"threshold\":1},\"guardian_identity\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"issued_at\":1700000000,\"peer_id\":\"0\"},\"proof\":{\"signature\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw\"},\"version\":1}],\"version\":1}",
+      "name": "single-seat",
+      "peer_id_order": [
+        "0"
+      ]
+    },
+    {
+      "canonical_value": "{\"seat_bindings\":[{\"attestation\":{\"federation_config_hash\":[246,118,73,86,163,108,154,4,38,174,230,190,220,103,170,204,3,58,40,28,58,69,85,147,63,60,13,229,183,124,66,74],\"federation_id\":\"afc9b1ca375c8087817f42951af4fc9c203b22cd3688921f4d5de3cd9449cbc7\",\"fman_pubkey\":\"fman-0\",\"guardian_fee_account\":{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\"],\"threshold\":1},\"guardian_identity\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"issued_at\":1700000000,\"peer_id\":\"0\"},\"proof\":{\"signature\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw\"},\"version\":1},{\"attestation\":{\"federation_config_hash\":[246,118,73,86,163,108,154,4,38,174,230,190,220,103,170,204,3,58,40,28,58,69,85,147,63,60,13,229,183,124,66,74],\"federation_id\":\"afc9b1ca375c8087817f42951af4fc9c203b22cd3688921f4d5de3cd9449cbc7\",\"fman_pubkey\":\"fman-1\",\"guardian_fee_account\":{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\"],\"threshold\":1},\"guardian_identity\":\"02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5\",\"issued_at\":1700000000,\"peer_id\":\"1\"},\"proof\":{\"signature\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw\"},\"version\":1},{\"attestation\":{\"federation_config_hash\":[246,118,73,86,163,108,154,4,38,174,230,190,220,103,170,204,3,58,40,28,58,69,85,147,63,60,13,229,183,124,66,74],\"federation_id\":\"afc9b1ca375c8087817f42951af4fc9c203b22cd3688921f4d5de3cd9449cbc7\",\"fman_pubkey\":\"fman-2\",\"guardian_fee_account\":{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337\"],\"threshold\":1},\"guardian_identity\":\"02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",\"issued_at\":1700000000,\"peer_id\":\"2\"},\"proof\":{\"signature\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw\"},\"version\":1},{\"attestation\":{\"federation_config_hash\":[246,118,73,86,163,108,154,4,38,174,230,190,220,103,170,204,3,58,40,28,58,69,85,147,63,60,13,229,183,124,66,74],\"federation_id\":\"afc9b1ca375c8087817f42951af4fc9c203b22cd3688921f4d5de3cd9449cbc7\",\"fman_pubkey\":\"fman-3\",\"guardian_fee_account\":{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b\"],\"threshold\":1},\"guardian_identity\":\"02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13\",\"issued_at\":1700000000,\"peer_id\":\"3\"},\"proof\":{\"signature\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw\"},\"version\":1}],\"version\":1}",
+      "name": "four-seats",
+      "peer_id_order": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    {
+      "canonical_value": "{\"seat_bindings\":[{\"attestation\":{\"federation_config_hash\":[246,118,73,86,163,108,154,4,38,174,230,190,220,103,170,204,3,58,40,28,58,69,85,147,63,60,13,229,183,124,66,74],\"federation_id\":\"afc9b1ca375c8087817f42951af4fc9c203b22cd3688921f4d5de3cd9449cbc7\",\"fman_pubkey\":\"fman-0\",\"guardian_fee_account\":{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337\"],\"threshold\":1},\"guardian_identity\":\"02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",\"issued_at\":1700000000,\"peer_id\":\"0\"},\"proof\":{\"signature\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw\"},\"version\":1},{\"attestation\":{\"federation_config_hash\":[246,118,73,86,163,108,154,4,38,174,230,190,220,103,170,204,3,58,40,28,58,69,85,147,63,60,13,229,183,124,66,74],\"federation_id\":\"afc9b1ca375c8087817f42951af4fc9c203b22cd3688921f4d5de3cd9449cbc7\",\"fman_pubkey\":\"fman-2\",\"guardian_fee_account\":{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766\"],\"threshold\":1},\"guardian_identity\":\"02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5\",\"issued_at\":1700000000,\"peer_id\":\"2\"},\"proof\":{\"signature\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw\"},\"version\":1},{\"attestation\":{\"federation_config_hash\":[246,118,73,86,163,108,154,4,38,174,230,190,220,103,170,204,3,58,40,28,58,69,85,147,63,60,13,229,183,124,66,74],\"federation_id\":\"afc9b1ca375c8087817f42951af4fc9c203b22cd3688921f4d5de3cd9449cbc7\",\"fman_pubkey\":\"fman-10\",\"guardian_fee_account\":{\"acc_type\":\"BtcDepositor\",\"pub_keys\":[\"031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f\"],\"threshold\":1},\"guardian_identity\":\"0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"issued_at\":1700000000,\"peer_id\":\"10\"},\"proof\":{\"signature\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw\"},\"version\":1}],\"version\":1}",
+      "name": "numeric-peer-id-order",
+      "peer_id_order": [
+        "0",
+        "2",
+        "10"
+      ]
+    }
+  ]
+}
