@@ -40,6 +40,8 @@ This service is already used by [bitcoinmints.com](https://bitcoinmints.com/?tab
 be considered kinda stable.
 
 ## Development
+[ARCHITECTURE.md](ARCHITECTURE.md) describes how the code is laid out, how data moves through it and where new code belongs.
+
 Fedimint Observer comes with a [nix](https://nixos.org/) development environment. You can enter it by running `nix develop`.
 In there you can run a variety of `just` commands (to be called as `just <COMMAND> <ARGS...>`), the most important ones are:
 * `check`: run `cargo check` on the entire workspace
