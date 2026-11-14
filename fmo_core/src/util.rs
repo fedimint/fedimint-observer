@@ -155,3 +155,33 @@ pub fn merge_metas(metas: &[MetaFields]) -> MetaFields {
         })
         .collect::<MetaFields>()
 }
+
+/// Logs how far a sync got and how fast, at most every 5 s
+pub(crate) struct SyncProgress {
+    unit: &'static str,
+    logged_at: std::time::Instant,
+    logged_position: u64,
+}
+
+impl SyncProgress {
+    pub(crate) fn new(unit: &'static str, position: u64) -> Self {
+        SyncProgress {
+            unit,
+            logged_at: std::time::Instant::now(),
+            logged_position: position,
+        }
+    }
+
+    pub(crate) fn record(&mut self, position: u64) {
+        let elapsed = self.logged_at.elapsed();
+        if elapsed < std::time::Duration::from_secs(5) {
+            return;
+        }
+        let unit = self.unit;
+        let synced = position.saturating_sub(self.logged_position);
+        let rate = synced as f64 / elapsed.as_secs_f64();
+        tracing::info!("Synced up to {unit} {position}, processed {synced} {unit}s at a rate of {rate:.2} {unit}s/s");
+        self.logged_at = std::time::Instant::now();
+        self.logged_position = position;
+    }
+}
