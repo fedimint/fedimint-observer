@@ -17,11 +17,12 @@ is laid out, how data moves through it, and where new code belongs.
 ## Layers of `fmo_core`
 
 ```
-            guardians        mempool        Nostr relays
-                │               │                │
-   ┌────────────▼───────────────▼────────────────▼──────────────┐
+            guardians      mempool    Nostr relays  data sources
+                │             │             │             │
+   ┌────────────▼─────────────▼─────────────▼─────────────▼─────┐
    │ Collection   federation/ingest.rs   guardians.rs           │
    │              metadata.rs            recommend/ (sync)      │
+   │              source/ (data sources: pulled or pushed)      │
    └────────────┬───────────────────────────────────────────────┘
                 │ writes through
    ┌────────────▼───────────────────────────────────────────────┐
@@ -36,7 +37,7 @@ is laid out, how data moves through it, and where new code belongs.
    ┌────────────────────────────▼───────────────────────────────┐
    │ Presentation api.rs → federation/mod.rs, summary.rs,       │
    │              session.rs, transaction.rs, config/,          │
-   │              recommend/, modules' federation_routes()      │
+   │              recommend/, source/api.rs, module routes      │
    └────────────────────────────────────────────────────────────┘
 ```
 
@@ -45,6 +46,7 @@ is laid out, how data moves through it, and where new code belongs.
 | Collection | `federation/ingest.rs` | Fetches every observed federation's signed sessions from its guardians and stores each one, with core's rows of its items, in one transaction. Also fetches block times and runs admin backfills |
 | | `federation/guardians.rs` | Polls guardian health, backs off for offline federations, deletes old samples |
 | | `federation/metadata.rs` | Refreshes each federation's consensus metadata and override document every 5 minutes |
+| | `source/` | Observations from data sources other than the guardians (see below) |
 | Processing | `federation/projector.rs` | One projector per module and federation. It runs the module's `process_*` over stored sessions in batches, moving the module's cursor in the same transaction. It also rebuilds read models after reprocessing |
 | Storage | `store/schema.rs` | Core migrations, module schemas and migrations, materialized-view refresh |
 | | `store/rows.rs` | Writers of core's rows of session items, shared by ingest and projectors |
@@ -53,6 +55,7 @@ is laid out, how data moves through it, and where new code belongs.
 | Presentation | `api.rs` | Assembles every layer's routes and the shared middleware (`http.rs`) |
 | | `federation/mod.rs`, `summary.rs`, `session.rs`, `transaction.rs`, `meta.rs` | `/federations/*` handlers, each next to the read queries it serves |
 | | `config/` | The stable `/config/*` inspector for any federation, by invite code |
+| | `source/api.rs` | `PUT /sources/...` for pushes and `GET /federations/:id/sources` for public observations |
 | Wiring | `federation/observer.rs`, `lib.rs` | Pools, guardian and mempool clients, the task group, the registry of observed federations; startup |
 
 Shared infrastructure sits beside the layers. `module.rs` defines the module
@@ -77,8 +80,36 @@ notifications, and `error.rs` defines the error types.
   `session_times`, `guardian_health_hourly`). These are kept current by
   triggers, or in the transaction that stores a session. If a new endpoint
   needs an aggregate, add a read model instead of a scan.
-- **Modules and other plug-ins reach core only through `Services`**
+- **Modules and data sources reach core only through `Services`**
   (`module.rs`), never through `FederationObserver` internals.
+
+## Data sources
+
+Fedimint modules see only what the guardians agreed on. Everything observed
+from the outside comes in as a **data source**: an external observability
+service, a directory or a probe network (`fmo_core/src/source`). A source
+declares up front the kinds of observation it produces. Each kind has a size
+limit, a retention period, and a public or private setting. Core keeps the
+newest observation of each kind per federation in `source_observations`.
+
+- **Pull:** a source compiled into the build implements `ObservationSource`.
+  Its supervised `task()` writes through the `ObservationSink` it is given.
+  It is added with `FedimintObserver::builder().with_source(..)`.
+- **Push:** a service outside the build sends
+  `PUT /sources/:source/federations/:federation_id/:kind` with
+  `{"observed_at", "data"}` and its bearer token. Push sources are declared in
+  the `FO_SOURCES_FILE` JSON document, and each source's token is read from
+  `FO_SOURCE_TOKEN_<ID>`.
+
+Both paths share one validated write (`source/sink.rs`): the kind must be
+declared, the data must be a JSON object within the kind's size and depth
+limits, the time must be neither in the future nor past retention, and the
+federation must be observed. The newest observation wins, so retries are safe.
+Each source has its own write concurrency. Kinds declared public are served
+verbatim by `GET /federations/:id/sources`. Kinds that aren't public are only
+for the build's own code (`Services::source_observation`). Core can't check
+what a source's data means, so a source declared public must follow the
+privacy rule below.
 
 ## Process model
 
@@ -120,6 +151,7 @@ API clients, one per set of guardians (see `CLAUDE.md`).
 | Support a new Fedimint module | A new `fmo_modules/fmo_module_<kind>` crate implementing `ObserverModule`, registered in `fmo_server` |
 | Collect more from guardians about every federation | A collector in `federation/`, started from `FederationObserver::new` under `supervise` |
 | Derive tables from sessions | The owning module's `process_*`, or for core tables `projector.rs` |
+| Feed in data from an outside service | A push source in `FO_SOURCES_FILE`, or an `ObservationSource` added with `.with_source(..)` if it pulls |
 | Add an endpoint about observed federations | A handler in `federation/` (or the module's `federation_routes()`), reading stored data or read models |
 | Change the schema | A new `fmo_core/schema/vN+1.sql` added to `store/schema.rs` |
 
