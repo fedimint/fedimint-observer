@@ -63,3 +63,5 @@ jobs:
           nix develop -c cargo test -p fmo_module_walletv2 postgres_deposit_replay_and_instance_pagination -- --ignored
           nix develop -c cargo test -p fmo_module_lnv2 postgres_probe_history_and_activity -- --ignored
           nix develop -c cargo test -p fmo_module_lnv2 postgres_v2_migration_and_admission_trim_existing_records -- --ignored
+          nix develop -c cargo test -p fmo_module_lnv2 postgres_gateway_nodes_read_current_registrations -- --ignored
+          nix develop -c cargo test -p fmo_module_lnv2 postgres_gateway_nodes_read_one_snapshot -- --ignored

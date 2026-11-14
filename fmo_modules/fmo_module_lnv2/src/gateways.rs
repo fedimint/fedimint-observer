@@ -109,7 +109,9 @@ pub(crate) fn instances(config: &ClientConfig) -> Vec<u16> {
 }
 
 pub(crate) fn routes() -> Router<Services> {
-    Router::new().route("/gateways/v2", get(registry))
+    Router::new()
+        .route("/gateways/v2", get(registry))
+        .route("/gateways/nodes", get(super::nodes::nodes))
 }
 
 async fn registry(
