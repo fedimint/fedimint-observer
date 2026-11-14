@@ -198,6 +198,8 @@ async fn registry(
                 &since,
                 &((bucket_hours * 3600) as f64),
                 &bucket_count,
+                // The removed filter needs removed endpoints too
+                &false,
             ],
         )
         .await?;
