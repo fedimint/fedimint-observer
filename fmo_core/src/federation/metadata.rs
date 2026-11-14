@@ -1,11 +1,9 @@
-//! Persisted, last-known-good snapshots. A failed poll never replaces good
-//! data.
+//! Collection of federations' metadata: every 5 minutes, each federation's
+//! consensus meta and its override document are fetched and stored as
+//! observations, with the merged result the API serves (`meta`).
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
-use fedimint_core::config::FederationId;
-use fedimint_core::encoding::Encodable;
 use futures::{stream, StreamExt};
 use serde_json::Value;
 
@@ -13,50 +11,7 @@ use crate::config::meta::{parse_meta_lenient, ConsensusMetaCache, MetaFields, Me
 use crate::federation::observer::FederationObserver;
 use crate::module::Services;
 
-impl Services {
-    pub async fn save_observation(
-        &self,
-        federation_id: FederationId,
-        kind: &str,
-        data: &Value,
-    ) -> anyhow::Result<()> {
-        self.connection().await?.execute(
-            "INSERT INTO federation_observations(federation_id, kind, data) VALUES ($1, $2, $3)
-             ON CONFLICT (federation_id, kind) DO UPDATE SET data = EXCLUDED.data, observed_at = now()",
-            &[&federation_id.consensus_encode_to_vec(), &kind, data],
-        ).await?;
-        Ok(())
-    }
-
-    pub async fn observation(
-        &self,
-        federation_id: FederationId,
-        kind: &str,
-    ) -> anyhow::Result<Option<(Value, DateTime<Utc>)>> {
-        Ok(self.connection().await?.query_opt(
-            "SELECT data, observed_at FROM federation_observations WHERE federation_id = $1 AND kind = $2",
-            &[&federation_id.consensus_encode_to_vec(), &kind],
-        ).await?.map(|row| (row.get(0), row.get(1))))
-    }
-}
-
 impl FederationObserver {
-    pub(crate) async fn prune_health(self, days: u32) -> anyhow::Result<()> {
-        loop {
-            self.connection().await?.execute(
-                "DELETE FROM guardian_health WHERE (federation_id, guardian_id, time) IN (
-                    SELECT h.federation_id, h.guardian_id, h.time FROM guardian_health h
-                    WHERE h.time < (now() AT TIME ZONE 'UTC') - make_interval(days => $1)
-                      AND EXISTS (SELECT 1 FROM guardian_health newer
-                          WHERE newer.federation_id = h.federation_id AND newer.guardian_id = h.guardian_id
-                            AND newer.time > h.time)
-                    ORDER BY h.time LIMIT 5000
-                 )", &[&(days as i32)],
-            ).await?;
-            tokio::time::sleep(Duration::from_secs(60)).await;
-        }
-    }
-
     pub(crate) async fn refresh_metadata(self) -> anyhow::Result<()> {
         let services = Services::new(self.clone());
         let overrides = MetaOverrideCache::default();

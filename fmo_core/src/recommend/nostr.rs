@@ -22,7 +22,8 @@ use tokio::time::interval;
 use tracing::{debug, info, warn};
 
 use crate::error::ClientError;
-use crate::federation::observer::{federation_id_from_db, FederationObserver};
+use crate::federation::observer::FederationObserver;
+use crate::store::rows::federation_id_from_db;
 use crate::util::query;
 use crate::AppState;
 
@@ -522,6 +523,13 @@ pub(crate) async fn get_nostr_federations(
         .collect();
 
     Ok(Json(federation_map))
+}
+
+pub(crate) async fn publish_rating_event(
+    State(state): State<AppState>,
+    Json(event): Json<nostr_sdk::Event>,
+) -> crate::error::Result<()> {
+    Ok(state.federation_observer.submit_rating(event).await?)
 }
 
 pub(crate) async fn publish_federation_event(
