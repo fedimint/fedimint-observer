@@ -1,12 +1,13 @@
 //! Presentation: the HTTP API. Assembles the routes of every layer and the
 //! middleware they share. Handlers live next to the read queries they serve
-//! (`federation/`, `config/`, `recommend`, and each module crate's
+//! (`federation/`, `config/`, `recommend`, `source`, and each module crate's
 //! `federation_routes()`/`config_routes()`).
 //!
 //! - `/config/*`: stable API for inspecting federations by invite code
 //! - `/federations/*`: unstable API for observed federations, including
 //!   modules' endpoints under `/federations/:federation_id`
 //! - `/nostr/*`, `/federations/nostr/*`: recommendations (`crate::recommend`)
+//! - `/sources/*`: pushes from external data sources (`crate::source`)
 //! - `/health`, `/live`, `/ready`, `/metrics`: probes, outside admission
 //!   control
 
@@ -35,7 +36,8 @@ pub(crate) fn router(
         .route("/metrics", get(http::metrics))
         .nest("/config", get_config_routes())
         .nest("/federations", get_federations_routes())
-        .merge(crate::recommend::routes());
+        .merge(crate::recommend::routes())
+        .merge(crate::source::routes());
     // The modules' endpoints, at the same paths core served them from
     if let Some(routes) = modules.federation_routes() {
         app = app.nest(
