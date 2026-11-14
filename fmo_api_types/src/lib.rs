@@ -502,7 +502,7 @@ pub struct GatewayV2AvailabilityBucket {
     pub samples: u64,
     pub online_samples: u64,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayV2Activity {
     pub incoming_contracts: u64,
     pub outgoing_contracts: u64,
@@ -517,6 +517,11 @@ pub struct GatewayV2Activity {
 /// all module instances, grouped by the Lightning node they name
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayNodes {
+    /// As `GatewayV2Registry::activity_caught_up`
+    pub activity_caught_up: bool,
+    /// As `GatewayV2Registry::window`, the period of every registration's
+    /// numbers
+    pub window: String,
     /// Ordered by `node_pub_key`
     pub nodes: Vec<GatewayNode>,
     /// Registrations without a valid node key, such as a Lightning v2
@@ -530,6 +535,18 @@ pub struct GatewayNode {
     pub node_pub_key: String,
     /// Lightning v1 registrations first, then Lightning v2
     pub registrations: Vec<GatewayRegistration>,
+    pub totals: GatewayNodeTotals,
+}
+
+/// A node's Lightning v2 numbers, summed over its registrations whose
+/// endpoint a Lightning v1 registration of the node also announces.
+/// Unverified registrations are left out and only count under their own
+/// registration. Lightning v1 numbers aren't included.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GatewayNodeTotals {
+    pub samples: u64,
+    pub online_samples: u64,
+    pub activity: GatewayV2Activity,
 }
 
 /// A Lightning v1 gateway that isn't retired, or a registered Lightning v2
@@ -554,6 +571,14 @@ pub enum GatewayRegistration {
         /// exact endpoint. The endpoint reports its node key itself, so
         /// `false` means its link to the node is unverified.
         url_matches_lnv1: bool,
+        /// As `GatewayV2Info::samples`
+        samples: u64,
+        /// As `GatewayV2Info::online_samples`
+        online_samples: u64,
+        /// As `GatewayV2Info::activity`
+        activity: GatewayV2Activity,
+        /// As `GatewayV2Info::attribution`
+        attribution: String,
     },
 }
 

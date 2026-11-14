@@ -1000,6 +1000,10 @@ fn gateway_nodes_group_both_protocols_by_node_key() {
         last_seen: now,
         lightning_public_key: key.map(Into::into),
         status: "online".into(),
+        samples: 0,
+        online_samples: 0,
+        activity: Default::default(),
+        attribution: "none".into(),
     };
     let grouped = nodes::group(
         vec![
@@ -1066,6 +1070,91 @@ fn gateway_nodes_group_both_protocols_by_node_key() {
     assert!(empty.nodes.is_empty() && empty.unlinked.is_empty());
 }
 
+#[test]
+fn gateway_node_totals_count_verified_registrations_only() {
+    use fmo_api_types::GatewayRegistration::Lnv2;
+    use fmo_api_types::GatewayV2Activity;
+
+    let now = chrono::Utc::now();
+    let lnv1 = |key: &str, endpoint: &str| nodes::Lnv1Gateway {
+        gateway_id: endpoint.into(),
+        node_pub_key: key.into(),
+        api_endpoint: endpoint.into(),
+        first_seen: now,
+        last_seen: now,
+    };
+    // Every counter differs, so a swapped or dropped one shows
+    let lnv2 = |instance: u16, endpoint: &str, key: Option<&str>, n: u64| nodes::Lnv2Gateway {
+        module_instance_id: instance,
+        api_endpoint: endpoint.into(),
+        first_seen: now,
+        last_seen: now,
+        lightning_public_key: key.map(Into::into),
+        status: "online".into(),
+        samples: 10 * n,
+        online_samples: 9 * n,
+        activity: GatewayV2Activity {
+            incoming_contracts: n,
+            outgoing_contracts: 2 * n,
+            incoming_msat: 1000 * n,
+            outgoing_msat: 2000 * n,
+            outgoing_claimed: 3 * n,
+            outgoing_refunded: 4 * n,
+            outgoing_cancelled: 5 * n,
+        },
+        attribution: "self_reported".into(),
+    };
+    let grouped = nodes::group(
+        vec![
+            lnv1(NODE_A, "https://a.example/v1/"),
+            lnv1(NODE_A, "https://a2.example/v1/"),
+            lnv1(NODE_B, "https://b.example/v1/"),
+        ],
+        vec![
+            // Verified, in two instances
+            lnv2(0, "https://a.example/v1/", Some(NODE_A), 1),
+            lnv2(1, "https://a2.example/v1/", Some(NODE_A), 2),
+            // Claims node A from an endpoint no v1 registration announces
+            lnv2(0, "iroh://a", Some(NODE_A), 100),
+            lnv2(0, "https://new.example/v1/", None, 7),
+        ],
+    );
+    let [a, b] = &grouped.nodes[..] else {
+        panic!("two nodes")
+    };
+    let totals = (
+        a.totals.samples,
+        a.totals.online_samples,
+        serde_json::to_value(&a.totals.activity).unwrap(),
+    );
+    assert_eq!(
+        totals,
+        (
+            30,
+            27,
+            serde_json::json!({
+                "incoming_contracts": 3,
+                "outgoing_contracts": 6,
+                "incoming_msat": 3000,
+                "outgoing_msat": 6000,
+                "outgoing_claimed": 9,
+                "outgoing_refunded": 12,
+                "outgoing_cancelled": 15,
+            })
+        )
+    );
+    // The unverified registration keeps its own numbers
+    assert!(a.registrations.iter().any(|registration| matches!(
+        registration,
+        Lnv2 { api_endpoint, url_matches_lnv1: false, samples: 1000, activity, .. }
+            if api_endpoint == "iroh://a" && activity.incoming_contracts == 100
+    )));
+    // Lightning v1 numbers aren't summed here
+    assert_eq!(b.totals.samples, 0);
+    assert_eq!(b.totals.activity.incoming_contracts, 0);
+    assert!(matches!(&grouped.unlinked[..], [Lnv2 { samples: 70, .. }]));
+}
+
 #[tokio::test]
 #[ignore = "requires an empty isolated FMO_LNV2_TEST_DATABASE"]
 async fn postgres_gateway_nodes_read_current_registrations() -> anyhow::Result<()> {
@@ -1129,19 +1218,241 @@ async fn postgres_gateway_nodes_read_current_registrations() -> anyhow::Result<(
         &[&fed, &NODE_A],
     )
     .await?;
-    let lnv2: Vec<(i32, String, Option<String>)> = tx
-        .query(nodes::LNV2_GATEWAYS_SQL, &[&fed])
+    // Two probes and one outgoing contract under the key iroh://a reports
+    let routing = serde_json::json!({"lightning_public_key": NODE_A, "module_public_key": "key-a"});
+    probes::save(
+        &tx,
+        &fed,
+        1,
+        "iroh://a",
+        probes::Observation::Reachable {
+            latency: 10,
+            routing: Some(routing),
+        },
+    )
+    .await?;
+    probes::save(&tx, &fed, 1, "iroh://a", probes::Observation::Unreachable).await?;
+    tx.execute(
+        "INSERT INTO session_times VALUES($1,3,now() AT TIME ZONE 'UTC')",
+        &[&fed],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO fmo_lnv2.contract_activity VALUES($1,1,$2,0,3,'key-a','outgoing',5000)",
+        &[&fed, &vec![9u8; 32]],
+    )
+    .await?;
+
+    let (buckets, hours) = gateways::window_buckets("7d").unwrap();
+    let since = gateways::window_start(chrono::Utc::now(), buckets, hours);
+    // One endpoint per page, so the removed endpoint between registered ones
+    // and the move to the next instance are paged over
+    let lnv2: Vec<_> = nodes::lnv2_gateways(&tx, &fed, since, buckets, hours, 1)
         .await?
-        .iter()
-        .map(|row| (row.get(0), row.get(1), row.get(4)))
+        .into_iter()
+        .map(|gateway| {
+            (
+                gateway.module_instance_id,
+                gateway.api_endpoint,
+                gateway.lightning_public_key,
+                gateway.samples,
+                gateway.online_samples,
+                gateway.activity.outgoing_contracts,
+                gateway.activity.outgoing_msat,
+                gateway.attribution,
+            )
+        })
         .collect();
     assert_eq!(
         lnv2,
         vec![
-            (0, "https://new.example/v1/".to_owned(), None),
-            (1, "iroh://a".to_owned(), Some(NODE_A.to_owned())),
+            (
+                0,
+                "https://new.example/v1/".to_owned(),
+                None,
+                0,
+                0,
+                0,
+                0,
+                "none".to_owned()
+            ),
+            (
+                1,
+                "iroh://a".to_owned(),
+                Some(NODE_A.to_owned()),
+                2,
+                1,
+                1,
+                5000,
+                "self_reported".to_owned()
+            ),
         ]
     );
     tx.rollback().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires FMO_LNV2_TEST_DATABASE with a role that may create databases"]
+async fn postgres_gateway_nodes_read_one_snapshot() -> anyhow::Result<()> {
+    let database = std::env::var("FMO_LNV2_TEST_DATABASE")?;
+    let pool = |dbname: Option<String>| {
+        deadpool_postgres::Config {
+            url: Some(database.clone()),
+            dbname,
+            ..Default::default()
+        }
+        .create_pool(
+            Some(deadpool_postgres::Runtime::Tokio1),
+            tokio_postgres::NoTls,
+        )
+    };
+    // A reader and a writer need committed tables under the fixed schema
+    // names, so this test gets a database of its own and leaves the shared one
+    // to the tests that roll back. A failed assertion skips the cleanup below,
+    // so a run first drops what the last one left.
+    let name = "fmo_lnv2_snapshot_test";
+    let admin = pool(None)?.get().await?;
+    admin
+        .batch_execute(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
+        .await?;
+    admin
+        .batch_execute(&format!("CREATE DATABASE {name}"))
+        .await?;
+    let result = gateway_nodes_snapshot(&pool(Some(name.to_owned()))?).await;
+    admin
+        .batch_execute(&format!("DROP DATABASE {name} WITH (FORCE)"))
+        .await?;
+    result
+}
+
+/// Endpoints a and b of one node both claim key K. Only a is registered, so
+/// K's one contract is a's. A poll then retires a and registers b while the
+/// reader is between pages.
+async fn gateway_nodes_snapshot(pool: &deadpool_postgres::Pool) -> anyhow::Result<()> {
+    let mut writer = pool.get().await?;
+    let mut reader = pool.get().await?;
+    let fed = vec![7u8; 32];
+    let tx = writer.transaction().await?;
+    tx.batch_execute("CREATE SCHEMA fmo_lnv2;
+        CREATE SCHEMA fmo_ln;
+        CREATE TABLE federations(federation_id BYTEA PRIMARY KEY);
+        CREATE TABLE module_cursors(module_kind TEXT PRIMARY KEY,next_session INTEGER);
+        CREATE TABLE session_times(federation_id BYTEA,session_index INTEGER,estimated_session_timestamp TIMESTAMP);
+        CREATE TABLE fmo_ln.gateways(federation_id BYTEA,gateway_id TEXT,node_pub_key TEXT,api_endpoint TEXT,
+            first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),last_seen TIMESTAMPTZ NOT NULL DEFAULT now());").await?;
+    tx.batch_execute(include_str!("../schema/v0.sql")).await?;
+    tx.batch_execute(include_str!("../schema/v1.sql")).await?;
+    tx.batch_execute(include_str!("../schema/v2.sql")).await?;
+    tx.execute("INSERT INTO federations VALUES($1)", &[&fed])
+        .await?;
+    tx.execute(
+        "INSERT INTO fmo_lnv2.gateway_polls VALUES($1,0,now(),1,1)",
+        &[&fed],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO fmo_ln.gateways(federation_id,gateway_id,node_pub_key,api_endpoint) VALUES
+         ($1,'a',$2,'https://a.example/v1/'),($1,'b',$2,'https://b.example/v1/')",
+        &[&fed, &NODE_A],
+    )
+    .await?;
+    let routing = serde_json::json!({"lightning_public_key": NODE_A, "module_public_key": "key-k"});
+    for url in ["https://a.example/v1/", "https://b.example/v1/"] {
+        tx.execute("INSERT INTO fmo_lnv2.gateways(federation_id,module_instance_id,api_endpoint,announcing_guardians) VALUES($1,0,$2,'[0]')",&[&fed,&url]).await?;
+        probes::save(
+            &tx,
+            &fed,
+            0,
+            url,
+            probes::Observation::Reachable {
+                latency: 10,
+                routing: Some(routing.clone()),
+            },
+        )
+        .await?;
+    }
+    tx.execute(
+        "UPDATE fmo_lnv2.gateways SET registered=false WHERE api_endpoint='https://b.example/v1/'",
+        &[],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO session_times VALUES($1,3,now() AT TIME ZONE 'UTC')",
+        &[&fed],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO fmo_lnv2.contract_activity VALUES($1,0,$2,0,3,'key-k','outgoing',5000)",
+        &[&fed, &vec![9u8; 32]],
+    )
+    .await?;
+    tx.commit().await?;
+
+    let (buckets, hours) = gateways::window_buckets("7d").unwrap();
+    let since = gateways::window_start(chrono::Utc::now(), buckets, hours);
+    let credited = |gateways: &[nodes::Lnv2Gateway]| {
+        gateways
+            .iter()
+            .map(|gateway| {
+                (
+                    gateway.api_endpoint.clone(),
+                    gateway.activity.outgoing_contracts,
+                    gateway.activity.outgoing_msat,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // As the handler reads: the snapshot first, then the Lightning v1 rows
+    let read = reader.transaction().await?;
+    read.batch_execute(nodes::SNAPSHOT_SQL).await?;
+    let lnv1 = read
+        .query(lnv1_link::LNV1_GATEWAYS_SQL, &[&fed])
+        .await?
+        .iter()
+        .map(|row| nodes::Lnv1Gateway {
+            gateway_id: row.get(0),
+            node_pub_key: row.get(1),
+            api_endpoint: row.get(2),
+            first_seen: row.get(3),
+            last_seen: row.get(4),
+        })
+        .collect();
+    let before = nodes::lnv2_gateways(&read, &fed, since, buckets, hours, 1).await?;
+    writer
+        .execute(
+            "UPDATE fmo_lnv2.gateways SET registered=(api_endpoint='https://b.example/v1/')
+             WHERE federation_id=$1",
+            &[&fed],
+        )
+        .await?;
+    // A later page of the same response must not see the poll, or it would
+    // credit K's contract to b as well
+    let after = nodes::lnv2_gateways(&read, &fed, since, buckets, hours, 1).await?;
+    assert_eq!(
+        credited(&before),
+        vec![("https://a.example/v1/".to_owned(), 1, 5000)]
+    );
+    assert_eq!(credited(&after), credited(&before));
+    let totals = &nodes::group(lnv1, after).nodes[0].totals;
+    assert_eq!(
+        (
+            totals.activity.outgoing_contracts,
+            totals.activity.outgoing_msat
+        ),
+        (1, 5000)
+    );
+    read.rollback().await?;
+
+    // The next response sees the poll: the contract is b's now
+    let read = reader.transaction().await?;
+    read.batch_execute(nodes::SNAPSHOT_SQL).await?;
+    let fresh = nodes::lnv2_gateways(&read, &fed, since, buckets, hours, 1).await?;
+    assert_eq!(
+        credited(&fresh),
+        vec![("https://b.example/v1/".to_owned(), 1, 5000)]
+    );
+    read.rollback().await?;
     Ok(())
 }
