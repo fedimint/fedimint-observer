@@ -160,6 +160,10 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> Response {
     for (label, status) in [("api", api), ("worker", worker)] {
         body.push_str(&format!("fmo_db_pool_size{{pool=\"{label}\"}} {}\nfmo_db_pool_available{{pool=\"{label}\"}} {}\nfmo_db_pool_waiting{{pool=\"{label}\"}} {}\n", status.size, status.available, status.waiting));
     }
+    state
+        .federation_observer
+        .sources()
+        .render_metrics(&mut body);
     body.push_str(&format!(
         "fmo_workers_healthy {}\n",
         u8::from(state.federation_observer.healthy())

@@ -2,7 +2,7 @@
 //! clients and the task group, starts every layer's background tasks, and
 //! keeps the registry of observed federations. The layers' code lives in its
 //! own files (`ingest.rs`, `projector.rs`, `guardians.rs`, `metadata.rs`,
-//! `summary.rs`, `crate::store`, `crate::recommend`).
+//! `summary.rs`, `crate::store`, `crate::source`, `crate::recommend`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +21,7 @@ use tracing::{info_span, Instrument};
 use crate::config::FederationConfigCache;
 use crate::federation::projector::ProjectorWakeups;
 use crate::module::{ModuleRegistry, Services};
+use crate::source::SourceRegistry;
 use crate::store::db::{self, Federation};
 use crate::task::supervise;
 use crate::util::{query, query_opt, query_value};
@@ -78,6 +79,8 @@ pub struct FederationObserver {
     /// [`Self::federation_api`]
     api_clients: Arc<std::sync::Mutex<ApiClients>>,
     modules: ModuleRegistry,
+    /// Data sources other than the guardians, see [`crate::source`]
+    sources: SourceRegistry,
     /// Tells a federation's module projectors about stored sessions and moved
     /// cursors
     projector_wakeups: ProjectorWakeups,
@@ -93,6 +96,7 @@ impl FederationObserver {
         admin_auth: &str,
         mempool_url: &str,
         modules: ModuleRegistry,
+        sources: SourceRegistry,
         options: &crate::runtime::RuntimeOptions,
     ) -> anyhow::Result<FederationObserver> {
         let connection_pool = crate::runtime::pool(database, options.worker_db_connections, true)?;
@@ -132,6 +136,7 @@ impl FederationObserver {
             federation_config_cache: Default::default(),
             api_clients: Default::default(),
             modules,
+            sources,
             projector_wakeups: Default::default(),
             nostr_pool: Default::default(),
             spawned_federations: Default::default(),
@@ -194,6 +199,7 @@ impl FederationObserver {
             }),
         );
         slf.spawn_module_tasks();
+        slf.spawn_source_tasks();
         let observer = slf.clone();
         slf.task_group.spawn_cancellable(
             "metadata snapshots",
@@ -289,6 +295,10 @@ impl FederationObserver {
 
     pub fn modules(&self) -> &ModuleRegistry {
         &self.modules
+    }
+
+    pub fn sources(&self) -> &SourceRegistry {
+        &self.sources
     }
 
     pub(crate) fn nostr_pool(&self) -> &tokio::sync::OnceCell<nostr_sdk::RelayPool> {

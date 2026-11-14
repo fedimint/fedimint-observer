@@ -75,6 +75,10 @@ impl ClientError {
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
     }
+    /// 429: the caller sends more than its share; retrying shortly may work
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, message)
+    }
     pub fn status(&self) -> StatusCode {
         self.status
     }

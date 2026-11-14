@@ -26,6 +26,7 @@ const CORE_MIGRATIONS: &[&str] = &[
     include_str!("../../schema/v10.sql"),
     include_str!("../../schema/v11.sql"),
     include_str!("../../schema/v12.sql"),
+    include_str!("../../schema/v13.sql"),
 ];
 
 /// Core migrations a database of this build has applied
@@ -96,8 +97,10 @@ impl FederationObserver {
         // Databases that applied the pre-release v12..v14 of this branch,
         // since merged into one v12. A pre-release v12 lacks the
         // session_time_repairs table that v12 now creates.
+        // The released v13 creates source_observations, which the pre-release
+        // v13 and v14 lack.
         let pre_release = match maybe_schema_version {
-            Some(13 | 14) => true,
+            Some(13 | 14) => !self.has_table("source_observations").await?,
             Some(12) => !self.has_table("session_time_repairs").await?,
             _ => false,
         };

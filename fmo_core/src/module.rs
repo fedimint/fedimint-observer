@@ -143,6 +143,11 @@ impl Services {
         self.0.connection().await
     }
 
+    /// The build's data sources, see [`crate::source`]
+    pub(crate) fn sources(&self) -> &crate::source::SourceRegistry {
+        self.0.sources()
+    }
+
     /// Connections to federations' guardians
     pub fn connectors(&self) -> &ConnectorRegistry {
         self.0.connectors()

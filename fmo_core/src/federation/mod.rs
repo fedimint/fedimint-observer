@@ -43,6 +43,7 @@ use crate::{federation, AppState};
 pub fn get_federations_routes() -> Router<AppState> {
     Router::new()
         .merge(crate::recommend::federations_routes())
+        .merge(crate::source::federations_routes())
         .route("/", get(list_observed_federations))
         .route("/", put(add_observed_federation))
         .route("/totals", get(get_federation_totals))
