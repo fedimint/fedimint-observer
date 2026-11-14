@@ -326,3 +326,16 @@ export interface GatewayOverviewSummary {
 }
 
 export type FederationHealth = 'online' | 'degraded' | 'offline';
+
+/**
+ * The newest observation of one kind from a data source other than the
+ * federation's guardians (`GET /federations/:id/sources`). Mirrors
+ * `fmo_api_types::SourceObservation`; `data` is the source's own JSON object.
+ */
+export interface SourceObservation {
+  source: string;
+  kind: string;
+  /** When the source made the observation, RFC 3339 */
+  observed_at: string;
+  data: Record<string, unknown>;
+}

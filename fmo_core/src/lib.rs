@@ -1,35 +1,42 @@
 //! Module-agnostic core of Fedimint Observer.
 //!
-//! An observer build picks its modules and runs:
+//! An observer build picks its modules and data sources and runs:
 //!
 //! ```ignore
 //! FedimintObserver::builder()
 //!     .with_module(MintObserver)
 //!     .with_module(WalletObserver::default())
 //!     .with_module(LnObserver::default())
+//!     .with_source(MyProbe::default())
 //!     .run()
 //!     .await
 //! ```
+//!
+//! Core is layered: collection (`federation/ingest.rs`, `guardians.rs`,
+//! `metadata.rs`, [`source`]), processing (`federation/projector.rs`),
+//! storage (`store`), recommendations (`recommend`) and presentation (`api`,
+//! and the handlers next to their read queries). `ARCHITECTURE.md` at the
+//! repository root describes the layers, the data flow and the extension
+//! points.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Context;
-use axum::routing::{get, put};
-use axum::Router;
 use clap::Parser;
-use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::meta::{ConsensusMetaCache, MetaOverrideCache};
-use crate::config::{get_config_routes, FederationConfigCache};
-use crate::federation::get_federations_routes;
-use crate::federation::nostr::{get_nostr_federations, publish_federation_event};
+use crate::config::FederationConfigCache;
 use crate::federation::observer::FederationObserver;
 use crate::module::{ModuleRegistry, ObserverModule, Services};
+use crate::source::{ObservationSource, SourceRegistry};
 
+/// The HTTP API: assembles every layer's routes
+mod api;
 /// Fedimint config fetching service implementation
 mod config;
 /// HTTP error responses with sanitized internal errors.
@@ -38,9 +45,11 @@ mod federation;
 mod http;
 mod meta;
 pub mod module;
-mod observations;
 mod pagination;
+mod recommend;
 mod runtime;
+pub mod source;
+mod store;
 mod task;
 mod util;
 mod work;
@@ -63,6 +72,12 @@ struct Args {
         default_value = "https://mempool.space/api"
     )]
     mempool_url: String,
+
+    /// JSON document declaring the sources that push observations over HTTP;
+    /// each source's token is read from `FO_SOURCE_TOKEN_<ID>`
+    #[arg(long, env = "FO_SOURCES_FILE")]
+    sources_file: Option<PathBuf>,
+
     #[command(flatten)]
     runtime: runtime::RuntimeOptions,
 }
@@ -88,6 +103,7 @@ impl FedimintObserver {
 #[derive(Default)]
 pub struct FedimintObserverBuilder {
     modules: Vec<Arc<dyn ObserverModule>>,
+    sources: Vec<Arc<dyn ObservationSource>>,
 }
 
 impl FedimintObserverBuilder {
@@ -99,14 +115,25 @@ impl FedimintObserverBuilder {
         self
     }
 
+    /// Collect observations from a source other than the guardians, such as
+    /// an external observability service. Sources that push over HTTP are
+    /// usually declared in `FO_SOURCES_FILE` instead. See [`source`].
+    pub fn with_source(mut self, source: impl ObservationSource) -> Self {
+        self.sources.push(Arc::new(source));
+        self
+    }
+
     /// Parses the command line and environment, then runs the observer and its
     /// API server until it fails
     pub async fn run(self) -> anyhow::Result<()> {
-        run(ModuleRegistry::new(self.modules)?).await
+        run(ModuleRegistry::new(self.modules)?, self.sources).await
     }
 }
 
-async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
+async fn run(
+    modules: ModuleRegistry,
+    mut sources: Vec<Arc<dyn ObservationSource>>,
+) -> anyhow::Result<()> {
     // Dependencies enable both Rustls providers. Select one before any
     // background HTTPS/WebSocket task can initialize a TLS client.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -123,10 +150,20 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
         )
         .init();
 
+    if let Some(path) = &args.sources_file {
+        sources.extend(
+            source::load_push_sources(path, |name| std::env::var(name).ok())?
+                .into_iter()
+                .map(|source| Arc::new(source) as Arc<dyn ObservationSource>),
+        );
+    }
+    let sources = SourceRegistry::new(sources)?;
+
     info!(
         "Observing modules {:?}",
         modules.kinds().collect::<Vec<_>>()
     );
+    info!("Data sources {:?}", sources.ids().collect::<Vec<_>>());
     if args.admin_auth.len() < 16 {
         warn!("FO_ADMIN_AUTH is shorter than 16 characters; use a long random secret");
     }
@@ -137,6 +174,7 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
         &args.admin_auth,
         &args.mempool_url,
         modules.clone(),
+        sources,
         &args.runtime,
     )
     .await?;
@@ -144,41 +182,18 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
     let shutdown_observer = federation_observer.clone();
     let http_metrics = Arc::new(http::HttpMetrics::new(args.runtime.http_concurrency));
 
-    let mut app = Router::new()
-        .route("/health", get(|| async { "Server is up and running!" }))
-        .route("/live", get(|| async { "alive" }))
-        .route("/ready", get(http::ready))
-        .route("/metrics", get(http::metrics))
-        .nest("/config", get_config_routes())
-        .nest("/federations", get_federations_routes())
-        // TODO: move into nostr service/module
-        .route("/nostr/federations", get(get_nostr_federations))
-        .route("/nostr/federations", put(publish_federation_event));
-    // The modules' endpoints, at the same paths core served them from
-    if let Some(routes) = modules.federation_routes() {
-        app = app.nest(
-            "/federations/:federation_id",
-            routes.with_state(services.clone()),
-        );
-    }
-    if let Some(routes) = modules.config_routes() {
-        app = app.nest("/config/:invite", routes.with_state(services));
-    }
-    let app = app
-        .layer(axum::middleware::from_fn_with_state(
-            http_metrics.clone(),
-            http::admission,
-        ))
-        .layer(tower_http::compression::CompressionLayer::new())
-        .layer(tower_http::trace::TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
-        .with_state(AppState {
+    let app = api::router(
+        &modules,
+        services,
+        http_metrics.clone(),
+        AppState {
             federation_config_cache: federation_observer.federation_config_cache().clone(),
             meta_override_cache: Default::default(),
             consensus_meta_cache: Default::default(),
             federation_observer,
             http_metrics,
-        });
+        },
+    );
 
     let listener = tokio::net::TcpListener::bind(&args.bind)
         .await

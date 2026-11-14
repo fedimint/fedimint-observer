@@ -512,3 +512,15 @@ pub struct GatewayV2Activity {
     pub outgoing_refunded: u64,
     pub outgoing_cancelled: u64,
 }
+
+/// The newest observation of one kind from a data source other than the
+/// federation's guardians (`GET /federations/:id/sources`). `data` is the
+/// source's own JSON object, declared public by the build.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceObservation {
+    pub source: String,
+    pub kind: String,
+    /// When the source made the observation
+    pub observed_at: DateTime<Utc>,
+    pub data: serde_json::Value,
+}

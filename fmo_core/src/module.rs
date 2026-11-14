@@ -40,8 +40,8 @@ use fedimint_core::{OutPoint, PeerId, TransactionId};
 
 pub use crate::config::INVITE_FETCH_TIMEOUT;
 pub use crate::error::{AppError as ApiError, ClientError, Result as ApiResult};
-pub use crate::federation::db::Federation;
 use crate::federation::observer::FederationObserver;
+pub use crate::store::db::Federation;
 pub use crate::util::{module_instance_id, query, query_one, query_opt, query_value};
 
 /// The database transaction a session is processed in
@@ -141,6 +141,11 @@ impl Services {
     /// A pooled database connection
     pub async fn connection(&self) -> anyhow::Result<deadpool_postgres::Object> {
         self.0.connection().await
+    }
+
+    /// The build's data sources, see [`crate::source`]
+    pub(crate) fn sources(&self) -> &crate::source::SourceRegistry {
+        self.0.sources()
     }
 
     /// Connections to federations' guardians
