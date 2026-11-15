@@ -84,6 +84,16 @@ test('live registry details win, recorded history keeps its timings, and recorde
   assert.equal(merged[0].last_seen, 'recorded');
 });
 
+test('a live registry answer keeps the recorded uptime, coverage and status', () => {
+  const recorded = { status: 'online', coverage_pct: 99.2, estimated_uptime_pct: 100, estimated_online_minutes: 9995, estimated_offline_minutes: 0, estimated_unknown_minutes: 85 };
+  const [merged] = mergeGatewayData([gateway('a', recorded)], [gateway('a', { lightning_alias: 'new' })]);
+  assert.equal(merged.lightning_alias, 'new');
+  for (const [key, value] of Object.entries(recorded)) assert.equal(merged[key], value, key);
+  const row = toGatewayRow(merged, NOW, 7 * 24 * 60);
+  assert.equal(row.coveragePct, 99.2, 'a merged row is not shown as "No samples"');
+  assert.equal(row.estimatedUnknownMinutes, 85);
+});
+
 test('a normal page shows no banner', () => {
   const selection = selectGatewayData(sources({ observed: [gateway('a')] }));
   assert.equal(selection.warning, null);

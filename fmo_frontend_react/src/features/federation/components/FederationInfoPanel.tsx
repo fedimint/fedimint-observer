@@ -58,6 +58,7 @@ export function FederationInfoPanel({ id, federation, config, showInvite, guardi
           <div>
             <Link
               to={`/federations/${id}/gateways`}
+              state={{ id, name: federation.name ?? null, config: config?.raw } satisfies GatewayPageHandoff}
               className="inline-flex items-center justify-center w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-700 hover:bg-blue-800 rounded-lg focus:ring-4 focus:outline-hidden focus:ring-blue-300 dark:bg-blue-600 dark:hover:bg-blue-700 dark:focus:ring-blue-800"
             >
               Gateway Details

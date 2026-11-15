@@ -74,15 +74,73 @@ export interface GatewayV2Registry {
     online_samples: number;
     avg_latency_ms: number | null;
     availability: GatewayV2AvailabilityBucket[];
-    activity: {
-      incoming_contracts: number; outgoing_contracts: number;
-      incoming_msat: number; outgoing_msat: number;
-      outgoing_claimed: number; outgoing_refunded: number; outgoing_cancelled: number;
-    };
+    activity: GatewayV2Activity;
     /** Module keys are self-reported and unverified; contested keys credit no endpoint */
     attribution: 'self_reported' | 'contested' | 'none';
     contested_keys: number;
   }[];
+}
+
+export interface GatewayV2Activity {
+  incoming_contracts: number;
+  outgoing_contracts: number;
+  incoming_msat: number;
+  outgoing_msat: number;
+  outgoing_claimed: number;
+  outgoing_refunded: number;
+  outgoing_cancelled: number;
+}
+
+/** A federation's current Lightning v1 and v2 gateway registrations, across all module instances, grouped by the Lightning node they name */
+export interface GatewayNodes {
+  activity_caught_up: boolean;
+  /** The period of every registration's numbers */
+  window: GatewayWindow;
+  /** Ordered by `node_pub_key` */
+  nodes: GatewayNode[];
+  /** Registrations without a valid node key, of either protocol */
+  unlinked: GatewayRegistration[];
+}
+
+export interface GatewayNode {
+  /** Compressed public key, lowercase hex */
+  node_pub_key: string;
+  /** Lightning v1 registrations first, then Lightning v2 */
+  registrations: GatewayRegistration[];
+  /** null when no Lightning v2 registration of the node is verified */
+  totals: GatewayNodeTotals | null;
+}
+
+/** Lightning v2 numbers summed over the node's verified registrations only; Lightning v1 numbers aren't included */
+export interface GatewayNodeTotals {
+  samples: number;
+  online_samples: number;
+  activity: GatewayV2Activity;
+}
+
+export type GatewayRegistration = GatewayLnv1Registration | GatewayLnv2Registration;
+
+export interface GatewayLnv1Registration {
+  protocol: 'lnv1';
+  gateway_id: string;
+  api_endpoint: string;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface GatewayLnv2Registration {
+  protocol: 'lnv2';
+  module_instance_id: number;
+  api_endpoint: string;
+  first_seen: string;
+  last_seen: string;
+  status: GatewayV2Registry['gateways'][number]['status'];
+  /** Whether a Lightning v1 registration of the same node announces this exact endpoint; false means its link to the node is unverified */
+  url_matches_lnv1: boolean;
+  samples: number;
+  online_samples: number;
+  activity: GatewayV2Activity;
+  attribution: GatewayV2Registry['gateways'][number]['attribution'];
 }
 
 export interface FederationSummary {

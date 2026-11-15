@@ -1,8 +1,8 @@
 import type { ClientConfig, GatewayV2Registry } from '../types/api';
 
 /**
- * Router state the federation page hands to its Lightning v2 gateway page, so
- * that page needs neither the full federation list nor the config again.
+ * Router state the federation page and the gateway tabs hand to a gateway
+ * page, so that page needs neither the full federation list nor the config again.
  * Direct links arrive without it and fetch both.
  */
 export interface GatewayPageHandoff {
