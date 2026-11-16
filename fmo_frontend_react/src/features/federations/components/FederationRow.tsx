@@ -24,7 +24,7 @@ interface FederationRowProps {
 // Health status messages
 const HEALTH_MESSAGES = {
   degraded: 'Some guardians are offline or out of sync',
-  offline: 'Too few guardians are answering to reach consensus',
+  offline: 'Fewer guardians answer the observer than consensus needs',
 } as const;
 
 // Stable formatter references across row renders.

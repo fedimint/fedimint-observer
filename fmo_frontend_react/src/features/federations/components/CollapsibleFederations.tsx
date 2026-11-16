@@ -8,10 +8,12 @@ interface CollapsibleFederationsProps extends Omit<ComponentProps<typeof Federat
   title: string;
   description: string;
   loading: boolean;
+  /** Federations in this group across all pages */
+  total: number | null;
 }
 
 /** A secondary federation list, collapsed until opened */
-export function CollapsibleFederations({ id, title, description, loading, failed, federations, ...listProps }: CollapsibleFederationsProps) {
+export function CollapsibleFederations({ id, title, description, loading, failed, federations, total, ...listProps }: CollapsibleFederationsProps) {
   const [collapsed, setCollapsed] = useState(true);
 
   return (
@@ -25,8 +27,8 @@ export function CollapsibleFederations({ id, title, description, loading, failed
       >
         <ChevronUpIcon className={`w-3 h-3 shrink-0 inline mr-2 transition-transform ${collapsed ? 'rotate-180' : ''}`} />
         <span>{title}</span>
-        {!loading && !failed && (
-          <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">({federations.length})</span>
+        {!loading && !failed && total !== null && (
+          <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">({total})</span>
         )}
         <span className="mt-1 block text-xs sm:text-sm font-normal text-gray-500 dark:text-gray-400">
           {description}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../../services/api';
+import { ApiError } from '../../../services/http';
 import type { FederationSummary } from '../../../types/api';
 
 const RETRY_MS = 60_000;
@@ -16,15 +17,22 @@ export function useGatewayFederation(id: string) {
 
   useEffect(() => {
     let cancelled = false;
-    api.getFederations()
-      .then((federations) => {
+    api.getFederationSummary(id)
+      .then((summary) => {
         if (cancelled) return;
-        setFederation(federations.find((item) => item.id === id) ?? null);
+        setFederation(summary);
         setFailed(false);
       })
-      .catch(() => {
-        // Only the name and the live lookup need it; the recorded data still shows
-        if (!cancelled) setFailed(true);
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        // 404: the observer does not track it; anything else is retried. Only the
+        // name and the live lookup need it; the recorded data still shows
+        if (error instanceof ApiError && error.status === 404) {
+          setFederation(null);
+          setFailed(false);
+        } else {
+          setFailed(true);
+        }
       });
     return () => {
       cancelled = true;

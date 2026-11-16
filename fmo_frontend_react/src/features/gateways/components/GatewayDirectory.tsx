@@ -1,17 +1,16 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import type { GatewayOverviewSummary, GatewayWindow } from '../../../types/api';
 import { FilterChips } from '../../../components/ui/FilterChips';
-import { buildUptimeStrip, GATEWAY_FILTERS, GATEWAYS_PER_BATCH, type GatewayFilter, type GatewaySort, type GatewayWithStatus, type SortDirection } from '../lib/gatewayRows';
+import { buildUptimeStrip, GATEWAY_FILTERS, type GatewayFilter, type GatewaySort, type GatewayWithStatus, type SortDirection } from '../lib/gatewayRows';
 import { GatewayTableRow } from './GatewayTableRow';
 
 interface GatewayDirectoryProps {
-  /** Every gateway, before filtering */
+  /** One page of gateways, searched, filtered and ordered by the backend */
   rows: GatewayWithStatus[];
-  /** The gateways matching the filters, in order */
-  filteredRows: GatewayWithStatus[];
-  /** How many of `filteredRows` to render */
-  visibleCount: number;
-  onShowMore: () => void;
+  /** Gateways matching the search and filter across all pages */
+  matched: number;
+  /** Rows per page and previous/next */
+  pager: ReactNode;
   summary: GatewayOverviewSummary | null;
   search: string;
   onSearchChange: (search: string) => void;
@@ -27,7 +26,7 @@ interface GatewayDirectoryProps {
   metricsWindow: string;
   /** Dimmed while another window loads */
   switchingWindow: boolean;
-  onViewRaw: (gatewayName: string, raw: Record<string, unknown>) => void;
+  onSelect: (gatewayId: string) => void;
 }
 
 function StatusLegend() {
@@ -43,9 +42,7 @@ function StatusLegend() {
 
 /** The searchable, filterable and sortable table of gateways, rendered in batches */
 export function GatewayDirectory(props: GatewayDirectoryProps) {
-  const { rows, filteredRows, visibleCount, summary, search, filter, sort, direction, switchingWindow } = props;
-  const visibleRows = filteredRows.slice(0, visibleCount);
-  const remaining = filteredRows.length - visibleRows.length;
+  const { rows, matched, summary, search, filter, sort, direction, switchingWindow } = props;
   const strips = useMemo(() => new Map(rows.map((gateway) => [gateway.gateway_id, buildUptimeStrip(gateway)])), [rows]);
 
   return (
@@ -54,7 +51,7 @@ export function GatewayDirectory(props: GatewayDirectoryProps) {
         <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-end">
           <div>
             <h2 className="text-lg font-semibold text-gray-950 dark:text-white">Gateway directory</h2>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{filteredRows.length} of {rows.length} gateways · every row includes its 30-bucket availability strip, ordered oldest to newest.</p>
+            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">{matched} {matched === 1 ? 'gateway' : 'gateways'} · select a gateway for its keys, endpoint, history and raw announcement.</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <input value={search} onChange={(event) => props.onSearchChange(event.target.value)} aria-label="Search gateways" placeholder="Search gateway, node, endpoint" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 outline-hidden focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900 dark:text-white" />
@@ -81,27 +78,25 @@ export function GatewayDirectory(props: GatewayDirectoryProps) {
       </div>
       {/* Phones get one stacked card per gateway instead of a 960px table behind a sideways scroll */}
       <div className="sm:overflow-x-auto">
-        <table className="block w-full text-left text-sm text-gray-500 dark:text-gray-400 sm:table sm:min-w-[960px] sm:table-fixed">
+        <table className="block w-full text-left text-sm text-gray-500 dark:text-gray-400 sm:table sm:min-w-[760px] sm:table-fixed">
           <colgroup className="hidden sm:table-column-group">
-            <col className="w-[22%]" />
-            <col className="w-[28%]" />
-            <col className="w-[17%]" />
-            <col className="w-[17%]" />
-            <col className="w-[16%]" />
+            <col className="w-[30%]" />
+            <col className="w-[36%]" />
+            <col className="w-[20%]" />
+            <col className="w-[14%]" />
           </colgroup>
           <thead className="hidden bg-slate-50 text-xs uppercase tracking-wide text-gray-600 dark:bg-gray-700/70 dark:text-gray-300 sm:table-header-group">
             <tr>
               <th scope="col" className="px-4 py-3 sm:px-5">Gateway</th>
               <th scope="col" className="px-4 py-3 sm:px-5">Availability</th>
               <th scope="col" className="px-4 py-3 sm:px-5">Activity</th>
-              <th scope="col" className="px-4 py-3 sm:px-5">Trust & history</th>
-              <th scope="col" className="px-4 py-3 sm:px-5">Endpoint</th>
+              <th scope="col" className="px-4 py-3 sm:px-5">Trust</th>
             </tr>
           </thead>
           <tbody className="block sm:table-row-group">
-            {filteredRows.length === 0 && (
+            {rows.length === 0 && (
               <tr className="block bg-white border-b dark:bg-gray-800 dark:border-gray-700 sm:table-row">
-                <td colSpan={5} className="block px-4 sm:px-6 py-6 text-center text-gray-500 dark:text-gray-400 sm:table-cell">
+                <td colSpan={4} className="block px-4 sm:px-6 py-6 text-center text-gray-500 dark:text-gray-400 sm:table-cell">
                   {filter !== 'all' || search.trim()
                     ? 'No gateways match these filters.'
                     : summary && summary.retired > 0
@@ -111,7 +106,7 @@ export function GatewayDirectory(props: GatewayDirectoryProps) {
               </tr>
             )}
 
-            {visibleRows.map((gateway) => (
+            {rows.map((gateway) => (
               <GatewayTableRow
                 key={gateway.gateway_id}
                 gateway={gateway}
@@ -120,23 +115,13 @@ export function GatewayDirectory(props: GatewayDirectoryProps) {
                 dataWindow={props.dataWindow}
                 windowMinutes={props.windowMinutes}
                 metricsWindow={props.metricsWindow}
-                onViewRaw={props.onViewRaw}
+                onSelect={() => props.onSelect(gateway.gateway_id)}
               />
             ))}
           </tbody>
         </table>
       </div>
-      {remaining > 0 && (
-        <div className="border-t border-gray-200 p-4 text-center dark:border-gray-700">
-          <button
-            type="button"
-            onClick={props.onShowMore}
-            className="rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-800 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/50 dark:text-blue-200"
-          >
-            Show {Math.min(GATEWAYS_PER_BATCH, remaining)} more ({remaining} remaining)
-          </button>
-        </div>
-      )}
+      <div className="border-t border-gray-200 p-3 sm:px-5 dark:border-gray-700">{props.pager}</div>
     </section>
   );
 }

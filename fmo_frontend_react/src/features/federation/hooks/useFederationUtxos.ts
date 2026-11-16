@@ -3,6 +3,8 @@ import { api } from '../../../services/api';
 import type { GuardianUtxoReport, UtxoView } from '../../../types/api';
 import { errorMessage, isRetryable } from '../../../utils/errors';
 import { useApiResource } from '../../../hooks/useApiResource';
+import { usePageSize } from '../../../hooks/usePageSize';
+import type { PageSize } from '../../../utils/pageSize';
 import { comparedGuardianIds, guardianFindings, toInventoryRows, UTXOS_PER_PAGE } from '../lib/utxos';
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -16,6 +18,7 @@ const NO_GUARDIANS: GuardianUtxoReport[] = [];
 export function useFederationUtxos(id: string, enabled: boolean) {
   const [view, setView] = useState<UtxoView>('all');
   const [page, setPage] = useState(1);
+  const [pageSize, choosePageSize] = usePageSize('utxos', UTXOS_PER_PAGE);
   const [search, setSearch] = useState('');
   // The search sent to the server, once typing pauses
   const [query, setQuery] = useState('');
@@ -34,8 +37,8 @@ export function useFederationUtxos(id: string, enabled: boolean) {
   // A newer view, search or page aborts the request it replaces. Rows from an
   // earlier request would read as the answer to a failed one, so an error clears them.
   const resource = useApiResource(
-    async (signal) => ({ id, response: await api.getFederationUtxos(id, { view, search: query, page, limit: UTXOS_PER_PAGE }, signal) }),
-    [id, view, query, page],
+    async (signal) => ({ id, response: await api.getFederationUtxos(id, { view, search: query, page, limit: pageSize }, signal) }),
+    [id, view, query, page, pageSize],
     { enabled, resetOnError: true, label: 'UTXOs' },
   );
   const data = resource.data?.id === id ? resource.data.response : null;
@@ -72,7 +75,13 @@ export function useFederationUtxos(id: string, enabled: boolean) {
     totalRows: data?.total_rows ?? 0,
     pageCount,
     currentPage,
-    pageStart: (currentPage - 1) * (data?.limit ?? UTXOS_PER_PAGE),
+    pageStart: (currentPage - 1) * (data?.limit ?? pageSize),
+    pageSize,
+    /** Another page size starts on the first page */
+    setPageSize: (next: PageSize) => {
+      choosePageSize(next);
+      setPage(1);
+    },
     view,
     query,
     search,
