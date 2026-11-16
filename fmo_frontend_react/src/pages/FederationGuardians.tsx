@@ -119,8 +119,10 @@ export function FederationGuardians() {
           </div>
         </Card>
 
-        <div className="grid gap-4 sm:gap-5 xl:grid-cols-2">
-          <Card aria-labelledby="connectivity-title">
+        {/* minmax(0, 1fr) columns: a wide matrix or table scrolls inside its card
+            instead of widening the page, e.g. with 10+ guardians on a phone */}
+        <div className="grid grid-cols-1 gap-4 sm:gap-5 xl:grid-cols-2">
+          <Card aria-labelledby="connectivity-title" className="min-w-0">
             <CardHeader
               id="connectivity-title"
               title="Peer connectivity"
@@ -129,7 +131,7 @@ export function FederationGuardians() {
             {live.data ? <ConnectivityMatrix matrix={matrix} /> : <LoadingBlock label="Loading peer connectivity" rows={3} />}
           </Card>
 
-          <Card aria-labelledby="bindings-title">
+          <Card aria-labelledby="bindings-title" className="min-w-0">
             <CardHeader
               id="bindings-title"
               title={<span className="inline-flex items-center gap-2">Manifold seat bindings <span className="rounded bg-manifold-soft px-1.5 py-px text-[0.6rem] font-semibold uppercase tracking-wide text-manifold-ink">Manifold</span></span>}
