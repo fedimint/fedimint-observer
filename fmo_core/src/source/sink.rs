@@ -134,11 +134,7 @@ pub(super) fn validate(
             "Observation data must be a JSON object",
         ));
     }
-    if json_depth_exceeds(data, MAX_JSON_DEPTH) {
-        return Err(ClientError::bad_request(format!(
-            "Observation data nests deeper than {MAX_JSON_DEPTH} levels"
-        )));
-    }
+    check_json(data, MAX_JSON_DEPTH)?;
     // Serializing a Value can't fail
     let size = serde_json::to_vec(data).map_or(usize::MAX, |json| json.len());
     if size > declared.max_bytes {
@@ -161,22 +157,33 @@ pub(super) fn validate(
     Ok(())
 }
 
-/// Whether the JSON nests deeper than `max` arrays and objects. Iterative, so
-/// hostile input can't overflow the stack.
-fn json_depth_exceeds(value: &Value, max: usize) -> bool {
+/// Checks every value and key of the JSON: it must nest at most `max_depth`
+/// arrays and objects, and no string may hold a NUL character, which
+/// PostgreSQL's `jsonb` can't store. Iterative, so hostile input can't
+/// overflow the stack.
+fn check_json(value: &Value, max_depth: usize) -> Result<(), ClientError> {
+    let nul = || ClientError::bad_request("Observation data holds a NUL character");
     let mut stack = vec![(value, 1)];
     while let Some((value, depth)) = stack.pop() {
         let children: Box<dyn Iterator<Item = &Value>> = match value {
+            Value::String(text) if text.contains('\0') => return Err(nul()),
             Value::Array(items) => Box::new(items.iter()),
-            Value::Object(fields) => Box::new(fields.values()),
+            Value::Object(fields) => {
+                if fields.keys().any(|key| key.contains('\0')) {
+                    return Err(nul());
+                }
+                Box::new(fields.values())
+            }
             _ => continue,
         };
-        if depth > max {
-            return true;
+        if depth > max_depth {
+            return Err(ClientError::bad_request(format!(
+                "Observation data nests deeper than {max_depth} levels"
+            )));
         }
         stack.extend(children.map(|child| (child, depth + 1)));
     }
-    false
+    Ok(())
 }
 
 /// Stores the observation unless one made at the same time or later is

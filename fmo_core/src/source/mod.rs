@@ -18,11 +18,12 @@
 //!
 //! Whichever way it arrives, every observation goes through the same checks
 //! before it is stored: the kind must be declared, the data a JSON object
-//! within the kind's size and depth limits, the observation time neither in
-//! the future nor past the kind's retention, and the federation observed. A
-//! write older than the stored observation is ignored, so retries and
-//! reordered deliveries can't replace newer data. Each source has its own
-//! write concurrency, so one source can't take the database pool.
+//! within the kind's size and depth limits and without NUL characters, the
+//! observation time neither in the future nor past the kind's retention, and
+//! the federation observed. A write older than the stored observation is
+//! ignored, so retries and reordered deliveries can't replace newer data. Each
+//! source has its own write concurrency, so one source can't take the database
+//! pool.
 //!
 //! Kinds declared `public` are served by `GET /federations/:id/sources`
 //! verbatim. Core can check the shape of the data but not its meaning: a

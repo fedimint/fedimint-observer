@@ -103,8 +103,8 @@ newest observation of each kind per federation in `source_observations`.
 
 Both paths share one validated write (`source/sink.rs`): the kind must be
 declared, the data must be a JSON object within the kind's size and depth
-limits, the time must be neither in the future nor past retention, and the
-federation must be observed. The newest observation wins, so retries are safe.
+limits and without NUL characters, the time must be neither in the future nor
+past retention, and the federation must be observed. The newest observation wins, so retries are safe.
 Each source has its own write concurrency. Kinds declared public are served
 verbatim by `GET /federations/:id/sources`. Kinds that aren't public are only
 for the build's own code (`Services::source_observation`). Core can't check

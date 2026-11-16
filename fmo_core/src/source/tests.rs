@@ -161,6 +161,31 @@ fn deeply_nested_observations_are_rejected() {
 }
 
 #[test]
+fn observations_with_nul_characters_are_rejected() {
+    // PostgreSQL's jsonb can't store U+0000, in a value or a key, at any depth
+    let kind = SourceKind::new("k");
+    let now = Utc::now();
+    for data in [
+        json!({ "name": "a\u{0}b" }),
+        json!({ "a\u{0}b": 1 }),
+        json!({ "list": [1, { "deep": ["\u{0}"] }] }),
+        json!({ "outer": { "\u{0}": null } }),
+    ] {
+        assert_eq!(
+            status(validate(Some(&kind), "k", now, &data, now)),
+            Some(400),
+            "{data}"
+        );
+    }
+    // As the push endpoint parses it from an escape
+    let pushed: serde_json::Value = serde_json::from_str(r#"{"x": "\u0000"}"#).expect("valid");
+    assert_eq!(
+        status(validate(Some(&kind), "k", now, &pushed, now)),
+        Some(400)
+    );
+}
+
+#[test]
 fn push_tokens_verify_and_stay_secret() {
     let token = PushToken::new(TOKEN).expect("valid");
     assert!(token.verify(TOKEN));
