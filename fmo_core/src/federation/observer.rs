@@ -223,6 +223,36 @@ impl FederationObserver {
         Ok(slf)
     }
 
+    /// An observer over `pool` that runs no background tasks and makes no
+    /// outbound connections, for tests of code that needs [`Services`]
+    #[cfg(test)]
+    pub(crate) async fn for_tests(
+        pool: deadpool_postgres::Pool,
+        sources: SourceRegistry,
+    ) -> anyhow::Result<FederationObserver> {
+        Ok(FederationObserver {
+            worker_pool: pool.clone(),
+            connection_pool: pool,
+            worker_lease: None,
+            work_budget: Arc::new(tokio::sync::Semaphore::new(1)),
+            external_io: Arc::new(tokio::sync::Semaphore::new(1)),
+            work_notifications: Default::default(),
+            health_retention_days: 0,
+            admin_auth: String::new(),
+            // Nothing in tests calls it; connections open on first use
+            esplora: esplora_client::Builder::new("http://127.0.0.1:9").build_async()?,
+            task_group: TaskGroup::default(),
+            connectors: ConnectorRegistry::build_from_testing_env()?.bind().await?,
+            federation_config_cache: Default::default(),
+            api_clients: Default::default(),
+            modules: ModuleRegistry::new(Vec::new())?,
+            sources,
+            projector_wakeups: Default::default(),
+            nostr_pool: Default::default(),
+            spawned_federations: Default::default(),
+        })
+    }
+
     pub fn connectors(&self) -> &ConnectorRegistry {
         &self.connectors
     }

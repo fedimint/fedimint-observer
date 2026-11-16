@@ -359,13 +359,12 @@ fn valid_name(name: &str, max_len: usize, allowed: impl Fn(u8) -> bool) -> bool 
 }
 
 impl FederationObserver {
-    /// Runs each pulling source's task and the retention of their
-    /// observations. Worker only.
+    /// Runs each pulling source's task and the retention of all stored
+    /// observations. Worker only. Retention runs even when the build declares
+    /// no sources, so rows a deploy no longer declares still go after their
+    /// grace period.
     pub(crate) fn spawn_source_tasks(&self) {
         let sources = self.sources().clone();
-        if sources.0.is_empty() {
-            return;
-        }
         let services = Services::new(self.clone());
         for source in sources.iter() {
             let ctx = SourceContext {

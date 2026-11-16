@@ -1,17 +1,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use chrono::Utc;
+use fedimint_core::config::FederationId;
+use fedimint_core::encoding::Encodable;
 use serde_json::json;
 
 use super::api::authenticate;
 use super::config::parse_push_sources;
-use super::sink::validate;
+use super::sink::{prune, upsert, validate};
 use super::{
-    ObservationSource, PushSource, PushToken, SourceKind, SourceRegistry, MAX_JSON_DEPTH,
+    ObservationSource, PushSource, PushToken, Recorded, SourceKind, SourceRegistry, MAX_JSON_DEPTH,
     MAX_OBSERVATION_BYTES,
 };
 use crate::error::ClientError;
+use crate::federation::observer::FederationObserver;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
@@ -254,58 +258,105 @@ fn metrics_count_each_sources_writes() {
     assert!(empty.is_empty());
 }
 
+/// A schema of a test's own in `FMO_SOURCES_TEST_DATABASE`, holding the
+/// tables sources use
+struct TestSchema {
+    database: String,
+    name: String,
+    client: tokio_postgres::Client,
+    driver: tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>,
+}
+
+impl TestSchema {
+    /// Tests run in parallel, so each names its own schema
+    async fn new(test: &str) -> anyhow::Result<Self> {
+        let database = std::env::var("FMO_SOURCES_TEST_DATABASE")?;
+        let (client, driver) = tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
+        let driver = tokio::spawn(driver);
+        let name = format!("fmo_sources_test_{}_{test}", std::process::id());
+        // One implicit transaction: a failing migration leaves no schema
+        client
+            .batch_execute(&format!(
+                "CREATE SCHEMA {name}; SET search_path TO {name};
+                 CREATE TABLE schema_version(version INTEGER);
+                 CREATE TABLE federations(federation_id BYTEA PRIMARY KEY, config BYTEA NOT NULL);
+                 {}",
+                include_str!("../../schema/v13.sql")
+            ))
+            .await?;
+        Ok(Self {
+            database,
+            name,
+            client,
+            driver,
+        })
+    }
+
+    /// An observer whose connections see only this schema
+    async fn observer(&self, sources: SourceRegistry) -> anyhow::Result<FederationObserver> {
+        let pool = deadpool_postgres::Config {
+            url: Some(self.database.clone()),
+            options: Some(format!("-c search_path={}", self.name)),
+            ..Default::default()
+        }
+        .create_pool(
+            Some(deadpool_postgres::Runtime::Tokio1),
+            tokio_postgres::NoTls,
+        )?;
+        FederationObserver::for_tests(pool, sources).await
+    }
+
+    async fn finish(self, result: anyhow::Result<()>) -> anyhow::Result<()> {
+        self.client
+            .batch_execute(&format!("DROP SCHEMA {} CASCADE", self.name))
+            .await?;
+        drop(self.client);
+        self.driver.await??;
+        result
+    }
+}
+
+async fn observe(
+    client: &tokio_postgres::Client,
+    federation_id: FederationId,
+) -> anyhow::Result<()> {
+    client
+        .execute(
+            "INSERT INTO federations VALUES ($1, '')",
+            &[&federation_id.consensus_encode_to_vec()],
+        )
+        .await?;
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore = "requires an isolated FMO_SOURCES_TEST_DATABASE"]
 async fn postgres_newest_observation_wins_and_retention_prunes() -> anyhow::Result<()> {
-    use fedimint_core::config::FederationId;
-    use fedimint_core::encoding::Encodable;
-
-    use super::sink::{prune, upsert};
-    use super::Recorded;
-
-    let database = std::env::var("FMO_SOURCES_TEST_DATABASE")?;
-    let (client, driver) = tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
-    let driver = tokio::spawn(driver);
-    // Everything lands in a schema of this test's own
-    let schema = format!("fmo_sources_test_{}", std::process::id());
-    client
-        .batch_execute(&format!(
-            "CREATE SCHEMA {schema}; SET search_path TO {schema};
-             CREATE TABLE schema_version(version INTEGER);
-             CREATE TABLE federations(federation_id BYTEA PRIMARY KEY, config BYTEA NOT NULL);"
-        ))
-        .await?;
+    let db = TestSchema::new("upsert").await?;
     let result = async {
-        client
-            .batch_execute(include_str!("../../schema/v13.sql"))
-            .await?;
+        let client = &db.client;
         let federation_id = FederationId::dummy();
-        client
-            .execute(
-                "INSERT INTO federations VALUES ($1, '')",
-                &[&federation_id.consensus_encode_to_vec()],
-            )
-            .await?;
+        observe(client, federation_id).await?;
         let now = Utc::now();
         let earlier = now - chrono::Duration::minutes(10);
         let data = json!({ "p50_ms": 1 });
 
         assert_eq!(
-            upsert(&client, federation_id, "probe", "latency", earlier, &data).await?,
+            upsert(client, federation_id, "probe", "latency", earlier, &data).await?,
             Recorded::Stored
         );
         // Newer replaces, older and same-time retries don't
         let newer = json!({ "p50_ms": 2 });
         assert_eq!(
-            upsert(&client, federation_id, "probe", "latency", now, &newer).await?,
+            upsert(client, federation_id, "probe", "latency", now, &newer).await?,
             Recorded::Stored
         );
         assert_eq!(
-            upsert(&client, federation_id, "probe", "latency", earlier, &data).await?,
+            upsert(client, federation_id, "probe", "latency", earlier, &data).await?,
             Recorded::Superseded
         );
         assert_eq!(
-            upsert(&client, federation_id, "probe", "latency", now, &data).await?,
+            upsert(client, federation_id, "probe", "latency", now, &data).await?,
             Recorded::Superseded
         );
         let stored: serde_json::Value = client
@@ -315,11 +366,11 @@ async fn postgres_newest_observation_wins_and_retention_prunes() -> anyhow::Resu
         assert_eq!(stored, newer);
 
         // The table checks what the registry checks
-        assert!(upsert(&client, federation_id, "Bad", "latency", now, &data)
+        assert!(upsert(client, federation_id, "Bad", "latency", now, &data)
             .await
             .is_err());
         assert!(
-            upsert(&client, federation_id, "probe", "latency", now, &json!([1]))
+            upsert(client, federation_id, "probe", "latency", now, &json!([1]))
                 .await
                 .is_err()
         );
@@ -340,7 +391,7 @@ async fn postgres_newest_observation_wins_and_retention_prunes() -> anyhow::Resu
             "probe",
             vec![SourceKind::new("latency").retention(Duration::from_secs(60 * 60))],
         )])?;
-        assert_eq!(prune(&client, &sources).await?, 2);
+        assert_eq!(prune(client, &sources).await?, 2);
         let left: Vec<String> = client
             .query("SELECT source || '/' || kind FROM source_observations", &[])
             .await?
@@ -351,10 +402,46 @@ async fn postgres_newest_observation_wins_and_retention_prunes() -> anyhow::Resu
         anyhow::Ok(())
     }
     .await;
-    client
-        .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-        .await?;
-    drop(client);
-    driver.await??;
-    result
+    db.finish(result).await
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated FMO_SOURCES_TEST_DATABASE"]
+async fn postgres_retention_runs_without_sources() -> anyhow::Result<()> {
+    let db = TestSchema::new("retention").await?;
+    let result = async {
+        observe(&db.client, FederationId::dummy()).await?;
+        // Rows of a source a deploy no longer declares, one past its grace
+        db.client
+            .batch_execute(
+                "INSERT INTO source_observations (federation_id, source, kind, data, observed_at, received_at)
+                 SELECT federation_id, 'gone', 'old', '{}', now() - INTERVAL '40 days', now() - INTERVAL '40 days'
+                 FROM federations;
+                 INSERT INTO source_observations (federation_id, source, kind, data, observed_at)
+                 SELECT federation_id, 'gone', 'recent', '{}', now() FROM federations;",
+            )
+            .await?;
+        let observer = db.observer(registry(vec![])?).await?;
+        observer.spawn_source_tasks();
+        let pruned = async {
+            loop {
+                let left: Vec<String> = db
+                    .client
+                    .query("SELECT source || '/' || kind FROM source_observations", &[])
+                    .await?
+                    .iter()
+                    .map(|row| row.get(0))
+                    .collect();
+                if left == ["gone/recent"] {
+                    return anyhow::Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        let waited = tokio::time::timeout(Duration::from_secs(10), pruned).await;
+        observer.task_group().shutdown();
+        waited.context("Retention didn't run in a build without sources")?
+    }
+    .await;
+    db.finish(result).await
 }
