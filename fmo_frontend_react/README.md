@@ -81,7 +81,7 @@ sense: a request the server rejected (4xx) fails the same way again, except
 ```bash
 npm run lint
 npm run build   # type-checks with `tsc -b`, then bundles into dist/
-npm run test:config && npm run test:pagination && npm run test:charts && npm run test:format && npm run test:gateways && npm run test:http && npm run test:guardians && npm run test:manifold
+npm run test:config && npm run test:pagination && npm run test:charts && npm run test:format && npm run test:gateways && npm run test:http && npm run test:guardians && npm run test:manifold && npm run test:lookups
 ```
 
 The API types in `src/types/api.ts` mirror the backend's `fmo_api_types` crate

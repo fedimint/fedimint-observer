@@ -15,7 +15,8 @@
     "test:gateways": "node --experimental-strip-types --test scripts/test-gateways.mjs",
     "test:http": "node --experimental-strip-types --test scripts/test-http.mjs",
     "test:guardians": "node --experimental-strip-types --test scripts/test-guardians.mjs",
-    "test:manifold": "node --experimental-strip-types --test scripts/test-manifold.mjs"
+    "test:manifold": "node --experimental-strip-types --test scripts/test-manifold.mjs",
+    "test:lookups": "node --experimental-strip-types --test scripts/test-lookups.mjs"
   },
   "dependencies": {
     "echarts": "^6.1.0",

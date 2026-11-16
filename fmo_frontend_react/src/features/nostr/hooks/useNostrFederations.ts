@@ -21,16 +21,21 @@ export function useNostrFederations(group: NostrGroup, limit: number) {
   const pages = useCursorPages({ fetchPage, nextCursor: nextAfter, refreshMs: REFRESH_MS });
   const [lookedUpNames, setLookedUpNames] = useState<Map<string, string>>(() => new Map());
   const rows = pages.page?.federations;
+  // The rows without a name, as a value: each refresh of page 1 brings a new
+  // array, but the lookups only start again when the rows to name change.
+  const unnamedKey = rows
+    ? JSON.stringify(rows.filter((fed) => !fed.name).map(({ id, invite }) => [id, invite]))
+    : null;
 
   useEffect(() => {
-    if (!rows) return;
+    if (unnamedKey === null) return;
     const controller = new AbortController();
-    const unnamed = rows.filter((fed) => !fed.name).map(({ id, invite }) => ({ id, name: null, invite }));
+    const unnamed = (JSON.parse(unnamedKey) as [string, string][]).map(([id, invite]) => ({ id, name: null, invite }));
     void lookUpNames(unnamed, controller.signal, (names) => {
       setLookedUpNames((previous) => new Map([...previous, ...names]));
     });
     return () => controller.abort();
-  }, [rows]);
+  }, [unnamedKey]);
 
   const federations = useMemo<NostrFederation[]>(
     () => (rows ?? []).map((fed) => ({
