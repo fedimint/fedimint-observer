@@ -11,14 +11,17 @@ untrusted sources. Treat every input as hostile.
 ## Privacy
 
 Fedimint's value rests on ecash privacy, and the observer is public. Never
-publish data that can tell who holds or moves how many sats.
+publish data that can make an end user identifiable: nothing that tells which
+user holds or moves how many sats.
 
-- For any new metric or endpoint, ask whether it can point at one user or one
-  operator. Publish totals, percentiles and buckets, not individual rows tied
-  to a time.
+- For any new metric or endpoint, ask whether it can point at one end user.
+  Federation totals, percentiles and buckets are safe.
+- Per-operator figures are allowed: gateways and other operators run public
+  infrastructure, so a gateway's volume or contract counts may be published.
 - No lookups by payment hash or other per-payment identifiers.
-- Bucket and delay per-gateway flows and liquidity; suppress figures built
-  from too few transactions, as in small federations.
+- When a figure covers only a handful of transactions, as in a small
+  federation or a quiet window, say so in the PR: anyone who already knows one
+  of those payments can recognise it.
 - Describe the privacy impact in the PR when a change publishes new data.
 
 ## Untrusted inputs
