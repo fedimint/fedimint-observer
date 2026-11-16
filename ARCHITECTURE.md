@@ -125,7 +125,11 @@ API clients, one per set of guardians (see `CLAUDE.md`).
 
 ## Privacy
 
-Observer is public, and Fedimint's value rests on ecash privacy. Publish
-federation-level totals, percentiles and buckets. Never publish anything that
-ties funds or payments to one user or one operator, and suppress figures
-built from too few transactions.
+Observer is public, and Fedimint's value rests on ecash privacy. Nothing it
+publishes may make an end user identifiable: no figure that tells which user
+holds or moves how many sats, and no lookup by payment hash or another
+per-payment identifier. Gateways and other operators run public
+infrastructure, so per-operator figures, such as a gateway's volume or
+contract counts, may be published. When a figure covers only a handful of
+transactions, as in a small federation or a quiet window, say so in the PR:
+anyone who already knows one of those payments can recognise it.
