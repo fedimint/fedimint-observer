@@ -13,11 +13,12 @@ use super::api::{authenticate, federation_observations};
 use super::config::parse_push_sources;
 use super::sink::{prune, upsert, validate};
 use super::{
-    ObservationSource, PushSource, PushToken, Recorded, SourceKind, SourceRegistry, MAX_JSON_DEPTH,
-    MAX_OBSERVATION_BYTES,
+    ObservationSink, ObservationSource, PushSource, PushToken, Recorded, SourceKind,
+    SourceRegistry, MAX_JSON_DEPTH, MAX_OBSERVATION_BYTES,
 };
 use crate::error::ClientError;
 use crate::federation::observer::FederationObserver;
+use crate::module::Services;
 use crate::AppState;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
@@ -251,11 +252,7 @@ fn sources_file_needs_tokens_and_known_fields() {
 }
 
 #[test]
-fn metrics_count_each_sources_writes() {
-    let sources = registry(vec![pushing("probe", vec![SourceKind::new("k")])]).expect("valid");
-    let mut body = String::new();
-    sources.render_metrics(&mut body);
-    assert!(body.contains("fmo_source_observations_total{source=\"probe\",result=\"stored\"} 0"));
+fn metrics_are_empty_without_sources() {
     let mut empty = String::new();
     registry(vec![]).expect("valid").render_metrics(&mut empty);
     assert!(empty.is_empty());
@@ -444,6 +441,72 @@ async fn postgres_retention_runs_without_sources() -> anyhow::Result<()> {
         let waited = tokio::time::timeout(Duration::from_secs(10), pruned).await;
         observer.task_group().shutdown();
         waited.context("Retention didn't run in a build without sources")?
+    }
+    .await;
+    db.finish(result).await
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated FMO_SOURCES_TEST_DATABASE"]
+async fn postgres_sink_counts_writes_and_rejects_invalid_ones() -> anyhow::Result<()> {
+    let db = TestSchema::new("sink").await?;
+    let result = async {
+        let federation_id = FederationId::dummy();
+        observe(&db.client, federation_id).await?;
+        let sources = registry(vec![pushing("probe", vec![SourceKind::new("latency")])])?;
+        let observer = db.observer(sources.clone()).await?;
+        let source = sources.get("probe").context("declared")?.clone();
+        let sink = ObservationSink::new(source, Services::new(observer));
+        let now = Utc::now();
+        let stored = json!({ "p50_ms": 1 });
+
+        assert_eq!(
+            sink.record(federation_id, "latency", now, &stored).await?,
+            Recorded::Stored
+        );
+        let earlier = now - chrono::Duration::minutes(10);
+        assert_eq!(
+            sink.record(federation_id, "latency", earlier, &json!({ "p50_ms": 2 }))
+                .await?,
+            Recorded::Superseded
+        );
+        // Each is a client error, not a failed insert: NUL characters, which
+        // jsonb can't store, an undeclared kind, an unobserved federation
+        let unobserved: FederationId = "11".repeat(32).parse()?;
+        for (federation_id, kind, data, expected) in [
+            (federation_id, "latency", json!({ "x": "\u{0}" }), 400),
+            (federation_id, "latency", json!({ "\u{0}": 1 }), 400),
+            (federation_id, "other", json!({}), 400),
+            (unobserved, "latency", json!({}), 404),
+        ] {
+            let error = sink
+                .record(federation_id, kind, now, &data)
+                .await
+                .expect_err("rejected");
+            assert_eq!(
+                error
+                    .downcast_ref::<ClientError>()
+                    .map(|error| error.status().as_u16()),
+                Some(expected),
+                "{data}: {error:#}"
+            );
+        }
+        let kept: serde_json::Value = db
+            .client
+            .query_one("SELECT data FROM source_observations", &[])
+            .await?
+            .get(0);
+        assert_eq!(kept, stored);
+
+        let mut body = String::new();
+        sources.render_metrics(&mut body);
+        for (result, count) in [("stored", 1), ("superseded", 1), ("rejected", 4)] {
+            let line = format!(
+                "fmo_source_observations_total{{source=\"probe\",result=\"{result}\"}} {count}\n"
+            );
+            assert!(body.contains(&line), "{line} in {body}");
+        }
+        anyhow::Ok(())
     }
     .await;
     db.finish(result).await
