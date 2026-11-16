@@ -43,8 +43,6 @@ export function useGatewayOverview(id: string, timeWindow: GatewayWindow, list: 
   const [error, setError] = useState<LoadError | null>(null);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(() => Date.now());
-  const [reloadKey, setReloadKey] = useState(0); // Try again
-  const [refreshKey, setRefreshKey] = useState(0); // background refresh
   const loadInFlight = useRef(false);
   const lastLoadAt = useRef(0); // when the last load finished
 
@@ -74,6 +72,8 @@ export function useGatewayOverview(id: string, timeWindow: GatewayWindow, list: 
       })
       .catch((err: unknown) => {
         if (signal.aborted) return;
+        // A failed Next or Previous stays on the page shown, which the next refresh reloads
+        dispatch({ type: 'failed', key: listKey, cursors: requested });
         setError({
           window: timeWindow,
           message: errorMessage(err),
@@ -92,7 +92,7 @@ export function useGatewayOverview(id: string, timeWindow: GatewayWindow, list: 
       loadInFlight.current = false;
     };
     // `listKey` is derived from the query values listed here
-  }, [id, timeWindow, search, status, sort, dir, limit, listKey, requested, attempt, reloadKey, refreshKey]);
+  }, [id, timeWindow, search, status, sort, dir, limit, listKey, requested, attempt]);
 
   // Keep statuses and "seen" times current, and refresh a minute after the last load
   // finished. A load in flight is never interrupted, so slow windows can complete.
@@ -100,12 +100,12 @@ export function useGatewayOverview(id: string, timeWindow: GatewayWindow, list: 
     const clock = setInterval(() => setNow(Date.now()), CLOCK_MS);
     const refresh = setInterval(() => {
       if (document.visibilityState !== 'visible' || loadInFlight.current) return;
-      if (Date.now() - lastLoadAt.current >= REFRESH_INTERVAL_MS) setRefreshKey((key) => key + 1);
+      if (Date.now() - lastLoadAt.current >= REFRESH_INTERVAL_MS) dispatch({ type: 'refresh' });
     }, REFRESH_CHECK_MS);
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return;
       setNow(Date.now());
-      if (!loadInFlight.current && Date.now() - lastLoadAt.current > STALE_ON_SHOW_MS) setRefreshKey((key) => key + 1);
+      if (!loadInFlight.current && Date.now() - lastLoadAt.current > STALE_ON_SHOW_MS) dispatch({ type: 'refresh' });
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
@@ -127,7 +127,8 @@ export function useGatewayOverview(id: string, timeWindow: GatewayWindow, list: 
     loading,
     updatedAt: data?.computedAt ?? null,
     now,
-    reload: () => setReloadKey((key) => key + 1),
+    /** Try again: repeats the last request, a failed Next or Previous included */
+    reload: () => dispatch({ type: 'retry' }),
     /** 1-based number of the page shown; moves only once the page asked for arrives */
     pageNumber: shownPageNumber(paged),
     hasNext: Boolean(data?.page?.next_after),
