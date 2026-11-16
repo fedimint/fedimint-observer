@@ -1,6 +1,20 @@
-# AGENTS.md
+# Agent Instructions
 
-This file provides guidance to AI coding agents (Claude Code, Codex, Cursor and others) when working with code in this repository.
+This file guides AI coding agents (Claude Code, Codex, Cursor and others) and
+human contributors working in this repository.
+
+Load these project-local skills (in `.agents/skills/`) when their descriptions
+match the work:
+
+- `observer-coding-style`: before writing, modifying, or reviewing Rust or
+  frontend code, including database queries and migrations.
+- `observer-security`: before changing public or admin API endpoints,
+  authentication, outbound connections (guardians, gateways, invite codes),
+  or anything that publishes per-federation, per-gateway or per-user data.
+- `pr-submissions-checklist`: before creating or updating a pull request.
+
+Keep `OPERATIONS.md` current when a change affects deployment, configuration
+(`FO_*` variables), limits, egress, monitoring or the upgrade path.
 
 ## Project Overview
 
@@ -60,13 +74,6 @@ just pg_restore BACKUP_FILE
 ```bash
 just test_package fmo_core
 ```
-
-## Pull Requests
-- Branch from `upstream/master` and keep each PR to one change.
-- Use conventional commit titles: `feat(frontend): ...`, `fix(health): ...`, `perf(gateways): ...`, `chore: ...`.
-- Run `just final-check` before opening the PR. For changes under `fmo_frontend_react/`, also run `npm run lint` and `npm run build` there, plus any `npm run test:*` script covering the code you touched.
-- **Frontend changes must include screenshots** in the PR description: every page or component that changed, before and after, in light and dark mode, and at phone width when the layout is affected. PRs without them will be asked for them in review.
-- Describe what changed, why, and how it was tested.
 
 ## Architecture Overview
 
