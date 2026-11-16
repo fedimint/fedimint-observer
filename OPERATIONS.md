@@ -1,7 +1,7 @@
 # Operating the observer
 
 What an operator needs to deploy, upgrade and monitor the observer. How the
-code works is documented in the code and in `CLAUDE.md`.
+code works is documented in the code and in `AGENTS.md`.
 
 ## Processes
 
