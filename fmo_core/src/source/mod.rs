@@ -27,8 +27,9 @@
 //!
 //! Kinds declared `public` are served by `GET /federations/:id/sources`
 //! verbatim. Core can check the shape of the data but not its meaning: a
-//! source must only publish federation-level figures, never anything that
-//! points at one user's or one operator's funds or payments. Kinds that are
+//! source must never publish anything that makes an end user identifiable
+//! (see "Privacy" in `ARCHITECTURE.md`); per-operator figures, such as a
+//! gateway's, are fine. Kinds that are
 //! not public are kept for the build's own code
 //! ([`Services::source_observation`]).
 
