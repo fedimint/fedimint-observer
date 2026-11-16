@@ -27,14 +27,12 @@ below. Follow existing patterns before inventing new ones.
 
 ## Errors and API shape
 
-- Return client-caused errors as `ClientError::{not_found, bad_request,
-  bad_gateway, gateway_timeout, unavailable}` (`fmo_core/src/error.rs`).
-  Anything else becomes a sanitized `500`; never put internal error text,
-  SQL or guardian responses in a response body.
+- Return client-caused errors as `ClientError` (`fmo_core/src/error.rs`);
+  never put internal error text, SQL or guardian responses in a response body.
 - List endpoints use keyset pagination through `pagination::Page<C>` (limit
   1–500, default 100). No offset pagination and no unbounded lists.
-- Keep `fmo_api_types` and `fmo_frontend_react/src/types/api.ts` in sync.
-  `/config/*` is a stable API: don't change existing response shapes there.
+- API changes update `fmo_api_types` and `src/types/api.ts` together, and
+  never break `/config/*` response shapes.
 
 ## Scalability
 
@@ -52,10 +50,9 @@ The observer has to keep working as federations, sessions and gateways grow.
 - Bound everything that comes from outside: list sizes from guardians and
   gateways, response sizes, retries and queues. Unbounded channels and
   retry loops without a cap are bugs.
-- Reuse shared clients: get guardian API clients from
-  `Services::federation_api()` / `Services::lookup_api()`, never one per
-  request. Use `fedimint_core::util::backoff_util` for retries instead of
-  hand-rolled loops.
+- Get guardian API clients from `Services::federation_api()` /
+  `lookup_api()`, never one per request. Retry with
+  `fedimint_core::util::backoff_util`, not hand-rolled loops.
 - Respect the configured concurrency limits (`FO_WORKER_CONCURRENCY`,
   `FO_EXTERNAL_CONCURRENCY`, `FO_HTTP_CONCURRENCY`) rather than spawning
   unbounded tasks. A new limit or `FO_*` variable goes in `OPERATIONS.md`.
@@ -66,7 +63,6 @@ The observer has to keep working as federations, sessions and gateways grow.
 - Use bound parameters (`$1`, `$2`) for every value. `format!` is only for
   trusted identifiers such as a module's own schema name, never for request
   or network data.
-- Module SQL uses schema-qualified names (`fmo_<kind>.table`).
 - Migrations are append-only: never edit a released migration; add a new one.
   They must work on a populated database from `MIN_UPGRADE_VERSION` and must
   not rewrite huge tables in one transaction; backfill in bounded steps.
