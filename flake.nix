@@ -14,7 +14,15 @@
         pkgs = import nixpkgs {
           inherit system;
         };
-        flakeboxLib = flakebox.lib.mkLib pkgs { };
+        flakeboxPkgs = pkgs // {
+          # convco enables git2's experimental SHA256 support.
+          convco = pkgs.convco.overrideAttrs (old: {
+            buildInputs = (old.buildInputs or [ ]) ++ [
+              (pkgs.libgit2.override { withExperimentalSha256 = true; })
+            ];
+          });
+        };
+        flakeboxLib = flakebox.lib.mkLib flakeboxPkgs { };
         lib = pkgs.lib;
 
         toolchains = flakeboxLib.mkFenixToolchain {
