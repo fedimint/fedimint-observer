@@ -501,3 +501,78 @@ fn tampered_credentials_fail() {
     );
     assert_eq!(none.state, CredentialState::None);
 }
+
+/// The collector stores a credential's evidence as JSON, and requests assess
+/// it: the outcome must be exactly that of verifying the payload then
+fn assessed_from_storage(ad: &VerifiedAdvertisement, now: u64, trust: &TrustContext) -> Value {
+    let stored = serde_json::to_value(evaluate_credential(&ad.payload)).unwrap();
+    let evidence: CredentialEvidence = serde_json::from_value(stored).unwrap();
+    serde_json::to_value(assess_credential(&evidence, &ad.author, now, trust)).unwrap()
+}
+
+#[test]
+fn stored_evidence_assesses_as_the_payload_verifies() {
+    let (ad, digest) = real_credentials().remove(0);
+    let now = ad.issued_at;
+    let issuer = credential_issuer(&ad);
+    let mut revoked = trust_at(now, default_issuers());
+    revoked
+        .revocations
+        .entries
+        .insert((issuer, digest), RevocationKind::Revoked);
+    let mut tampered = ad.clone();
+    tampered.payload["holder_authorizations"][0]["signed_credential"]["credential"]["info"]
+        ["trust_level"] = json!(12);
+    for (ad, trust) in [
+        (&ad, trust_at(now, default_issuers())),
+        (&ad, revoked),
+        (&ad, trust_at(now, Vec::new())),
+        (&ad, trust_at(now, vec!["00".repeat(32)])),
+        (&ad, trust_at(now - 16 * 60, default_issuers())),
+        (&tampered, trust_at(now, default_issuers())),
+    ] {
+        let direct =
+            serde_json::to_value(credential(&ad.payload, &ad.author, now, &trust)).unwrap();
+        assert_eq!(assessed_from_storage(ad, now, &trust), direct);
+    }
+}
+
+/// Evidence worked out once still applies each request's time: the
+/// authorization must not be dated after it, and revocation state must be
+/// recent then
+#[test]
+fn stored_evidence_is_checked_against_the_time_of_each_request() {
+    let (ad, _) = real_credentials().remove(0);
+    let evidence = evaluate_credential(&ad.payload);
+    let authorized_at = evidence.authorized_at.unwrap();
+    let trust = trust_at(authorized_at, default_issuers());
+    let early = assess_credential(&evidence, &ad.author, authorized_at - 1, &trust);
+    assert_eq!(early.state, CredentialState::Failed);
+    assert_eq!(result(&early, "not_future"), Some(false));
+    let on_time = assess_credential(&evidence, &ad.author, authorized_at, &trust);
+    assert_eq!(on_time.state, CredentialState::Verified);
+    let later = assess_credential(&evidence, &ad.author, authorized_at + 16 * 60, &trust);
+    assert_eq!(later.state, CredentialState::Unavailable);
+    assert_eq!(result(&later, "revocation"), None);
+}
+
+/// Soundness is what the collector protects guardians by: everything but
+/// trust, revocation and time
+#[test]
+fn only_genuine_credentials_for_their_advertiser_are_sound() {
+    let (ad, _) = real_credentials().remove(0);
+    let evidence = evaluate_credential(&ad.payload);
+    assert!(evidence.sound_for(&ad.author));
+    // Presented by another advertiser
+    assert!(!evidence.sound_for(&"00".repeat(32)));
+    // Tampered, or from an issuer without a pinned authority
+    let mut raised = ad.payload.clone();
+    raised["holder_authorizations"][0]["signed_credential"]["credential"]["info"]["trust_level"] =
+        json!(12);
+    assert!(!evaluate_credential(&raised).sound_for(&ad.author));
+    let mut unpinned = ad.payload.clone();
+    unpinned["holder_authorizations"][0]["signed_credential"]["credential"]["issuer_id_pubkey"] =
+        json!("11".repeat(32));
+    assert!(!evaluate_credential(&unpinned).sound_for(&ad.author));
+    assert!(!CredentialEvidence::absent().sound_for(&ad.author));
+}

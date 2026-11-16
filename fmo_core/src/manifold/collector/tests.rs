@@ -1,4 +1,4 @@
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::*;
 use crate::manifold::peerbadge::{RevocationKind, RevocationRecord};
@@ -46,15 +46,19 @@ fn trusted_issuers_default_to_manifolds_production_roster() {
     assert!(parse_trusted_issuers(Some(&format!("{own},oops"))).is_err());
 }
 
+type Driver = tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>;
+
 /// A connection whose `search_path` is a fresh schema of the test's own,
 /// with every Manifold migration applied, so nothing else is touched
-async fn test_schema(
+async fn test_schema(name: &str) -> anyhow::Result<(tokio_postgres::Client, Driver, String)> {
+    test_schema_at(name, MIGRATIONS.len()).await
+}
+
+/// [`test_schema`] with only the first `migrations` applied
+async fn test_schema_at(
     name: &str,
-) -> anyhow::Result<(
-    tokio_postgres::Client,
-    tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>,
-    String,
-)> {
+    migrations: usize,
+) -> anyhow::Result<(tokio_postgres::Client, Driver, String)> {
     let database = std::env::var("FMO_MANIFOLD_TEST_DATABASE")?;
     let (client, connection) = tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(connection);
@@ -64,7 +68,7 @@ async fn test_schema(
             "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}; SET search_path TO {schema};"
         ))
         .await?;
-    for migration in MIGRATIONS {
+    for migration in &MIGRATIONS[..migrations] {
         client.batch_execute(migration).await?;
     }
     Ok((client, driver, schema))
@@ -72,7 +76,7 @@ async fn test_schema(
 
 async fn drop_schema(
     client: tokio_postgres::Client,
-    driver: tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>,
+    driver: Driver,
     schema: &str,
 ) -> anyhow::Result<()> {
     client
@@ -89,13 +93,26 @@ async fn sync(
     now: u64,
     retention: Retention,
 ) -> anyhow::Result<StoreOutcome> {
+    sync_protected(client, ads, now, retention, &Protection::default()).await
+}
+
+/// One sync of `ads`, derived as the collector derives them
+async fn sync_protected(
+    client: &mut tokio_postgres::Client,
+    ads: &[&VerifiedAdvertisement],
+    now: u64,
+    retention: Retention,
+    protection: &Protection,
+) -> anyhow::Result<StoreOutcome> {
+    let collected: Vec<Collected> = ads.iter().map(|ad| derive((*ad).clone(), None)).collect();
     let mut dbtx = client.transaction().await?;
     let outcome = store_sync(
         &mut dbtx,
-        ads,
+        &collected,
         &["wss://relay.example".to_owned()],
         now,
         retention,
+        protection,
     )
     .await?;
     dbtx.commit().await?;
@@ -181,6 +198,7 @@ async fn postgres_retention_ignores_claimed_expiry_and_bounds_storage() -> anyho
     let retention = Retention {
         max_age_seconds: 3600,
         max_per_kind: 3,
+        max_protected_per_kind: 3,
         max_versions_per_author: 2,
     };
     let now = unix_now();
@@ -369,4 +387,450 @@ async fn live_revocation_lookup_completes() -> anyhow::Result<()> {
     );
     assert_eq!(lookup.complete.len(), trusted.len());
     Ok(())
+}
+
+/// Real kind 37701, 37709 and 37702 events captured from Manifold's
+/// production relays; the 37709 one carries a production credential
+const RELAY_EVENTS: &str = include_str!("../fixtures/relay-events.json");
+
+fn real_events() -> Vec<Event> {
+    use nostr_sdk::JsonUtil;
+    let fixture: Value = serde_json::from_str(RELAY_EVENTS).unwrap();
+    fixture["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| Event::from_json(event.to_string()).unwrap())
+        .collect()
+}
+
+/// The real v2 advertisement, whose credential verifies
+fn credentialed_advertisement() -> VerifiedAdvertisement {
+    let ad = verify_event(&real_events()[1]).unwrap();
+    assert_eq!(ad.kind, MG_V2_KIND);
+    ad
+}
+
+/// Before, advertisements could be dated up to two hours ahead, and retention
+/// keeps the newest: a flood dated ahead evicted every real guardian
+#[test]
+fn advertisements_dated_ahead_are_refused() {
+    let events = real_events();
+    let newest = events
+        .iter()
+        .map(|event| event.created_at().as_u64())
+        .max()
+        .unwrap();
+    let (kept, rejected) = select_newest(&events, newest - (MAX_CLOCK_SKEW_SECONDS - 60));
+    assert_eq!((kept.len(), rejected), (3, 0));
+    // A minute past the allowed skew: only the FLIP advertisement, created
+    // 15 minutes before the others, is not ahead
+    let (kept, rejected) = select_newest(&events, newest - (MAX_CLOCK_SKEW_SECONDS + 60));
+    assert_eq!(rejected, 2);
+    assert_eq!(
+        kept.iter().map(|ad| ad.kind).collect::<Vec<_>>(),
+        [FLIP_KIND]
+    );
+}
+
+/// A relay holding `events` that answers each query with at most `cap`,
+/// newest first, ties by lowest id (NIP-01), as relays cap answers below
+/// what was asked (relay.primal.net at 500)
+struct SimulatedRelay {
+    events: Vec<Event>,
+    cap: usize,
+}
+
+impl SimulatedRelay {
+    fn page(&self, until: Option<Timestamp>) -> Vec<Event> {
+        let mut matching: Vec<Event> = self
+            .events
+            .iter()
+            .filter(|event| until.is_none_or(|until| event.created_at() <= until))
+            .cloned()
+            .collect();
+        matching.sort_by(|a, b| {
+            b.created_at()
+                .cmp(&a.created_at())
+                .then_with(|| a.id().cmp(&b.id()))
+        });
+        matching.truncate(self.cap.min(REVOCATION_PAGE_LIMIT));
+        matching
+    }
+
+    async fn read(&self) -> anyhow::Result<Vec<Event>> {
+        read_all_pages(|until| {
+            let page = self.page(until);
+            async move { Ok(page) }
+        })
+        .await
+    }
+}
+
+/// Revocation events created at `times`, one per time
+fn revocations_at(times: impl IntoIterator<Item = u64>) -> Vec<Event> {
+    let keys = nostr_sdk::Keys::generate();
+    times
+        .into_iter()
+        .enumerate()
+        .map(|(n, time)| {
+            nostr_sdk::EventBuilder::new(
+                Kind::Custom(REVOCATION_KIND),
+                "",
+                [nostr_sdk::Tag::identifier(format!(
+                    "credential-revocation:{n}"
+                ))],
+            )
+            .custom_created_at(Timestamp::from(time))
+            .to_event(&keys)
+            .unwrap()
+        })
+        .collect()
+}
+
+fn ids(events: &[Event]) -> std::collections::BTreeSet<EventId> {
+    events.iter().map(Event::id).collect()
+}
+
+/// Before, an answer shorter than the 5000 asked for counted as complete,
+/// though relays cap answers at 500 or 4096: a revocation past the cap was
+/// never read, and its credential kept showing verified
+#[tokio::test]
+async fn revocation_reads_page_past_relay_caps() -> anyhow::Result<()> {
+    // Distinct seconds, then three events to a second
+    for times in [
+        (1000..2200).collect::<Vec<u64>>(),
+        (0..1200).map(|n| 1000 + n / 3).collect(),
+    ] {
+        let relay = SimulatedRelay {
+            events: revocations_at(times),
+            cap: 500,
+        };
+        assert_eq!(relay.page(None).len(), 500);
+        assert_eq!(ids(&relay.read().await?), ids(&relay.events));
+    }
+    // A relay capping lower than the page asked for is read in full too
+    let relay = SimulatedRelay {
+        events: revocations_at(1000..1300),
+        cap: 70,
+    };
+    assert_eq!(ids(&relay.read().await?), ids(&relay.events));
+    Ok(())
+}
+
+#[tokio::test]
+async fn small_revocation_reads_complete() -> anyhow::Result<()> {
+    for events in [
+        Vec::new(),
+        revocations_at([1000]),
+        revocations_at([1000; 5]),
+        revocations_at([1000, 1000, 999, 5]),
+    ] {
+        let relay = SimulatedRelay { events, cap: 500 };
+        assert_eq!(ids(&relay.read().await?), ids(&relay.events));
+    }
+    Ok(())
+}
+
+/// Paging continues from the oldest second read, so it cannot get past a
+/// second holding more events than a page: the read fails, never claims to
+/// be complete
+#[tokio::test]
+async fn a_second_fuller_than_a_page_leaves_the_read_incomplete() {
+    let crowded = SimulatedRelay {
+        events: revocations_at([1000; 600]),
+        cap: 500,
+    };
+    assert!(crowded.read().await.is_err());
+
+    // The relay's lower cap is learned from a page that turned out cut short
+    let mut times: Vec<u64> = (2000..2150).collect();
+    times.extend([1000; 150]);
+    let low_cap = SimulatedRelay {
+        events: revocations_at(times),
+        cap: 100,
+    };
+    assert!(low_cap.read().await.is_err());
+
+    // Fewer than a page in that second is fine
+    let mut times: Vec<u64> = (2000..2250).collect();
+    times.extend([1000; 50]);
+    let relay = SimulatedRelay {
+        events: revocations_at(times),
+        cap: 100,
+    };
+    assert_eq!(relay.read().await.unwrap().len(), 300);
+}
+
+#[tokio::test]
+async fn revocation_reads_are_bounded_and_fail_with_any_page() {
+    let endless = SimulatedRelay {
+        events: revocations_at(0..1000),
+        cap: 10,
+    };
+    assert!(endless.read().await.is_err());
+
+    let relay = SimulatedRelay {
+        events: revocations_at(0..1000),
+        cap: 500,
+    };
+    let mut pages = 0;
+    let failing = read_all_pages(|until| {
+        pages += 1;
+        let page = relay.page(until);
+        let fail = pages == 2;
+        async move {
+            if fail {
+                bail!("lost the connection");
+            }
+            Ok(page)
+        }
+    })
+    .await;
+    assert!(failing.is_err());
+}
+
+fn protection(seat_bound: &[&str]) -> Protection {
+    Protection {
+        seat_bound: seat_bound.iter().map(|key| (*key).to_owned()).collect(),
+        trusted: parse_trusted_issuers(None).unwrap(),
+    }
+}
+
+/// A flood of advertisements from new keys evicts only its own: seat-bound
+/// guardians and guardians with a sound, unrevoked credential from a trusted
+/// issuer have a quota of their own
+#[tokio::test]
+#[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
+async fn postgres_protected_guardians_survive_a_flood() -> anyhow::Result<()> {
+    let (mut client, driver, schema) = test_schema("flood").await?;
+    let retention = Retention {
+        max_age_seconds: 86400,
+        max_per_kind: 2,
+        max_protected_per_kind: 2,
+        max_versions_per_author: 2,
+    };
+    let now = unix_now();
+    let seated = advertisement('s', now - 1000, json!({}));
+    let credentialed = VerifiedAdvertisement {
+        created_at: now - 900,
+        ..credentialed_advertisement()
+    };
+    let flood: Vec<_> = ['f', 'g', 'h', 'i', 'j']
+        .into_iter()
+        .zip(1u64..)
+        .map(|(author, n)| advertisement(author, now - 100 + n, json!({})))
+        .collect();
+    let mut ads: Vec<&VerifiedAdvertisement> = vec![&seated, &credentialed];
+    ads.extend(&flood);
+    let guard = protection(&[&seated.author]);
+    sync_protected(&mut client, &ads, now, retention, &guard).await?;
+    let mut kept = column(&client, "SELECT author FROM advertisements ORDER BY author").await?;
+    let mut expected = vec![
+        seated.author.clone(),
+        credentialed.author.clone(),
+        flood[3].author.clone(),
+        flood[4].author.clone(),
+    ];
+    kept.sort();
+    expected.sort();
+    assert_eq!(kept, expected);
+
+    // Derived when stored: a sound credential, and where to look up its
+    // revocation
+    let row = client
+        .query_one(
+            "SELECT credential_sound, credential_issuer, credential_digest, derived_stamp,
+                    listing IS NOT NULL
+             FROM advertisements WHERE author = $1",
+            &[&credentialed.author],
+        )
+        .await?;
+    assert!(row.get::<_, bool>(0));
+    let (issuer, digest): (String, String) = (row.get(1), row.get(2));
+    assert_eq!(row.get::<_, String>(3), derivation_stamp());
+    assert!(row.get::<_, bool>(4));
+    let dbtx = client.transaction().await?;
+    assert_eq!(
+        credentialed_authors(&dbtx, &guard.trusted, 10).await?,
+        std::slice::from_ref(&credentialed.author)
+    );
+    // An untrusted issuer protects no one
+    assert!(credentialed_authors(&dbtx, &["00".repeat(32)], 10)
+        .await?
+        .is_empty());
+    dbtx.commit().await?;
+
+    // Once its issuer revoked the credential, the guardian is anonymous, and
+    // the next flood evicts it
+    client
+        .execute(
+            "INSERT INTO revocations (issuer, credential_digest, state, event_id)
+             VALUES ($1, $2, 'revoked', 'e')",
+            &[&issuer, &digest],
+        )
+        .await?;
+    let dbtx = client.transaction().await?;
+    assert!(credentialed_authors(&dbtx, &guard.trusted, 10)
+        .await?
+        .is_empty());
+    dbtx.commit().await?;
+    sync_protected(&mut client, &[&flood[0]], now, retention, &guard).await?;
+    let kept = column(&client, "SELECT author FROM advertisements").await?;
+    assert!(!kept.contains(&credentialed.author));
+    assert!(kept.contains(&seated.author));
+    drop_schema(client, driver, &schema).await
+}
+
+/// Presence rows go with a key's last advertisement unless it holds a seat;
+/// before, every key that ever advertised kept a row per day for 90 days
+#[tokio::test]
+#[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
+async fn postgres_presence_goes_with_the_last_advertisement() -> anyhow::Result<()> {
+    let (mut client, driver, schema) = test_schema("presence").await?;
+    let retention = Retention {
+        max_age_seconds: 3600,
+        ..Retention::DEFAULT
+    };
+    let now = unix_now();
+    let anonymous = advertisement('x', now - 60, json!({}));
+    let seated = advertisement('s', now - 60, json!({}));
+    let guard = protection(&[&seated.author]);
+    sync_protected(&mut client, &[&anonymous, &seated], now, retention, &guard).await?;
+    let presence = "SELECT left(author, 1) FROM presence_daily ORDER BY author";
+    assert_eq!(column(&client, presence).await?, ["s", "x"]);
+
+    // Both aged out; only the seat-bound guardian's history stays
+    sync_protected(&mut client, &[], now + 4000, retention, &guard).await?;
+    assert!(column(&client, "SELECT author FROM advertisements")
+        .await?
+        .is_empty());
+    assert_eq!(column(&client, presence).await?, ["s"]);
+
+    // The 90-day cleanup has an index to use
+    let indexed = client
+        .query_opt(
+            "SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = 'presence_daily_day'",
+            &[&schema],
+        )
+        .await?;
+    assert!(indexed.is_some());
+    drop_schema(client, driver, &schema).await
+}
+
+/// Migration 4 adds the derived columns to a populated table, and the
+/// collector derives the rows already there; until then they are not
+/// listed, since their stamp is not the binary's
+#[tokio::test]
+#[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
+async fn postgres_existing_advertisements_are_derived_after_migration() -> anyhow::Result<()> {
+    let (mut client, driver, schema) = test_schema_at("upgrade", 3).await?;
+    let ad = credentialed_advertisement();
+    client
+        .execute(
+            "INSERT INTO advertisements
+                 (kind, author, event_id, created_at, issued_at, expires_at, payload)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            &[
+                &i32::from(ad.kind),
+                &ad.author,
+                &ad.event_id,
+                &(ad.created_at as i64),
+                &(ad.issued_at as i64),
+                &(ad.expires_at as i64),
+                &ad.payload,
+            ],
+        )
+        .await?;
+    client.batch_execute(MIGRATIONS[3]).await?;
+    let derived = "SELECT count(*) FROM advertisements WHERE derived_stamp IS NOT NULL";
+    assert_eq!(client.query_one(derived, &[]).await?.get::<_, i64>(0), 0);
+
+    assert_eq!(rederive_stale(&mut client, &schema).await?, 1);
+    let row = client
+        .query_one(
+            "SELECT derived_stamp, listing, credential, credential_sound FROM advertisements",
+            &[],
+        )
+        .await?;
+    assert_eq!(row.get::<_, String>(0), derivation_stamp());
+    assert_eq!(
+        row.get::<_, Value>(1),
+        crate::manifold::listing::listing(&ad)?
+    );
+    let evidence: CredentialEvidence = serde_json::from_value(row.get(2))?;
+    assert_eq!(evidence, evaluate_credential(&ad.payload));
+    assert!(row.get::<_, bool>(3));
+    // Nothing is left to derive
+    assert_eq!(rederive_stale(&mut client, &schema).await?, 0);
+    drop_schema(client, driver, &schema).await
+}
+
+/// A republished advertisement presents the same credential: its stored
+/// evidence is reused rather than verified again, unless it was derived
+/// with another stamp
+#[tokio::test]
+#[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
+async fn postgres_credential_evidence_is_reused() -> anyhow::Result<()> {
+    let (mut client, driver, schema) = test_schema("reuse").await?;
+    let ad = credentialed_advertisement();
+    sync(&mut client, &[&ad], unix_now(), Retention::DEFAULT).await?;
+    // Mark the stored evidence, so reuse shows
+    let mut marked = evaluate_credential(&ad.payload);
+    marked.schema = Some("marked".to_owned());
+    client
+        .execute(
+            "UPDATE advertisements SET credential = $1",
+            &[&serde_json::to_value(&marked)?],
+        )
+        .await?;
+    let republished = VerifiedAdvertisement {
+        event_id: "ff".repeat(32),
+        created_at: ad.created_at + 1800,
+        ..ad.clone()
+    };
+    let derived = derive_all(&mut client, &schema, vec![republished.clone()]).await?;
+    assert_eq!(derived[0].derived.evidence, marked);
+
+    // Evidence derived under another stamp is not trusted
+    client
+        .execute("UPDATE advertisements SET derived_stamp = 'v0-old'", &[])
+        .await?;
+    let derived = derive_all(&mut client, &schema, vec![republished]).await?;
+    assert_eq!(
+        derived[0].derived.evidence,
+        evaluate_credential(&ad.payload)
+    );
+    drop_schema(client, driver, &schema).await
+}
+
+/// API-only replicas never migrate: one started before the worker ran the
+/// Manifold migrations answered every `/manifold/*` request with an error
+#[tokio::test]
+#[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
+async fn postgres_api_replicas_need_every_manifold_migration() -> anyhow::Result<()> {
+    let (client, driver, schema) = test_schema("replica").await?;
+    client
+        .batch_execute(
+            "CREATE TABLE module_schema_versions (
+                 module_kind TEXT PRIMARY KEY, migrations_applied INTEGER NOT NULL)",
+        )
+        .await?;
+    assert!(check_manifold_schema(&client).await.is_err());
+    let known = MIGRATIONS.len() as i32;
+    for (applied, ready) in [(known - 1, false), (known, true), (known + 1, false)] {
+        client
+            .execute(
+                "INSERT INTO module_schema_versions VALUES ('manifold', $1)
+                 ON CONFLICT (module_kind) DO UPDATE SET migrations_applied = $1",
+                &[&applied],
+            )
+            .await?;
+        assert_eq!(
+            check_manifold_schema(&client).await.is_ok(),
+            ready,
+            "{applied}"
+        );
+    }
+    drop_schema(client, driver, &schema).await
 }

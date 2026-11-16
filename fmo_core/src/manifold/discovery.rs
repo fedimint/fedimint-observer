@@ -14,7 +14,8 @@
 //! On top of the outer Nostr event signature, every inner signer must be the
 //! event author. Passing proves who published the offer, nothing more: an
 //! advertisement is never evidence of federation membership, and its embedded
-//! trust credentials are evaluated separately ([`credential`]).
+//! trust credentials are evaluated separately ([`evaluate_credential`],
+//! [`assess_credential`]).
 
 use std::collections::BTreeMap;
 
@@ -26,6 +27,7 @@ use peerbadge_protocol::{
     CredentialDigest, HolderAuthorization, SignedCredential, VerificationContext,
 };
 use peerbadge_schemas::parse_trust_score_badge_v1;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::peerbadge::{
@@ -299,44 +301,140 @@ pub fn freshness(issued_at: u64, expires_at: u64, now: u64) -> fmo_api_types::Ad
     }
 }
 
-fn check(id: &str, label: &str, passed: Option<bool>, detail: Option<String>) -> CredentialCheck {
+fn check(id: &str, label: &str, outcome: Outcome) -> CredentialCheck {
     CredentialCheck {
         id: id.into(),
         label: label.into(),
-        passed,
-        detail,
+        passed: outcome.passed,
+        detail: outcome.detail,
     }
 }
 
-/// The first holder authorization in an advertisement, verified as the Fedi
-/// app's Manifold verifier does ([`super::peerbadge`]). Each check is
-/// reported; the credential is `Verified` only when every one ran and passed,
-/// `Failed` when one the observer ran failed, and `Unavailable` otherwise (an
-/// untrusted issuer, an issuer without a pinned authority, or revocation state
-/// that is missing or out of date).
-pub fn credential(
-    payload: &Value,
-    author: &str,
-    now: u64,
-    trust: &TrustContext,
-) -> TrustCredential {
+/// One check's result: `passed` is None when it did not run
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Outcome {
+    pub passed: Option<bool>,
+    pub detail: Option<String>,
+}
+
+impl Outcome {
+    fn new(passed: Option<bool>, detail: Option<String>) -> Self {
+        Outcome { passed, detail }
+    }
+}
+
+/// What the PeerBadge SDK found checking a credential against its issuer's
+/// pinned authority
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedEvidence {
+    /// Whether the SDK admitted the pinned authority
+    pub authority_admitted: bool,
+    /// The issuance proof, checked when the credential parses and the
+    /// authority was admitted
+    pub issuance: Outcome,
+    /// Whether the SDK's combined check, as Manifold runs it, accepted the
+    /// credential and authorization, apart from the authorization time
+    pub sdk_accepts: bool,
+    /// The verified authorization's time, which the SDK requires not to be
+    /// in the future
+    pub sdk_authorized_at: Option<u64>,
+}
+
+/// Everything about an advertisement's credential that does not change
+/// over time: what it names, and the outcome of every cryptographic check.
+/// The collector works it out once per credential ([`evaluate_credential`]);
+/// requests combine it with the trusted issuers, the revocation state and
+/// the time ([`assess_credential`]), so no request verifies a signature.
+///
+/// It does not depend on which issuers are trusted: a credential whose
+/// issuer has a pinned authority is checked against it either way, and
+/// [`assess_credential`] ignores that result unless the issuer is trusted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialEvidence {
+    /// False when the advertisement carries no holder authorization
+    pub presented: bool,
+    /// As published
+    pub issuer: Option<String>,
+    pub holder: Option<String>,
+    pub subject: Option<String>,
+    pub authorized_at: Option<u64>,
+    pub schema: Option<String>,
+    pub blind_msg: Option<String>,
+    pub trust_level: Option<u64>,
+    /// The credential digest's wire form, when the credential parses
+    pub digest: Option<String>,
+    pub credential_parses: bool,
+    pub holder_authorization: Outcome,
+    pub digest_matches: Outcome,
+    pub schema_check: Outcome,
+    /// Present when the issuer has a pinned authority
+    pub pinned: Option<PinnedEvidence>,
+}
+
+impl CredentialEvidence {
+    /// An advertisement without a holder authorization
+    pub fn absent() -> Self {
+        CredentialEvidence {
+            presented: false,
+            issuer: None,
+            holder: None,
+            subject: None,
+            authorized_at: None,
+            schema: None,
+            blind_msg: None,
+            trust_level: None,
+            digest: None,
+            credential_parses: false,
+            holder_authorization: Outcome::new(None, None),
+            digest_matches: Outcome::new(None, None),
+            schema_check: Outcome::new(None, None),
+            pinned: None,
+        }
+    }
+
+    /// The issuer key in lowercase hex, as trust roots are compared
+    pub fn issuer_key(&self) -> Option<String> {
+        self.issuer.as_deref().map(str::to_lowercase)
+    }
+
+    /// Whether every check that does not depend on the trusted issuers, the
+    /// revocation state or the time passed for `author`: the credential is
+    /// genuine, issued under a pinned authority and authorizes `author`.
+    /// The collector keeps such advertisements ahead of anonymous ones.
+    pub fn sound_for(&self, author: &str) -> bool {
+        let passed = |outcome: &Outcome| outcome.passed == Some(true);
+        self.credential_parses
+            && self.pinned.as_ref().is_some_and(|pinned| {
+                pinned.authority_admitted && passed(&pinned.issuance) && pinned.sdk_accepts
+            })
+            && passed(&self.holder_authorization)
+            && passed(&self.digest_matches)
+            && passed(&self.schema_check)
+            && self.holder.is_some()
+            && self.blind_msg == self.holder
+            && self.subject.as_deref() == Some(author)
+            && self
+                .trust_level
+                .is_some_and(|level| level >= REQUIRED_TRUST_LEVEL)
+            && self.digest.is_some()
+    }
+}
+
+fn malformed() -> Option<String> {
+    Some("The credential does not parse as a PeerBadge credential".to_owned())
+}
+
+/// Works out [`CredentialEvidence`] for the first holder authorization in an
+/// advertisement, as the Fedi app's Manifold verifier checks it
+/// ([`super::peerbadge`]). This runs the PeerBadge SDK's signature checks:
+/// call it off the async executor, once per credential.
+pub fn evaluate_credential(payload: &Value) -> CredentialEvidence {
     let envelope = payload
         .get("holder_authorizations")
         .and_then(Value::as_array)
         .and_then(|list| list.first());
     let Some(envelope) = envelope else {
-        return TrustCredential {
-            state: CredentialState::None,
-            issuer_pubkey: None,
-            issuer_label: None,
-            holder_pubkey: None,
-            trust_level: None,
-            required_trust_level: REQUIRED_TRUST_LEVEL,
-            schema: None,
-            checked_at: None,
-            checks: Vec::new(),
-            reason: Some("The advertisement carries no holder authorization, so there is no credential to check.".into()),
-        };
+        return CredentialEvidence::absent();
     };
     let text = |pointer: &str| {
         envelope
@@ -344,14 +442,7 @@ pub fn credential(
             .and_then(Value::as_str)
             .map(str::to_owned)
     };
-    let holder = text("/holder_authorization/authorization/holder_id_pubkey");
-    let subject = text("/holder_authorization/authorization/subject_pubkey");
-    let authorized_at = envelope
-        .pointer("/holder_authorization/authorization/issued_at")
-        .and_then(Value::as_u64);
     let issuer = text("/signed_credential/credential/issuer_id_pubkey");
-    let schema = text("/signed_credential/credential/info/schema");
-    let blind_msg = text("/signed_credential/credential/blind_msg");
 
     // The SDK's own types: what does not parse into them cannot verify
     let signed_credential = envelope
@@ -374,7 +465,121 @@ pub fn credential(
             .and_then(Value::as_u64),
     };
 
-    let issuer_key = issuer.as_deref().map(str::to_lowercase);
+    let statement = authorization
+        .as_ref()
+        .map(|authorization| authorization.verify());
+    let holder_authorization = match &statement {
+        None => Outcome::new(
+            Some(false),
+            Some("The holder authorization does not parse".to_owned()),
+        ),
+        Some(Ok(_)) => Outcome::new(Some(true), None),
+        Some(Err(error)) => Outcome::new(Some(false), Some(format!("{error}"))),
+    };
+    let digest_matches = match (&statement, &digest) {
+        (Some(Ok(statement)), Some(digest)) => {
+            Outcome::new(Some(statement.credential_digest == *digest), None)
+        }
+        _ => Outcome::new(
+            None,
+            Some("Needs a verified holder authorization and a parsed credential".to_owned()),
+        ),
+    };
+    let schema_check = match &badge {
+        None => Outcome::new(Some(false), malformed()),
+        Some(Ok(_)) => Outcome::new(Some(true), None),
+        Some(Err(error)) => Outcome::new(Some(false), Some(format!("{error}"))),
+    };
+
+    let pinned = issuer
+        .as_deref()
+        .map(str::to_lowercase)
+        .and_then(|issuer| pinned_authorities().get(&issuer))
+        .map(|authority| {
+            let mut verifier = VerificationContext::new();
+            let authority_admitted = verifier.add_issuer_authority(authority).is_ok();
+            let issuance = match (&signed_credential, authority_admitted) {
+                (None, _) => Outcome::new(Some(false), malformed()),
+                (Some(_), false) => Outcome::new(
+                    Some(false),
+                    Some("The pinned issuer authority does not verify".to_owned()),
+                ),
+                (Some(signed), true) => match verifier.verify_credential(signed) {
+                    Ok(()) => Outcome::new(Some(true), None),
+                    Err(error) => Outcome::new(Some(false), Some(format!("{error}"))),
+                },
+            };
+            // The SDK's combined check, exactly as Manifold runs it, at the
+            // latest possible time: its only time-dependent step is that the
+            // authorization is not dated after the check, which
+            // `assess_credential` applies with the time of each request
+            let sdk_accepts = authority_admitted
+                && match (&signed_credential, &authorization) {
+                    (Some(signed), Some(authorization)) => verifier
+                        .verify_credential_authorization_at_time(signed, authorization, u64::MAX)
+                        .is_ok(),
+                    _ => false,
+                };
+            PinnedEvidence {
+                authority_admitted,
+                issuance,
+                sdk_accepts,
+                sdk_authorized_at: match &statement {
+                    Some(Ok(statement)) => Some(statement.issued_at.as_secs()),
+                    _ => None,
+                },
+            }
+        });
+
+    CredentialEvidence {
+        presented: true,
+        holder: text("/holder_authorization/authorization/holder_id_pubkey"),
+        subject: text("/holder_authorization/authorization/subject_pubkey"),
+        authorized_at: envelope
+            .pointer("/holder_authorization/authorization/issued_at")
+            .and_then(Value::as_u64),
+        schema: text("/signed_credential/credential/info/schema"),
+        blind_msg: text("/signed_credential/credential/blind_msg"),
+        issuer,
+        trust_level,
+        digest: digest.as_ref().and_then(digest_wire),
+        credential_parses: signed_credential.is_some(),
+        holder_authorization,
+        digest_matches,
+        schema_check,
+        pinned,
+    }
+}
+
+/// The credential of an advertisement by `author`, from its stored
+/// [`CredentialEvidence`]. Each check is reported; the credential is
+/// `Verified` only when every one ran and passed, `Failed` when one the
+/// observer ran failed, and `Unavailable` otherwise (an untrusted issuer, an
+/// issuer without a pinned authority, or revocation state that is missing or
+/// out of date). Runs no cryptography: only the trust, revocation and time
+/// checks happen here.
+pub fn assess_credential(
+    evidence: &CredentialEvidence,
+    author: &str,
+    now: u64,
+    trust: &TrustContext,
+) -> TrustCredential {
+    if !evidence.presented {
+        return TrustCredential {
+            state: CredentialState::None,
+            issuer_pubkey: None,
+            issuer_label: None,
+            holder_pubkey: None,
+            trust_level: None,
+            required_trust_level: REQUIRED_TRUST_LEVEL,
+            schema: None,
+            checked_at: None,
+            checks: Vec::new(),
+            reason: Some("The advertisement carries no holder authorization, so there is no credential to check.".into()),
+        };
+    }
+
+    let issuer_key = evidence.issuer_key();
     let trusted = issuer_key
         .as_ref()
         .is_some_and(|issuer| trust.issuers.contains(issuer));
@@ -382,10 +587,8 @@ pub fn credential(
         .as_ref()
         .filter(|_| trusted)
         .and_then(|issuer| pinned_authorities().get(issuer));
-    let mut verifier = VerificationContext::new();
-    let authority_admitted =
-        authority.map(|authority| verifier.add_issuer_authority(authority).is_ok());
-    let malformed = || Some("The credential does not parse as a PeerBadge credential".to_owned());
+    let pinned = evidence.pinned.as_ref().filter(|_| authority.is_some());
+    let authority_admitted = pinned.map(|pinned| pinned.authority_admitted);
     let without_authority = || {
         Some(if trusted {
             "Only checked with a pinned issuer authority, which this issuer does not have"
@@ -395,140 +598,114 @@ pub fn credential(
         })
     };
 
-    let issuance = match (&signed_credential, authority_admitted) {
-        (None, _) => (Some(false), malformed()),
-        (Some(_), None) => (None, without_authority()),
-        (Some(_), Some(false)) => (
-            Some(false),
-            Some("The pinned issuer authority does not verify".to_owned()),
-        ),
-        (Some(signed), Some(true)) => match verifier.verify_credential(signed) {
-            Ok(()) => (Some(true), None),
-            Err(error) => (Some(false), Some(format!("{error}"))),
-        },
+    let issuance = match (evidence.credential_parses, pinned) {
+        (false, _) => Outcome::new(Some(false), malformed()),
+        (true, None) => Outcome::new(None, without_authority()),
+        (true, Some(pinned)) => pinned.issuance.clone(),
     };
-    let statement = authorization
-        .as_ref()
-        .map(|authorization| authorization.verify());
-    let holder_authorization = match &statement {
-        None => (
-            Some(false),
-            Some("The holder authorization does not parse".to_owned()),
-        ),
-        Some(Ok(_)) => (Some(true), None),
-        Some(Err(error)) => (Some(false), Some(format!("{error}"))),
-    };
-    let digest_matches = match (&statement, &digest) {
-        (Some(Ok(statement)), Some(digest)) => (Some(statement.credential_digest == *digest), None),
-        _ => (
-            None,
-            Some("Needs a verified holder authorization and a parsed credential".to_owned()),
-        ),
-    };
-    let schema_check = match &badge {
-        None => (Some(false), malformed()),
-        Some(Ok(_)) => (Some(true), None),
-        Some(Err(error)) => (Some(false), Some(format!("{error}"))),
-    };
-    let (revocation_passed, revocation_detail, revocation_checked_at) = revocation_check(
+    let revocation = revocation_check(
         issuer_key.as_deref(),
         authority,
-        digest.as_ref(),
+        evidence.digest.as_deref(),
         now,
         trust,
     );
-    let revocation = (revocation_passed, revocation_detail);
+    let (revocation, revocation_checked_at) =
+        (Outcome::new(revocation.0, revocation.1), revocation.2);
+    let trust_level = evidence.trust_level;
 
     let checks = vec![
         check(
             "issuer_root",
             "Issuer is a trusted PeerBadge issuer",
-            (!trust.issuers.is_empty()).then_some(trusted),
-            if trust.issuers.is_empty() {
-                Some(
-                    "No issuer is trusted: this observer's trusted issuer list is set empty"
-                        .to_owned(),
-                )
-            } else {
-                (!trusted).then(|| {
-                    "Not one of the trusted issuers (by default, Manifold's production issuers)"
-                        .to_owned()
-                })
-            },
+            Outcome::new(
+                (!trust.issuers.is_empty()).then_some(trusted),
+                if trust.issuers.is_empty() {
+                    Some(
+                        "No issuer is trusted: this observer's trusted issuer list is set empty"
+                            .to_owned(),
+                    )
+                } else {
+                    (!trusted).then(|| {
+                        "Not one of the trusted issuers (by default, Manifold's production issuers)"
+                            .to_owned()
+                    })
+                },
+            ),
         ),
         check(
             "issuer_pinned",
             "Issuer authority matches the pinned canonical profile",
-            authority_admitted,
-            authority_admitted
-                .is_none()
-                .then(without_authority)
-                .flatten(),
+            Outcome::new(
+                authority_admitted,
+                authority_admitted
+                    .is_none()
+                    .then(without_authority)
+                    .flatten(),
+            ),
         ),
         check(
             "issuance_proof",
             "Credential issuance proof verifies",
-            issuance.0,
-            issuance.1,
+            issuance,
         ),
         check(
             "holder_authorization",
             "Holder authorization proof verifies",
-            holder_authorization.0,
-            holder_authorization.1,
+            evidence.holder_authorization.clone(),
         ),
         check(
             "digest",
             "Authorized credential digest matches the credential",
-            digest_matches.0,
-            digest_matches.1,
+            evidence.digest_matches.clone(),
         ),
         check(
             "blind_msg",
             "Credential is bound to the holder key",
-            Some(holder.is_some() && blind_msg == holder),
-            None,
+            Outcome::new(
+                Some(evidence.holder.is_some() && evidence.blind_msg == evidence.holder),
+                None,
+            ),
         ),
         check(
             "subject",
             "Authorization names this advertiser as subject",
-            Some(subject.as_deref() == Some(author)),
-            None,
+            Outcome::new(Some(evidence.subject.as_deref() == Some(author)), None),
         ),
         check(
             "not_future",
             "Authorization is not dated in the future",
-            Some(authorized_at.is_some_and(|at| at <= now)),
-            None,
+            Outcome::new(
+                Some(evidence.authorized_at.is_some_and(|at| at <= now)),
+                None,
+            ),
         ),
         check(
             "schema",
             "Credential is a fedi-trust-score-v1.0 badge",
-            schema_check.0,
-            schema_check.1,
+            evidence.schema_check.clone(),
         ),
         check(
             "revocation",
             "No revocation found at every issuer revocation location",
-            revocation.0,
-            revocation.1,
+            revocation,
         ),
         check(
             "trust_level",
             &format!("Trust level is at least {REQUIRED_TRUST_LEVEL}"),
-            Some(trust_level.is_some_and(|level| level >= REQUIRED_TRUST_LEVEL)),
-            None,
+            Outcome::new(
+                Some(trust_level.is_some_and(|level| level >= REQUIRED_TRUST_LEVEL)),
+                None,
+            ),
         ),
     ];
 
     // The SDK's combined check, exactly as Manifold runs it, must agree
-    let sdk_accepts = authority_admitted == Some(true)
-        && match (&signed_credential, &authorization) {
-            (Some(signed), Some(authorization)) => verifier
-                .verify_credential_authorization_at_time(signed, authorization, now)
-                .is_ok(),
-            _ => false,
-        };
+    let sdk_accepts = pinned.is_some_and(|pinned| {
+        pinned.authority_admitted
+            && pinned.sdk_accepts
+            && pinned.sdk_authorized_at.is_some_and(|at| at <= now)
+    });
     let failed = checks
         .iter()
         .find(|c| c.passed == Some(false) && c.id != "issuer_root");
@@ -567,18 +744,30 @@ pub fn credential(
 
     TrustCredential {
         state,
-        issuer_label: issuer.as_deref().and_then(issuer_label),
-        issuer_pubkey: issuer,
-        holder_pubkey: holder,
+        issuer_label: evidence.issuer.as_deref().and_then(issuer_label),
+        issuer_pubkey: evidence.issuer.clone(),
+        holder_pubkey: evidence.holder.clone(),
         trust_level,
         required_trust_level: REQUIRED_TRUST_LEVEL,
-        schema,
+        schema: evidence.schema.clone(),
         checked_at: (state == CredentialState::Verified)
             .then_some(revocation_checked_at)
             .flatten(),
         checks,
         reason: Some(reason),
     }
+}
+
+/// [`evaluate_credential`] and [`assess_credential`] in one step, as tests
+/// check a credential
+#[cfg(test)]
+pub fn credential(
+    payload: &Value,
+    author: &str,
+    now: u64,
+    trust: &TrustContext,
+) -> TrustCredential {
+    assess_credential(&evaluate_credential(payload), author, now, trust)
 }
 
 /// Whether the issuer revoked the credential, by the collector's latest
@@ -589,7 +778,7 @@ pub fn credential(
 fn revocation_check(
     issuer: Option<&str>,
     authority: Option<&peerbadge_protocol::IssuerAuthority>,
-    digest: Option<&CredentialDigest>,
+    digest: Option<&str>,
     now: u64,
     trust: &TrustContext,
 ) -> (
@@ -635,14 +824,11 @@ fn revocation_check(
             return (None, Some(detail), None);
         }
     };
-    let Some(wire) = digest_wire(digest) else {
-        return (
-            None,
-            Some("The credential digest has no wire form".to_owned()),
-            None,
-        );
-    };
-    match trust.revocations.entries.get(&(issuer.to_owned(), wire)) {
+    match trust
+        .revocations
+        .entries
+        .get(&(issuer.to_owned(), digest.to_owned()))
+    {
         None => (Some(true), None, Some(checked_at)),
         Some(RevocationKind::Revoked) => {
             (Some(false), Some("Revoked by its issuer".to_owned()), None)

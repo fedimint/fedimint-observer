@@ -9,7 +9,9 @@ Run one collector instance and any number of API instances against the same
 PostgreSQL database. The default instance collects data and serves HTTP. Set
 `FO_API_ONLY=true` on additional API instances: they do not run migrations,
 collectors, projection, retention, or administrative writes. Route
-administrative requests to the collector.
+administrative requests to the collector. An API instance refuses to start
+until the collector has run exactly the core and Manifold migrations its binary
+knows.
 
 The collector holds a PostgreSQL advisory lock on a dedicated connection for its
 lifetime. A second collector exits rather than duplicate work, and losing that
@@ -192,6 +194,7 @@ empty, isolated database, rolls back its fixtures, and does not use
 | Variable | Command |
 | --- | --- |
 | `FMO_WORK_TEST_DATABASE` | `cargo test -p fmo_core postgres_ -- --ignored` |
+| `FMO_MANIFOLD_TEST_DATABASE` | `cargo test -p fmo_core manifold::collector::tests::postgres_ -- --ignored` |
 | `FMO_WALLETV2_TEST_DATABASE` | `cargo test -p fmo_module_walletv2 postgres_ -- --ignored` |
 | `FMO_LNV2_TEST_DATABASE` | `cargo test -p fmo_module_lnv2 postgres_ -- --ignored` |
 

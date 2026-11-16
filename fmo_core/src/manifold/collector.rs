@@ -2,29 +2,47 @@
 //! code that talks to relays: API handlers read what it stored.
 //!
 //! Each sync asks the relays for the latest addressable events of the three
-//! advertisement kinds, bounded by a per-request limit, verifies every one
-//! ([`super::discovery::verify_event`]), and keeps the newest per kind and
-//! author. It also records, per Manifold Guardian and UTC day, how many syncs
-//! found a fresh advertisement, and each new version it advertised.
+//! advertisement kinds, bounded by a per-request limit, and separately for
+//! those of the guardians the observer knows (bound to a seat, or holding a
+//! sound credential), so a flood of advertisements cannot hide them. It
+//! verifies every event ([`super::discovery::verify_event`]) and keeps the
+//! newest per kind and author. It also records, per Manifold Guardian and
+//! UTC day, how many syncs found a fresh advertisement, and each new version
+//! it advertised.
+//!
+//! What requests show of an advertisement is worked out here, once per
+//! event: its bounded listing ([`super::listing`]) and its credential's
+//! signature checks ([`super::discovery::evaluate_credential`]), so requests
+//! neither read payloads nor verify signatures.
 //!
 //! Each sync also reads the trusted PeerBadge issuers' credential revocations
 //! from the revocation locations their pinned authorities name
-//! ([`super::peerbadge`]), so credentials can be verified without relay I/O
-//! per request.
+//! ([`super::peerbadge`]), page by page until a relay has nothing more, so
+//! credentials can be verified without relay I/O per request.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::time::Duration;
 
-use anyhow::ensure;
-use nostr_sdk::{Filter, FilterOptions, Kind, RelayOptions, RelayPool, RelayPoolOptions};
+use anyhow::{bail, ensure, Context};
+use bitcoin::hashes::{sha256, Hash, HashEngine};
+use nostr_sdk::pool::RelayNotification;
+use nostr_sdk::{
+    Event, EventId, Filter, FilterOptions, Kind, Relay, RelayMessage, RelayOptions, RelayPool,
+    RelayPoolOptions, RelayStatus, SubscribeAutoCloseOptions, SubscribeOptions, SubscriptionId,
+    Timestamp,
+};
+use serde_json::Value;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, info, warn};
 
 use super::discovery::{
-    verify_event, VerifiedAdvertisement, FLIP_KIND, MAX_AD_AGE_SECONDS, MG_LEGACY_KIND, MG_V2_KIND,
+    evaluate_credential, kind_tags, verify_event, CredentialEvidence, VerifiedAdvertisement,
+    FLIP_KIND, MG_LEGACY_KIND, MG_V2_KIND,
 };
 use super::peerbadge::{
-    admit_revocation, check_pinned_authorities, revocation_targets, RevocationKind,
-    RevocationRecord, REVOCATION_KIND,
+    admit_revocation, check_pinned_authorities, pinned_authorities_fingerprint, revocation_targets,
+    RevocationKind, RevocationRecord, REVOCATION_KIND,
 };
 use crate::federation::observer::FederationObserver;
 
@@ -71,9 +89,29 @@ const FETCH_LIMIT: usize = 2000;
 /// created this long ago, whatever expiry they claim
 const RETENTION_DAYS: i64 = 30;
 const PRESENCE_RETENTION_DAYS: i64 = 90;
-/// Per revocation location; an answer this long may be cut short, so it does
-/// not count as complete
-const REVOCATION_FETCH_LIMIT: usize = 5000;
+/// How far ahead of the observer's clock an advertisement may be dated.
+/// Retention keeps the newest, so a larger allowance would let throwaway keys
+/// outrank every real guardian with advertisements dated ahead.
+pub(crate) const MAX_CLOCK_SKEW_SECONDS: u64 = 5 * 60;
+/// Known guardians (seat-bound or credentialed) fetched by author per sync,
+/// and per request
+const MAX_FETCHED_AUTHORS: usize = 2000;
+const AUTHORS_PER_FETCH: usize = 100;
+/// Addressable events one author can have under the three kinds and their
+/// `d` tags is small; this bounds an authors request
+const EVENTS_PER_FETCHED_AUTHOR: usize = 4;
+/// Revocations asked for per page. A relay may answer with fewer, so a short
+/// page never ends a read; only a page that brings nothing new does.
+const REVOCATION_PAGE_LIMIT: usize = 500;
+/// Pages per revocation location and sync; a read that needs more is
+/// incomplete
+const MAX_REVOCATION_PAGES: usize = 40;
+/// Stored advertisements derived again per step, when the derivation changed
+const DERIVE_BATCH: i64 = 200;
+const MAX_DERIVE_BATCHES: usize = 100;
+/// Bump when the stored listing or credential evidence changes shape or
+/// meaning: rows derived otherwise are derived again, and not listed until
+const DERIVATION_VERSION: u32 = 1;
 
 /// How much discovery data the observer keeps. Anyone can publish a
 /// self-signed advertisement under a new key, so neither what an
@@ -82,12 +120,19 @@ const REVOCATION_FETCH_LIMIT: usize = 5000;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Retention {
     /// Advertisements are dropped once created this long ago. Creation times
-    /// cannot be set in the future (verification rejects any more than
-    /// `MAX_AD_AGE_SECONDS` ahead), so a far-future expiry does not keep one.
+    /// cannot be set in the future (the collector refuses any more than
+    /// [`MAX_CLOCK_SKEW_SECONDS`] ahead), so a far-future expiry does not
+    /// keep one.
     pub max_age_seconds: i64,
-    /// Per kind, the newest by creation time are kept. Manifold Guardians
-    /// republish every 30 minutes, so a real one is always among the newest.
+    /// Per kind, the newest anonymous advertisements by creation time are
+    /// kept. Manifold Guardians republish every 30 minutes, so a real one is
+    /// among the newest unless keys flood the relays.
     pub max_per_kind: i64,
+    /// Per kind, the newest advertisements of protected guardians (bound to
+    /// a seat of an observed federation, or holding a sound credential from a
+    /// trusted issuer that it has not revoked) are kept apart from the
+    /// anonymous ones, so a flood of those never evicts them
+    pub max_protected_per_kind: i64,
     /// Version history kept per guardian, newest first
     pub max_versions_per_author: i64,
 }
@@ -96,8 +141,15 @@ impl Retention {
     pub(crate) const DEFAULT: Retention = Retention {
         max_age_seconds: RETENTION_DAYS * 86400,
         max_per_kind: 5000,
+        max_protected_per_kind: 1000,
         max_versions_per_author: 50,
     };
+
+    /// The most advertisements kept of each kind
+    pub(crate) fn max_rows_per_kind(&self) -> i64 {
+        self.max_per_kind
+            .saturating_add(self.max_protected_per_kind)
+    }
 }
 
 pub(crate) const MIGRATIONS: &[&str] = &[
@@ -176,6 +228,28 @@ CREATE TABLE revocation_checks (
 ALTER TABLE sync_state DROP COLUMN revocations_checked;
 CREATE INDEX advertisements_kind_created_at ON advertisements (kind, created_at DESC);
 ",
+    r"
+-- What the collector derives from each stored event, so requests neither
+-- verify credentials nor read payloads. Rows whose derived_stamp is not the
+-- running binary's are not listed until the collector derives them again.
+ALTER TABLE advertisements
+    ADD COLUMN derived_stamp TEXT,
+    -- The bounded view the directory lists
+    ADD COLUMN listing JSONB,
+    -- The credential's checks that do not change over time
+    ADD COLUMN credential JSONB,
+    -- The credential and its advertiser, hashed: a republished advertisement
+    -- reuses the evidence of the same credential instead of verifying again
+    ADD COLUMN credential_key TEXT,
+    -- Lowercase issuer and digest wire form, as revocations are stored
+    ADD COLUMN credential_issuer TEXT,
+    ADD COLUMN credential_digest TEXT,
+    -- Genuine, issued under a pinned authority, authorizing this advertiser
+    ADD COLUMN credential_sound BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX advertisements_author ON advertisements (author);
+CREATE INDEX advertisements_credential_key ON advertisements (credential_key);
+CREATE INDEX presence_daily_day ON presence_daily (day);
+",
 ];
 
 pub fn configured_relays() -> Vec<String> {
@@ -243,6 +317,271 @@ pub fn trusted_issuers() -> Vec<String> {
 
 fn unix_now() -> u64 {
     chrono::Utc::now().timestamp().max(0) as u64
+}
+
+/// What stored derivations were worked out with: rows with another stamp are
+/// derived again, and not listed until then
+pub(crate) fn derivation_stamp() -> String {
+    format!("v{DERIVATION_VERSION}-{}", pinned_authorities_fingerprint())
+}
+
+/// An API-only replica never migrates, so it starts only once the worker has
+/// run exactly the Manifold migrations this binary knows; otherwise every
+/// `/manifold/*` request would fail on a missing table or column
+pub(crate) async fn check_manifold_schema(client: &tokio_postgres::Client) -> anyhow::Result<()> {
+    let applied = client
+        .query_opt(
+            "SELECT migrations_applied FROM module_schema_versions WHERE module_kind = 'manifold'",
+            &[],
+        )
+        .await?
+        .map_or(0, |row| row.get::<_, i32>(0));
+    ensure!(
+        usize::try_from(applied).is_ok_and(|applied| applied == MIGRATIONS.len()),
+        "The database ran {applied} Manifold migrations but this binary needs {}; start the worker to migrate the database before API replicas",
+        MIGRATIONS.len()
+    );
+    Ok(())
+}
+
+/// A verified advertisement with what requests show of it
+#[derive(Debug, Clone)]
+pub(crate) struct Collected {
+    pub ad: VerifiedAdvertisement,
+    pub derived: Derived,
+}
+
+/// What the collector works out of an advertisement for requests
+#[derive(Debug, Clone)]
+pub(crate) struct Derived {
+    /// [`super::listing::listing`]; null should it not serialize
+    pub listing: Value,
+    pub evidence: CredentialEvidence,
+    /// [`credential_key`]
+    pub credential_key: Option<String>,
+}
+
+/// Identifies the credential an advertisement presents together with its
+/// advertiser: evidence stored under the same key and derivation stamp is
+/// the same, so it is reused rather than verified again
+pub(crate) fn credential_key(ad: &VerifiedAdvertisement) -> Option<String> {
+    let envelope = ad
+        .payload
+        .get("holder_authorizations")?
+        .as_array()?
+        .first()?;
+    let mut engine = sha256::Hash::engine();
+    engine.input(ad.author.as_bytes());
+    engine.input(b"\0");
+    engine.input(envelope.to_string().as_bytes());
+    Some(hex::encode(
+        sha256::Hash::from_engine(engine).to_byte_array(),
+    ))
+}
+
+/// Derives `ad`, with `evidence` already worked out for its credential key,
+/// or verifies its credential. Verification is CPU work: call it off the
+/// async executor.
+pub(crate) fn derive(ad: VerifiedAdvertisement, evidence: Option<CredentialEvidence>) -> Collected {
+    let listing = super::listing::listing(&ad).unwrap_or_else(|error| {
+        warn!(%error, event = %ad.event_id, "Could not serialize a Manifold listing");
+        Value::Null
+    });
+    let derived = Derived {
+        listing,
+        evidence: evidence.unwrap_or_else(|| evaluate_credential(&ad.payload)),
+        credential_key: credential_key(&ad),
+    };
+    Collected { ad, derived }
+}
+
+/// The schema Manifold's tables live in
+const SCHEMA: &str = "fmo_manifold";
+
+/// Begins a transaction whose `search_path` leads with `schema`, the
+/// Manifold schema ([`SCHEMA`]; tests use their own). `schema` is a trusted
+/// identifier, never data from outside.
+async fn manifold_transaction<'a>(
+    client: &'a mut tokio_postgres::Client,
+    schema: &str,
+) -> anyhow::Result<tokio_postgres::Transaction<'a>> {
+    let dbtx = client.transaction().await?;
+    dbtx.batch_execute(&format!("SET LOCAL search_path TO {schema}, public"))
+        .await?;
+    Ok(dbtx)
+}
+
+/// Derives `ads`, reusing the evidence stored for their credentials, and
+/// verifying the rest on a blocking thread
+pub(crate) async fn derive_all(
+    client: &mut tokio_postgres::Client,
+    schema: &str,
+    ads: Vec<VerifiedAdvertisement>,
+) -> anyhow::Result<Vec<Collected>> {
+    let keys: Vec<String> = ads.iter().filter_map(credential_key).collect();
+    let dbtx = manifold_transaction(client, schema).await?;
+    let known: HashMap<String, CredentialEvidence> = dbtx
+        .query(
+            "SELECT DISTINCT ON (credential_key) credential_key, credential FROM advertisements
+             WHERE credential_key = ANY($1) AND derived_stamp = $2 AND credential IS NOT NULL",
+            &[&keys, &derivation_stamp()],
+        )
+        .await?
+        .into_iter()
+        .filter_map(|row| {
+            let evidence = serde_json::from_value(row.get(1)).ok()?;
+            Some((row.get(0), evidence))
+        })
+        .collect();
+    dbtx.commit().await?;
+    tokio::task::spawn_blocking(move || {
+        ads.into_iter()
+            .map(|ad| {
+                let evidence = credential_key(&ad).and_then(|key| known.get(&key).cloned());
+                derive(ad, evidence)
+            })
+            .collect()
+    })
+    .await
+    .context("Deriving Manifold advertisements panicked")
+}
+
+/// Derives again the stored advertisements derived with another stamp (or
+/// before migration 4), in bounded steps. Returns how many were updated.
+pub(crate) async fn rederive_stale(
+    client: &mut tokio_postgres::Client,
+    schema: &str,
+) -> anyhow::Result<usize> {
+    let stamp = derivation_stamp();
+    let mut updated = 0;
+    for _ in 0..MAX_DERIVE_BATCHES {
+        let dbtx = manifold_transaction(client, schema).await?;
+        let rows = dbtx
+            .query(
+                "SELECT kind, author, event_id, created_at, issued_at, expires_at, payload
+                 FROM advertisements WHERE derived_stamp IS DISTINCT FROM $1
+                 ORDER BY kind, author LIMIT $2",
+                &[&stamp, &DERIVE_BATCH],
+            )
+            .await?;
+        dbtx.commit().await?;
+        let batch = rows.len();
+        let ads: Vec<VerifiedAdvertisement> = rows
+            .into_iter()
+            .map(|row| {
+                Ok(VerifiedAdvertisement {
+                    kind: u16::try_from(row.get::<_, i32>(0))?,
+                    author: row.get(1),
+                    event_id: row.get(2),
+                    created_at: u64::try_from(row.get::<_, i64>(3))?,
+                    issued_at: u64::try_from(row.get::<_, i64>(4))?,
+                    expires_at: u64::try_from(row.get::<_, i64>(5))?,
+                    payload: row.get(6),
+                })
+            })
+            .collect::<anyhow::Result<_>>()?;
+        let collected = derive_all(client, schema, ads).await?;
+        let dbtx = manifold_transaction(client, schema).await?;
+        for item in &collected {
+            let params = derived_params(item, &stamp)?;
+            dbtx.execute(
+                "UPDATE advertisements
+                 SET derived_stamp = $4, listing = $5, credential = $6, credential_key = $7,
+                     credential_issuer = $8, credential_digest = $9, credential_sound = $10
+                 WHERE kind = $1 AND author = $2 AND event_id = $3",
+                &params.with_key(),
+            )
+            .await?;
+        }
+        dbtx.commit().await?;
+        updated += batch;
+        if batch < usize::try_from(DERIVE_BATCH)? {
+            break;
+        }
+    }
+    Ok(updated)
+}
+
+/// The derived columns of one advertisement, as SQL parameters
+struct DerivedParams {
+    kind: i32,
+    author: String,
+    event_id: String,
+    stamp: String,
+    listing: Value,
+    credential: Value,
+    credential_key: Option<String>,
+    credential_issuer: Option<String>,
+    credential_digest: Option<String>,
+    credential_sound: bool,
+}
+
+impl DerivedParams {
+    /// Key columns, then the derived ones
+    fn with_key(&self) -> [&(dyn tokio_postgres::types::ToSql + Sync); 10] {
+        [
+            &self.kind,
+            &self.author,
+            &self.event_id,
+            &self.stamp,
+            &self.listing,
+            &self.credential,
+            &self.credential_key,
+            &self.credential_issuer,
+            &self.credential_digest,
+            &self.credential_sound,
+        ]
+    }
+}
+
+fn derived_params(item: &Collected, stamp: &str) -> anyhow::Result<DerivedParams> {
+    let evidence = &item.derived.evidence;
+    Ok(DerivedParams {
+        kind: i32::from(item.ad.kind),
+        author: item.ad.author.clone(),
+        event_id: item.ad.event_id.clone(),
+        stamp: stamp.to_owned(),
+        listing: item.derived.listing.clone(),
+        credential: serde_json::to_value(evidence)?,
+        credential_key: item.derived.credential_key.clone(),
+        credential_issuer: evidence.issuer_key(),
+        credential_digest: evidence.digest.clone(),
+        credential_sound: evidence.sound_for(&item.ad.author),
+    })
+}
+
+/// Guardians whose advertisements retention keeps apart from anonymous ones
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Protection {
+    /// Bound to a seat of an observed federation, by its verified directory
+    pub seat_bound: Vec<String>,
+    /// Issuers whose sound, unrevoked credentials protect their holders
+    pub trusted: Vec<String>,
+}
+
+/// Advertisers holding a sound credential from a trusted issuer that it has
+/// not revoked, at most `limit`. Runs with the Manifold schema first on the
+/// `search_path`.
+pub(crate) async fn credentialed_authors(
+    dbtx: &tokio_postgres::Transaction<'_>,
+    trusted: &[String],
+    limit: i64,
+) -> anyhow::Result<Vec<String>> {
+    Ok(dbtx
+        .query(
+            "SELECT DISTINCT author FROM advertisements a
+             WHERE credential_sound AND credential_issuer = ANY($1)
+               AND NOT EXISTS (
+                   SELECT 1 FROM revocations r
+                   WHERE r.issuer = a.credential_issuer
+                     AND r.credential_digest = a.credential_digest AND r.state = 'revoked')
+             ORDER BY author LIMIT $2",
+            &[&trusted, &limit],
+        )
+        .await?
+        .iter()
+        .map(|row| row.get(0))
+        .collect())
 }
 
 impl FederationObserver {
@@ -315,11 +654,43 @@ impl FederationObserver {
             interval.tick().await;
             let revocations =
                 fetch_revocations(&revocation_pool, &revocation_targets, &trusted).await;
-            if let Err(error) = self.sync_manifold_once(&pool, &relays, &revocations).await {
+            if let Err(error) = self
+                .sync_manifold_once(&pool, &relays, &revocations, &trusted)
+                .await
+            {
                 // One failed sync waits for the next; it never stops the task
                 warn!(%error, "Manifold discovery sync failed");
             }
         }
+    }
+
+    /// The guardians fetched by author and kept apart by retention
+    async fn manifold_protection(
+        &self,
+        trusted: &[String],
+    ) -> anyhow::Result<(Protection, Vec<String>)> {
+        let seat_bound: Vec<String> = super::api::seats_by_guardian(self)
+            .await?
+            .into_keys()
+            .collect();
+        let mut connection = self.connection().await?;
+        let dbtx = manifold_transaction(&mut connection, SCHEMA).await?;
+        let credentialed =
+            credentialed_authors(&dbtx, trusted, i64::try_from(MAX_FETCHED_AUTHORS)?).await?;
+        dbtx.commit().await?;
+        // Seat-bound guardians first: the observer verified them itself
+        let mut fetched = seat_bound.clone();
+        fetched.extend(credentialed);
+        let mut seen = std::collections::HashSet::new();
+        fetched.retain(|author| seen.insert(author.clone()));
+        fetched.truncate(MAX_FETCHED_AUTHORS);
+        Ok((
+            Protection {
+                seat_bound,
+                trusted: trusted.to_vec(),
+            },
+            fetched,
+        ))
     }
 
     async fn sync_manifold_once(
@@ -327,10 +698,12 @@ impl FederationObserver {
         pool: &RelayPool,
         relays: &[String],
         revocations: &RevocationLookup,
+        trusted: &[String],
     ) -> anyhow::Result<()> {
+        let (protection, known_authors) = self.manifold_protection(trusted).await?;
         let since =
             nostr_sdk::Timestamp::from(unix_now().saturating_sub(RETENTION_DAYS as u64 * 86400));
-        let events = pool
+        let mut events = pool
             .get_events_of(
                 vec![
                     Filter::new()
@@ -350,56 +723,118 @@ impl FederationObserver {
                 FilterOptions::ExitOnEOSE,
             )
             .await?;
+        let latest = events.len();
+        // The newest events of any kind may all be a flood's: the known
+        // guardians' own are asked for by author
+        events.extend(fetch_by_authors(pool, &known_authors, since).await);
         // An empty answer means the relays could not be reached, not that
         // every guardian vanished; presence is only counted from real answers
         ensure!(!events.is_empty(), "No relay returned any Manifold event");
 
         let now = unix_now();
-        // The newest valid event per kind and author; ties go to the lowest id (NIP-01)
-        let mut newest = HashMap::new();
-        let mut rejected = 0usize;
-        for event in &events {
-            match verify_event(event) {
-                Ok(ad) if ad.created_at <= now + MAX_AD_AGE_SECONDS => {
-                    let key = (ad.kind, ad.author.clone());
-                    let replace = newest
-                        .get(&key)
-                        .is_none_or(|current: &VerifiedAdvertisement| {
-                            (ad.created_at, std::cmp::Reverse(&ad.event_id))
-                                > (current.created_at, std::cmp::Reverse(&current.event_id))
-                        });
-                    if replace {
-                        newest.insert(key, ad);
-                    }
-                }
-                Ok(_) => rejected += 1,
-                Err(error) => {
-                    // Other applications use the same kinds, so most rejects are not Manifold's
-                    debug!(?error, id = %event.id(), "Ignoring discovery event");
-                    rejected += 1;
-                }
-            }
-        }
+        let (newest, rejected) = select_newest(&events, now);
 
         let mut connection = self.connection().await?;
-        let mut dbtx = connection.transaction().await?;
-        dbtx.batch_execute("SET LOCAL search_path TO fmo_manifold, public")
-            .await?;
-        let ads: Vec<&VerifiedAdvertisement> = newest.values().collect();
-        let outcome = store_sync(&mut dbtx, &ads, relays, now, Retention::DEFAULT).await?;
+        let collected = derive_all(&mut connection, SCHEMA, newest).await?;
+        let mut dbtx = manifold_transaction(&mut connection, SCHEMA).await?;
+        let outcome = store_sync(
+            &mut dbtx,
+            &collected,
+            relays,
+            now,
+            Retention::DEFAULT,
+            &protection,
+        )
+        .await?;
         store_revocations(&dbtx, revocations).await?;
         dbtx.commit().await?;
+        let rederived = rederive_stale(&mut connection, SCHEMA).await?;
         let rejected = rejected + outcome.refused;
         info!(
             events = events.len(),
+            latest,
+            known_authors = known_authors.len(),
             stored = outcome.stored,
             rejected,
+            rederived,
             revocations = revocations.records.len(),
             revocation_issuers_read = revocations.complete.len(),
             "Manifold discovery synced"
         );
         Ok(())
     }
+}
+
+/// The newest valid advertisement per kind and author among `events`, and
+/// how many events were rejected. Ties go to the lowest id (NIP-01). An
+/// advertisement dated more than [`MAX_CLOCK_SKEW_SECONDS`] after `now` is
+/// rejected: retention keeps the newest, so it would outrank real ones.
+pub(crate) fn select_newest(events: &[Event], now: u64) -> (Vec<VerifiedAdvertisement>, usize) {
+    let mut newest = HashMap::new();
+    let mut rejected = 0usize;
+    for event in events {
+        match verify_event(event) {
+            Ok(ad) if ad.created_at <= now.saturating_add(MAX_CLOCK_SKEW_SECONDS) => {
+                let key = (ad.kind, ad.author.clone());
+                let replace = newest
+                    .get(&key)
+                    .is_none_or(|current: &VerifiedAdvertisement| {
+                        (ad.created_at, std::cmp::Reverse(&ad.event_id))
+                            > (current.created_at, std::cmp::Reverse(&current.event_id))
+                    });
+                if replace {
+                    newest.insert(key, ad);
+                }
+            }
+            Ok(ad) => {
+                debug!(author = %ad.author, created_at = ad.created_at, "Ignoring a Manifold advertisement dated in the future");
+                rejected += 1;
+            }
+            Err(error) => {
+                // Other applications use the same kinds, so most rejects are not Manifold's
+                debug!(?error, id = %event.id(), "Ignoring discovery event");
+                rejected += 1;
+            }
+        }
+    }
+    (newest.into_values().collect(), rejected)
+}
+
+/// The advertisements of `authors`, in bounded requests. A request that fails
+/// only costs this sync those authors' events.
+async fn fetch_by_authors(pool: &RelayPool, authors: &[String], since: Timestamp) -> Vec<Event> {
+    let identifiers: Vec<&str> = [MG_LEGACY_KIND, MG_V2_KIND, FLIP_KIND]
+        .into_iter()
+        .filter_map(kind_tags)
+        .map(|(d, _)| d)
+        .collect();
+    let mut events = Vec::new();
+    for chunk in authors.chunks(AUTHORS_PER_FETCH) {
+        let keys: Vec<nostr_sdk::PublicKey> = chunk
+            .iter()
+            .filter_map(|author| nostr_sdk::PublicKey::from_hex(author).ok())
+            .collect();
+        let filter = Filter::new()
+            .kinds([
+                Kind::Custom(MG_LEGACY_KIND),
+                Kind::Custom(MG_V2_KIND),
+                Kind::Custom(FLIP_KIND),
+            ])
+            .authors(keys)
+            .identifiers(identifiers.iter().copied())
+            .since(since)
+            .limit(chunk.len() * EVENTS_PER_FETCHED_AUTHOR);
+        match pool
+            .get_events_of(vec![filter], FETCH_TIMEOUT, FilterOptions::ExitOnEOSE)
+            .await
+        {
+            Ok(found) => events.extend(found),
+            Err(error) => {
+                warn!(%error, authors = chunk.len(), "Could not fetch known Manifold guardians' advertisements");
+            }
+        }
+    }
+    events
 }
 
 /// What one sync wrote
@@ -420,25 +855,27 @@ pub(crate) struct StoreOutcome {
 /// sync commits.
 pub(crate) async fn store_sync(
     dbtx: &mut tokio_postgres::Transaction<'_>,
-    ads: &[&VerifiedAdvertisement],
+    ads: &[Collected],
     relays: &[String],
     now: u64,
     retention: Retention,
+    protection: &Protection,
 ) -> anyhow::Result<StoreOutcome> {
     let mut outcome = StoreOutcome {
         stored: 0,
         refused: 0,
     };
-    for ad in ads {
+    let stamp = derivation_stamp();
+    for item in ads {
         let savepoint = dbtx.transaction().await?;
-        match store_advertisement(&savepoint, ad).await {
+        match store_advertisement(&savepoint, item, &stamp).await {
             Ok(()) => {
                 savepoint.commit().await?;
                 outcome.stored += 1;
             }
             Err(error) => {
                 savepoint.rollback().await?;
-                warn!(%error, author = %ad.author, event = %ad.event_id, "Skipping a Manifold advertisement the database refused");
+                warn!(%error, author = %item.ad.author, event = %item.ad.event_id, "Skipping a Manifold advertisement the database refused");
                 outcome.refused += 1;
             }
         }
@@ -455,7 +892,11 @@ pub(crate) async fn store_sync(
          ON CONFLICT (author, day) DO UPDATE
              SET polls = presence_daily.polls + 1,
                  fresh_polls = presence_daily.fresh_polls + EXCLUDED.fresh_polls",
-        &[&now, &(MAX_AD_AGE_SECONDS as i64), &(RETENTION_DAYS * 86400)],
+        &[
+            &now,
+            &(super::discovery::MAX_AD_AGE_SECONDS as i64),
+            &(RETENTION_DAYS * 86400),
+        ],
     )
     .await?;
     dbtx.execute(
@@ -464,21 +905,61 @@ pub(crate) async fn store_sync(
     )
     .await?;
     // The observer's own horizon: by creation time, never by claimed expiry
+    let mut gone: Vec<String> = dbtx
+        .query(
+            "DELETE FROM advertisements WHERE created_at < $1 RETURNING author",
+            &[&(now - retention.max_age_seconds)],
+        )
+        .await?
+        .iter()
+        .map(|row| row.get(0))
+        .collect();
+    // Per kind, the newest anonymous advertisements and, apart from them, the
+    // newest of protected guardians: a flood of new keys evicts only its own
+    gone.extend(
+        dbtx.query(
+            "DELETE FROM advertisements a USING (
+                 SELECT kind, author FROM (
+                     SELECT kind, author, protected,
+                            row_number() OVER (PARTITION BY kind, protected
+                                               ORDER BY created_at DESC, author) AS rank
+                     FROM (
+                         SELECT kind, author, created_at,
+                                COALESCE(author = ANY($2)
+                                    OR (credential_sound AND credential_issuer = ANY($3)
+                                        AND NOT EXISTS (
+                                            SELECT 1 FROM revocations r
+                                            WHERE r.issuer = advertisements.credential_issuer
+                                              AND r.credential_digest = advertisements.credential_digest
+                                              AND r.state = 'revoked')),
+                                    false) AS protected
+                         FROM advertisements
+                     ) flagged
+                 ) ranked
+                 WHERE rank > CASE WHEN protected THEN $4::bigint ELSE $1::bigint END
+             ) excess
+             WHERE a.kind = excess.kind AND a.author = excess.author
+             RETURNING a.author",
+            &[
+                &retention.max_per_kind,
+                &protection.seat_bound,
+                &protection.trusted,
+                &retention.max_protected_per_kind,
+            ],
+        )
+        .await?
+        .iter()
+        .map(|row| row.get::<_, String>(0)),
+    );
+    gone.sort();
+    gone.dedup();
+    // Presence is kept for guardians that still advertise or hold a seat;
+    // that of keys that stopped goes with their last advertisement
     dbtx.execute(
-        "DELETE FROM advertisements WHERE created_at < $1",
-        &[&(now - retention.max_age_seconds)],
-    )
-    .await?;
-    dbtx.execute(
-        "DELETE FROM advertisements a USING (
-             SELECT kind, author FROM (
-                 SELECT kind, author,
-                        row_number() OVER (PARTITION BY kind ORDER BY created_at DESC, author) AS rank
-                 FROM advertisements
-             ) ranked WHERE rank > $1
-         ) excess
-         WHERE a.kind = excess.kind AND a.author = excess.author",
-        &[&retention.max_per_kind],
+        "DELETE FROM presence_daily p
+         WHERE p.author = ANY($1) AND NOT p.author = ANY($2)
+           AND NOT EXISTS (SELECT 1 FROM advertisements a WHERE a.author = p.author)",
+        &[&gone, &protection.seat_bound],
     )
     .await?;
     // Version history lives as long as the guardian still advertises, and
@@ -523,9 +1004,10 @@ pub(crate) struct RevocationLookup {
 }
 
 /// Reads the trusted issuers' revocations from each location. An issuer's
-/// read is complete only when every location its pinned authority names
-/// answered in full; one that fails, times out or answers at the limit
-/// leaves the issuers it serves incomplete, so their state is not refreshed.
+/// read is complete only when every location its pinned authority names was
+/// read to its end ([`read_all_pages`]); one that fails, times out, loses
+/// messages or does not end within the page bound leaves the issuers it
+/// serves incomplete, so their state is not refreshed.
 async fn fetch_revocations(
     pool: &RelayPool,
     targets: &BTreeMap<String, Vec<String>>,
@@ -540,19 +1022,23 @@ async fn fetch_revocations(
             .collect();
         let filter = Filter::new()
             .kind(Kind::Custom(REVOCATION_KIND))
-            .authors(authors)
-            .limit(REVOCATION_FETCH_LIMIT);
-        // One relay's query ends with its EOSE; a timeout or a lost
-        // connection is an error, never a silently empty answer
+            .authors(authors);
         let answer = match pool.relay(relay.as_str()).await {
-            Ok(connection) => connection
-                .get_events_of(vec![filter], FETCH_TIMEOUT, FilterOptions::ExitOnEOSE)
+            Ok(connection) => {
+                read_all_pages(|until| {
+                    let connection = connection.clone();
+                    let mut page = filter.clone().limit(REVOCATION_PAGE_LIMIT);
+                    if let Some(until) = until {
+                        page = page.until(until);
+                    }
+                    async move { fetch_to_eose(&connection, page, FETCH_TIMEOUT).await }
+                })
                 .await
-                .map_err(anyhow::Error::from),
+            }
             Err(error) => Err(error.into()),
         };
         match answer {
-            Ok(events) if events.len() < REVOCATION_FETCH_LIMIT => {
+            Ok(events) => {
                 answered.insert(relay.clone());
                 for record in events
                     .iter()
@@ -568,11 +1054,8 @@ async fn fetch_revocations(
                     }
                 }
             }
-            Ok(_) => {
-                warn!(%relay, "A revocation answer reached the limit and may be cut short");
-            }
             Err(error) => {
-                warn!(%error, %relay, "Could not read PeerBadge revocations");
+                warn!(%error, %relay, "Could not read PeerBadge revocations in full");
             }
         }
     }
@@ -580,6 +1063,119 @@ async fn fetch_revocations(
         records: found.into_values().collect(),
         complete: complete_issuers(trusted, &answered),
     }
+}
+
+/// Every event a relay holds for a filter, read newest first, page by page:
+/// `fetch_page` asks for the events created at or before its argument (all,
+/// for `None`). Relays cap each answer below what was asked (by their own
+/// limits, which differ), so no answer's length says the read is complete;
+/// it is complete when a page brings no event not already read, and fails
+/// when it needs more than [`MAX_REVOCATION_PAGES`] pages.
+///
+/// Paging continues from the oldest second read, inclusive, so events
+/// sharing it are not skipped. Should more events share one second than the
+/// relay returns per page, paging cannot get past it: the relay's page size,
+/// learned from pages that turned out cut short (else what was asked), says
+/// when that may be so, and the read then fails rather than claim it is
+/// complete.
+pub(crate) async fn read_all_pages<F, Fut>(mut fetch_page: F) -> anyhow::Result<Vec<Event>>
+where
+    F: FnMut(Option<Timestamp>) -> Fut,
+    Fut: Future<Output = anyhow::Result<Vec<Event>>>,
+{
+    let mut read: HashMap<EventId, Event> = HashMap::new();
+    let mut until: Option<Timestamp> = None;
+    let mut page_size = REVOCATION_PAGE_LIMIT;
+    let mut previous_page: Option<usize> = None;
+    for _ in 0..MAX_REVOCATION_PAGES {
+        let page = fetch_page(until).await?;
+        let length = page.len();
+        let oldest = page.iter().map(Event::created_at).min();
+        let within_one_second =
+            until.is_some() && page.iter().all(|e| Some(e.created_at()) == until);
+        let mut new = 0usize;
+        for event in page {
+            if read.insert(event.id(), event).is_none() {
+                new += 1;
+            }
+        }
+        if new == 0 {
+            ensure!(
+                !(length > 0 && within_one_second && length >= page_size),
+                "More events share one second than the relay returns per page"
+            );
+            return Ok(read.into_values().collect());
+        }
+        // The previous page left events out, so the relay cut it short
+        if let Some(previous) = previous_page {
+            page_size = page_size.min(previous);
+        }
+        previous_page = Some(length);
+        until = oldest;
+    }
+    bail!("The relay did not run out of events within {MAX_REVOCATION_PAGES} pages")
+}
+
+/// One relay's answer to `filter`, provided it was complete: it ends with
+/// the relay's end of stored events. Unlike `Relay::get_events_of`, a lost
+/// notification (a lagging receiver), a closed subscription, a disconnect or
+/// a timeout is an error, never a silently shorter answer.
+async fn fetch_to_eose(
+    relay: &Relay,
+    filter: Filter,
+    timeout: Duration,
+) -> anyhow::Result<Vec<Event>> {
+    // Listen before asking, so nothing the relay sends is missed
+    let mut notifications = relay.notifications();
+    let id = SubscriptionId::generate();
+    relay
+        .subscribe_with_id(
+            id.clone(),
+            vec![filter],
+            SubscribeOptions::default().close_on(Some(
+                SubscribeAutoCloseOptions::default()
+                    .filter(FilterOptions::ExitOnEOSE)
+                    .timeout(Some(timeout)),
+            )),
+        )
+        .await?;
+    let mut events = Vec::new();
+    tokio::time::timeout(timeout, async {
+        loop {
+            match notifications.recv().await {
+                Ok(RelayNotification::Message { message }) => match message {
+                    RelayMessage::Event {
+                        subscription_id,
+                        event,
+                    } if subscription_id == id => events.push(*event),
+                    RelayMessage::EndOfStoredEvents(subscription_id) if subscription_id == id => {
+                        return Ok(())
+                    }
+                    RelayMessage::Closed {
+                        subscription_id,
+                        message,
+                    } if subscription_id == id => {
+                        bail!("The relay closed the subscription: {message}")
+                    }
+                    _ => {}
+                },
+                Ok(RelayNotification::RelayStatus {
+                    status: RelayStatus::Disconnected | RelayStatus::Terminated,
+                }) => {
+                    bail!("The relay disconnected")
+                }
+                Ok(RelayNotification::Shutdown) => bail!("The relay shut down"),
+                Ok(_) => {}
+                Err(RecvError::Lagged(missed)) => {
+                    bail!("Missed {missed} relay messages, so the answer may be incomplete")
+                }
+                Err(RecvError::Closed) => bail!("The relay's notifications ended"),
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("The relay did not finish answering in time"))??;
+    Ok(events)
 }
 
 /// The trusted issuers whose every revocation location is in `answered`
@@ -634,27 +1230,44 @@ pub(crate) async fn store_revocations(
 
 async fn store_advertisement(
     savepoint: &tokio_postgres::Transaction<'_>,
-    ad: &VerifiedAdvertisement,
+    item: &Collected,
+    stamp: &str,
 ) -> anyhow::Result<()> {
+    let ad = &item.ad;
     let created_at = i64::try_from(ad.created_at)?;
     let issued_at = i64::try_from(ad.issued_at)?;
     let expires_at = i64::try_from(ad.expires_at)?;
+    let derived = derived_params(item, stamp)?;
     savepoint
         .execute(
             "INSERT INTO advertisements
-                 (kind, author, event_id, created_at, issued_at, expires_at, payload)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 (kind, author, event_id, derived_stamp, listing, credential, credential_key,
+                  credential_issuer, credential_digest, credential_sound,
+                  created_at, issued_at, expires_at, payload)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              ON CONFLICT (kind, author) DO UPDATE
                  SET event_id = EXCLUDED.event_id, created_at = EXCLUDED.created_at,
                      issued_at = EXCLUDED.issued_at, expires_at = EXCLUDED.expires_at,
-                     payload = EXCLUDED.payload, last_seen = now()
+                     payload = EXCLUDED.payload, last_seen = now(),
+                     derived_stamp = EXCLUDED.derived_stamp, listing = EXCLUDED.listing,
+                     credential = EXCLUDED.credential, credential_key = EXCLUDED.credential_key,
+                     credential_issuer = EXCLUDED.credential_issuer,
+                     credential_digest = EXCLUDED.credential_digest,
+                     credential_sound = EXCLUDED.credential_sound
                  WHERE advertisements.created_at < EXCLUDED.created_at
                     OR (advertisements.created_at = EXCLUDED.created_at
                         AND EXCLUDED.event_id < advertisements.event_id)",
             &[
-                &i32::from(ad.kind),
-                &ad.author,
-                &ad.event_id,
+                &derived.kind,
+                &derived.author,
+                &derived.event_id,
+                &derived.stamp,
+                &derived.listing,
+                &derived.credential,
+                &derived.credential_key,
+                &derived.credential_issuer,
+                &derived.credential_digest,
+                &derived.credential_sound,
                 &created_at,
                 &issued_at,
                 &expires_at,

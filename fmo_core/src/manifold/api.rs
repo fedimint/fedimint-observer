@@ -1,23 +1,33 @@
 //! `/manifold/*`: discovery data as the collector stored it, joined with the
 //! seats the observer verified from federations' own consensus metadata.
-//! Handlers do no remote I/O; their work is bounded by the stored rows.
+//! Handlers do no remote I/O, read no advertisement payloads and verify no
+//! credential signatures: they read the listings and credential evidence the
+//! collector derived ([`super::collector::Derived`]) and apply only the
+//! trust, revocation and time checks. Their work is bounded by the stored
+//! rows.
 
 use std::collections::{BTreeMap, HashMap};
 
+use anyhow::Context;
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{DateTime, TimeDelta, Utc};
+use fedimint_core::config::{ClientConfig, FederationId};
 use fmo_api_types::{
-    AdFreshness, AdObservationDay, FlipAttesterPolicy, FlipDisplay, FlipProvider, ListPage,
-    ManifoldDiscovery, ManifoldGuardianProfile, ManifoldGuardianSummary, MgAdvertisement,
-    MgApiEndpoint, MgAvailability, MgPlan, MgSoftware, MgVersionChange, OperatedSeat,
+    AdFreshness, AdObservationDay, FlipProvider, ListPage, ManifoldDiscovery,
+    ManifoldGuardianProfile, ManifoldGuardianSummary, MgAdvertisement, MgVersionChange,
+    OperatedSeat,
 };
 use serde_json::Value;
+use tracing::debug;
 
-use super::collector::{configured_relays, trusted_issuers, Retention};
+use super::collector::{configured_relays, derivation_stamp, trusted_issuers, Retention};
 use super::directory::{facets, matches, sort_key, DirectoryQuery};
-use super::discovery::{credential, freshness, FLIP_KIND, MG_LEGACY_KIND, MG_V2_KIND};
+use super::discovery::{
+    assess_credential, freshness, CredentialEvidence, FLIP_KIND, MG_LEGACY_KIND, MG_V2_KIND,
+};
+use super::listing::FlipListing;
 use super::peerbadge::{IssuerRevocationCheck, RevocationKind, RevocationState, TrustContext};
 use super::seat_bindings::{verify_for_federation, FederationSeats};
 use super::{mg_display_name, SEAT_BINDINGS_OBSERVATION};
@@ -37,54 +47,112 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/flip-providers", get(list_flip_providers))
 }
 
+/// What the collector listed of an advertisement
+enum Listing {
+    Mg(Box<MgAdvertisement>),
+    Flip(Box<FlipListing>),
+}
+
 struct StoredAd {
     kind: u16,
     author: String,
     event_id: String,
     issued_at: u64,
     expires_at: u64,
-    payload: Value,
+    listing: Listing,
+    evidence: CredentialEvidence,
 }
+
+/// What the collector stored of each listed credential's revocation, by
+/// (issuer, credential digest)
+type RevocationEntries = HashMap<(String, String), RevocationKind>;
 
 fn unix_now() -> u64 {
     Utc::now().timestamp().max(0) as u64
 }
 
+/// The stored advertisements of `kinds` (of one author, given one), with
+/// what the collector derived of them, and the stored revocations of their
+/// credentials. Rows the collector has not derived with this binary's
+/// derivation yet are left out until it has.
 async fn load_ads(
     observer: &FederationObserver,
     kinds: &[i32],
     author: Option<&str>,
-) -> anyhow::Result<Vec<StoredAd>> {
+) -> anyhow::Result<(Vec<StoredAd>, RevocationEntries)> {
     let now = Utc::now().timestamp();
     let listed_since = now - LISTED_AFTER_EXPIRY.num_seconds();
     // The collector keeps at most this many per kind; a request never reads
     // more, whatever was published, and nothing past the retention horizon
     let retention = Retention::DEFAULT;
     let created_since = now - retention.max_age_seconds;
-    let max_rows = retention.max_per_kind.saturating_mul(kinds.len() as i64);
-    Ok(observer
+    let max_rows = retention
+        .max_rows_per_kind()
+        .saturating_mul(kinds.len() as i64);
+    let rows = observer
         .connection()
         .await?
         .query(
-            "SELECT kind, author, event_id, issued_at, expires_at, payload
-             FROM fmo_manifold.advertisements
-             WHERE kind = ANY($1) AND ($2::text IS NULL OR author = $2) AND expires_at >= $3
-               AND created_at >= $4
-             ORDER BY created_at DESC
+            "SELECT a.kind, a.author, a.event_id, a.issued_at, a.expires_at, a.listing,
+                    a.credential, a.credential_issuer, a.credential_digest, r.state
+             FROM fmo_manifold.advertisements a
+             LEFT JOIN fmo_manifold.revocations r
+                 ON r.issuer = a.credential_issuer AND r.credential_digest = a.credential_digest
+             WHERE a.kind = ANY($1) AND ($2::text IS NULL OR a.author = $2) AND a.expires_at >= $3
+               AND a.created_at >= $4 AND a.derived_stamp = $6
+             ORDER BY a.created_at DESC
              LIMIT $5",
-            &[&kinds, &author, &listed_since, &created_since, &max_rows],
+            &[
+                &kinds,
+                &author,
+                &listed_since,
+                &created_since,
+                &max_rows,
+                &derivation_stamp(),
+            ],
         )
-        .await?
-        .into_iter()
-        .map(|row| StoredAd {
-            kind: row.get::<_, i32>(0) as u16,
-            author: row.get(1),
-            event_id: row.get(2),
+        .await?;
+    let mut ads = Vec::with_capacity(rows.len());
+    let mut revocations = RevocationEntries::new();
+    for row in rows {
+        let kind = row.get::<_, i32>(0) as u16;
+        let author: String = row.get(1);
+        let event_id: String = row.get(2);
+        let listing: Option<Value> = row.get(5);
+        let evidence: Option<Value> = row.get(6);
+        let derived = listing.zip(evidence).and_then(|(listing, evidence)| {
+            let listing = if kind == FLIP_KIND {
+                Listing::Flip(serde_json::from_value(listing).ok()?)
+            } else {
+                Listing::Mg(serde_json::from_value(listing).ok()?)
+            };
+            Some((listing, serde_json::from_value(evidence).ok()?))
+        });
+        let Some((listing, evidence)) = derived else {
+            debug!(%author, event = %event_id, "Skipping a Manifold advertisement without a usable derivation");
+            continue;
+        };
+        let issuer: Option<String> = row.get(7);
+        let digest: Option<String> = row.get(8);
+        if let (Some(issuer), Some(digest), Some(kind)) = (
+            issuer,
+            digest,
+            row.get::<_, Option<&str>>(9)
+                .and_then(RevocationKind::parse),
+        ) {
+            revocations.insert((issuer, digest), kind);
+        }
+        ads.push(StoredAd {
+            kind,
+            author,
+            event_id,
             issued_at: row.get::<_, i64>(3).max(0) as u64,
             expires_at: row.get::<_, i64>(4).max(0) as u64,
-            payload: row.get(5),
-        })
-        .collect())
+            listing,
+            evidence,
+        });
+    }
+    Ok((ads, revocations))
 }
 
 async fn provenance(
@@ -104,12 +172,17 @@ async fn provenance(
     })
 }
 
-/// What credentials are checked against: the trusted issuers, and the
-/// revocations the collector read with when it last read them completely
-async fn trust_context(observer: &FederationObserver) -> anyhow::Result<TrustContext> {
-    let connection = observer.connection().await?;
+/// What credentials are checked against: the trusted issuers, when the
+/// collector last read each one's revocations completely, and the stored
+/// revocations of the credentials at hand
+async fn trust_context(
+    observer: &FederationObserver,
+    entries: RevocationEntries,
+) -> anyhow::Result<TrustContext> {
     let issuers = trusted_issuers();
-    let checks = connection
+    let checks = observer
+        .connection()
+        .await?
         .query(
             "SELECT issuer, locations, checked_at FROM fmo_manifold.revocation_checks
              WHERE issuer = ANY($1)",
@@ -125,19 +198,6 @@ async fn trust_context(observer: &FederationObserver) -> anyhow::Result<TrustCon
                     checked_at: row.get(2),
                 },
             )
-        })
-        .collect();
-    let entries = connection
-        .query(
-            "SELECT issuer, credential_digest, state FROM fmo_manifold.revocations
-             WHERE issuer = ANY($1)",
-            &[&issuers],
-        )
-        .await?
-        .iter()
-        .filter_map(|row| {
-            let kind = RevocationKind::parse(row.get::<_, &str>(2))?;
-            Some(((row.get(0), row.get(1)), kind))
         })
         .collect();
     Ok(TrustContext {
@@ -199,116 +259,11 @@ fn choose_ad<'a>(ads: &[&'a StoredAd], now: u64) -> Option<&'a StoredAd> {
         })
 }
 
-fn plan(value: &Value) -> Option<MgPlan> {
-    if let Some(plan) = value.get("InfiniteBestEffort") {
-        return Some(MgPlan::InfiniteBestEffort {
-            price_msats: plan.get("price_msats")?.as_u64()?,
-        });
-    }
-    let plan = value.get("SubscriptionBased")?;
-    Some(MgPlan::Subscription {
-        initial_price_msats: plan.get("initial_price_msats")?.as_u64()?,
-        renewal_price_msats: plan.get("renewal_price_msats")?.as_u64()?,
-        period: plan
-            .get("period")
-            .map(|p| p.as_str().map_or_else(|| p.to_string(), str::to_owned))?,
-    })
-}
-
-fn strings(value: Option<&Value>) -> Vec<String> {
-    value
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|i| i.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn advertisement_view(ad: &StoredAd) -> MgAdvertisement {
-    let p = &ad.payload;
-    MgAdvertisement {
-        event_kind: ad.kind,
-        event_id: ad.event_id.clone(),
-        issued_at: ad.issued_at,
-        expires_at: ad.expires_at,
-        signature_valid: true,
-        service_pubkey: p
-            .get("service_pubkey")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        api_endpoints: p
-            .get("api_endpoints")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|e| {
-                        Some(MgApiEndpoint {
-                            transport: e.get("transport")?.as_str()?.to_owned(),
-                            url: e.get("url")?.as_str()?.to_owned(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        availability: MgAvailability {
-            fedimintd_version: p
-                .pointer("/availability/fedimintd_version")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            federation_sizes: p
-                .pointer("/availability/federation_sizes")
-                .and_then(Value::as_array)
-                .map(|s| {
-                    s.iter()
-                        .filter_map(|n| n.as_u64().and_then(|n| u16::try_from(n).ok()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-        },
-        plans: p
-            .get("plans")
-            .and_then(Value::as_array)
-            .map(|ps| ps.iter().filter_map(plan).collect())
-            .unwrap_or_default(),
-        self_reported_uptime_permille: (ad.kind == MG_V2_KIND)
-            .then(|| p.get("uptime_permille").and_then(Value::as_object))
-            .flatten()
-            .map(|uptime| {
-                uptime
-                    .iter()
-                    .filter_map(|(window, value)| {
-                        Some((
-                            window.clone(),
-                            u16::try_from(value.as_u64()?).ok().filter(|v| *v <= 1000)?,
-                        ))
-                    })
-                    .collect::<BTreeMap<_, _>>()
-            }),
-        software: (ad.kind == MG_V2_KIND)
-            .then(|| {
-                Some(MgSoftware {
-                    mg_version: p.pointer("/version/mg_version")?.as_str()?.to_owned(),
-                    api_version: p.pointer("/version/api_version")?.as_u64()?,
-                })
-            })
-            .flatten(),
-        holder_authorization_count: p
-            .get("holder_authorizations")
-            .and_then(Value::as_array)
-            .map_or(0, |a| a.len() as u32),
-    }
-}
-
 /// Seats bound to each Manifold Guardian in observed federations whose
 /// seat-binding directory verifies against their config. Bounded by the
-/// federations that publish a directory, each of at most 64 bindings.
-async fn seats_by_guardian(
+/// federations that publish a directory, each of at most 64 bindings; the
+/// signatures are checked on a blocking thread.
+pub(super) async fn seats_by_guardian(
     observer: &FederationObserver,
 ) -> anyhow::Result<HashMap<String, Vec<OperatedSeat>>> {
     let rows = observer
@@ -320,26 +275,31 @@ async fn seats_by_guardian(
             &[&SEAT_BINDINGS_OBSERVATION],
         )
         .await?;
-    let mut seats: HashMap<String, Vec<OperatedSeat>> = HashMap::new();
+    let mut directories: Vec<(FederationId, ClientConfig, String, DateTime<Utc>)> = Vec::new();
     for row in rows {
         let federation_id = federation_id_from_db(&row.get::<_, Vec<u8>>(0))?;
-        let value: String = row.get(1);
-        let observed_at: DateTime<Utc> = row.get(2);
         let Some(federation) = observer.get_federation(federation_id).await? else {
             continue;
         };
-        let Ok(verified) = FederationSeats::from_config(&federation.config)
-            .and_then(|s| verify_for_federation(&value, &s))
+        directories.push((federation_id, federation.config, row.get(1), row.get(2)));
+    }
+    tokio::task::spawn_blocking(move || verified_seats(directories))
+        .await
+        .context("Verifying seat bindings panicked")
+}
+
+fn verified_seats(
+    directories: Vec<(FederationId, ClientConfig, String, DateTime<Utc>)>,
+) -> HashMap<String, Vec<OperatedSeat>> {
+    let mut seats: HashMap<String, Vec<OperatedSeat>> = HashMap::new();
+    for (federation_id, config, value, observed_at) in directories {
+        let Ok(verified) =
+            FederationSeats::from_config(&config).and_then(|s| verify_for_federation(&value, &s))
         else {
             continue;
         };
-        let name = federation
-            .config
-            .global
-            .meta
-            .get("federation_name")
-            .cloned();
-        let guardians = federation.config.global.api_endpoints.len() as u32;
+        let name = config.global.meta.get("federation_name").cloned();
+        let guardians = config.global.api_endpoints.len() as u32;
         for binding in verified {
             seats
                 .entry(binding.fman_pubkey)
@@ -354,7 +314,7 @@ async fn seats_by_guardian(
                 });
         }
     }
-    Ok(seats)
+    seats
 }
 
 fn display_name(fman_pubkey: &str) -> String {
@@ -375,13 +335,17 @@ fn summary(
     trust: &TrustContext,
 ) -> ManifoldGuardianSummary {
     let chosen = choose_ad(ads, now);
+    let absent = CredentialEvidence::absent();
     ManifoldGuardianSummary {
         fman_pubkey: author.to_owned(),
         display_name: display_name(author),
-        advertisement: chosen.map(advertisement_view),
+        advertisement: chosen.and_then(|ad| match &ad.listing {
+            Listing::Mg(listing) => Some(listing.as_ref().clone()),
+            Listing::Flip(_) => None,
+        }),
         freshness: chosen.map(|ad| freshness(ad.issued_at, ad.expires_at, now)),
-        credential: credential(
-            chosen.map_or(&Value::Null, |ad| &ad.payload),
+        credential: assess_credential(
+            chosen.map_or(&absent, |ad| &ad.evidence),
             author,
             now,
             trust,
@@ -407,7 +371,7 @@ async fn list_guardians(
     .limit()?;
     let observer = &state.federation_observer;
     let (observed_at, relays) = provenance(observer).await?;
-    let ads = load_ads(
+    let (ads, revocations) = load_ads(
         observer,
         &[i32::from(MG_LEGACY_KIND), i32::from(MG_V2_KIND)],
         None,
@@ -415,7 +379,7 @@ async fn list_guardians(
     .await?;
     let seats = seats_by_guardian(observer).await?;
     let now = unix_now();
-    let trust = trust_context(observer).await?;
+    let trust = trust_context(observer, revocations).await?;
 
     let mut by_author: BTreeMap<&str, Vec<&StoredAd>> = BTreeMap::new();
     for ad in &ads {
@@ -466,7 +430,7 @@ async fn get_guardian(
     }
     let observer = &state.federation_observer;
     let (observed_at, relays) = provenance(observer).await?;
-    let ads = load_ads(
+    let (ads, revocations) = load_ads(
         observer,
         &[i32::from(MG_LEGACY_KIND), i32::from(MG_V2_KIND)],
         Some(&fman_pubkey),
@@ -484,7 +448,7 @@ async fn get_guardian(
     }
     let now = unix_now();
     let refs: Vec<&StoredAd> = ads.iter().collect();
-    let trust = trust_context(observer).await?;
+    let trust = trust_context(observer, revocations).await?;
     let summary = summary(&fman_pubkey, &refs, &seats, now, &trust);
 
     let connection = observer.connection().await?;
@@ -561,58 +525,32 @@ async fn list_flip_providers(
     let observer = &state.federation_observer;
     let (observed_at, relays) = provenance(observer).await?;
     let now = unix_now();
-    let trust = trust_context(observer).await?;
-    let providers: Vec<FlipProvider> = load_ads(observer, &[i32::from(FLIP_KIND)], None)
-        .await?
+    let (ads, revocations) = load_ads(observer, &[i32::from(FLIP_KIND)], None).await?;
+    let trust = trust_context(observer, revocations).await?;
+    let providers: Vec<FlipProvider> = ads
         .into_iter()
-        .map(|ad| {
-            let p = &ad.payload;
-            let text = |key: &str| p.pointer(key).and_then(Value::as_str).map(str::to_owned);
-            FlipProvider {
-                credential: credential(p, &ad.author, now, &trust),
+        .filter_map(|ad| {
+            let Listing::Flip(listing) = ad.listing else {
+                return None;
+            };
+            let listing = *listing;
+            Some(FlipProvider {
+                credential: assess_credential(&ad.evidence, &ad.author, now, &trust),
                 freshness: freshness(ad.issued_at, ad.expires_at, now),
-                provider_pubkey: ad.author.clone(),
-                event_id: ad.event_id.clone(),
+                provider_pubkey: ad.author,
+                event_id: ad.event_id,
                 issued_at: ad.issued_at,
                 expires_at: ad.expires_at,
                 signature_valid: true,
-                display: p
-                    .get("display")
-                    .filter(|d| d.is_object())
-                    .map(|_| FlipDisplay {
-                        name: text("/display/name"),
-                        website: text("/display/website"),
-                        contact: text("/display/contact"),
-                    }),
-                supported_sources: strings(p.get("supported_sources")),
-                supported_networks: strings(p.pointer("/policy/supported_networks")),
-                accepted_attester_policies: p
-                    .pointer("/policy/accepted_attester_policies")
-                    .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(|i| {
-                                Some(FlipAttesterPolicy {
-                                    attester_pubkey: i.get("attester_pubkey")?.as_str()?.to_owned(),
-                                    verification_requirement: i
-                                        .get("verification_requirement")?
-                                        .as_str()?
-                                        .to_owned(),
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                api_endpoints: strings(p.get("api_endpoints")),
-                api_versions: p
-                    .get("api_versions")
-                    .and_then(Value::as_array)
-                    .map(|v| v.iter().filter_map(Value::as_u64).collect())
-                    .unwrap_or_default(),
-                relay_hints: strings(p.get("relay_hints")),
+                display: listing.display,
+                supported_sources: listing.supported_sources,
+                supported_networks: listing.supported_networks,
+                accepted_attester_policies: listing.accepted_attester_policies,
+                api_endpoints: listing.api_endpoints,
+                api_versions: listing.api_versions,
+                relay_hints: listing.relay_hints,
                 confirmed_federations: Vec::new(),
-            }
+            })
         })
         .collect();
     // Fresh ones first, newest first; the key is the row's order and cursor

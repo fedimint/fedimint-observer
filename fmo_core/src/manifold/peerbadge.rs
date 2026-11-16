@@ -78,6 +78,22 @@ pub fn pinned_authorities() -> &'static BTreeMap<String, IssuerAuthority> {
     })
 }
 
+/// A digest of the pinned authority documents. Stored credential evidence
+/// records it, so evidence worked out against other authorities (an older
+/// or newer roster) is never used.
+pub fn pinned_authorities_fingerprint() -> &'static str {
+    static FINGERPRINT: OnceLock<String> = OnceLock::new();
+    FINGERPRINT.get_or_init(|| {
+        use bitcoin::hashes::{sha256, Hash, HashEngine};
+        let mut engine = sha256::Hash::engine();
+        for document in AUTHORITY_DOCUMENTS {
+            engine.input(&(document.len() as u64).to_be_bytes());
+            engine.input(document.as_bytes());
+        }
+        hex::encode(&sha256::Hash::from_engine(engine).to_byte_array()[..16])
+    })
+}
+
 /// Checked at startup, so a bad committed authority stops the observer there
 pub fn check_pinned_authorities() -> anyhow::Result<()> {
     let authorities = load_authorities(AUTHORITY_DOCUMENTS)?;

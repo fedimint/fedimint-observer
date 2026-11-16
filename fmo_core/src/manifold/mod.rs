@@ -9,6 +9,7 @@ mod api;
 mod collector;
 mod directory;
 pub mod discovery;
+mod listing;
 mod peerbadge;
 pub mod seat_bindings;
 
@@ -17,7 +18,7 @@ use axum::extract::{Path, State};
 use axum::Json;
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use chrono::{DateTime, Utc};
-pub(crate) use collector::{check_trusted_issuers, configured_relays};
+pub(crate) use collector::{check_manifold_schema, check_trusted_issuers, configured_relays};
 use fedimint_core::config::FederationId;
 use fmo_api_types::{ManifoldSeatBinding, ManifoldSeatBindingsReport, SeatBindingsStatus};
 use serde_json::{json, Map, Value};

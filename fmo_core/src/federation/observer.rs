@@ -182,6 +182,9 @@ impl FederationObserver {
                 version == CORE_MIGRATIONS.len() as i32 - 1,
                 "Start the worker to migrate the database before API replicas"
             );
+            // `/manifold/*` reads the Manifold schema, migrated separately
+            let connection = slf.connection().await?;
+            crate::manifold::check_manifold_schema(&connection).await?;
             return Ok(slf);
         }
         // The dedicated worker lease serializes startup migrations as well as
