@@ -24,22 +24,36 @@ compromising user privacy.
 Run inside `nix develop`.
 
 ```bash
-just pg_start / pg_stop          # local PostgreSQL
-just pg_backup / pg_restore FILE
-just run                         # run fmo_server
-just watch                       # run with auto-reload
-just clippy                      # fastest compile and lint check
+just pg_start                     # start local PostgreSQL
+just pg_stop
+just pg_backup
+just pg_restore BACKUP_FILE
+just run                          # run fmo_server
+just watch                        # run with auto-reload
+just clippy                       # fastest compile and lint check
 just clippy-fix
-just test                        # all tests; `just test_package fmo_core` for one crate
+just test                         # all tests
+just test_package fmo_core        # one crate
 just format
-just typos / typos-fix-all
-just lint                        # pre-commit hook checks
-just final-check                 # lint, clippy and tests; run before a PR
-just build / build_package fmo_server
+just typos
+just typos-fix-all
+just lint                         # pre-commit hook checks
+just final-check                  # lint, clippy and tests; run before a PR
+just build
+just build_package fmo_server
 ```
 
-Frontend (`fmo_frontend_react/`): `npm ci`, `npm run dev`, `npm run lint`,
-`npm run build`, `npm run test:*`.
+Frontend, in `fmo_frontend_react/`:
+
+```bash
+npm ci
+npm run dev
+npm run lint
+npm run build
+```
+
+The frontend unit tests are the `test:` scripts in `package.json`
+(`npm run test:config`, `npm run test:gateways`, ...); CI runs all of them.
 
 Environment (`sample.env` is a template; the server doesn't load `.env`, so
 export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
