@@ -46,6 +46,8 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
   const successful = totals?.online_samples ?? 0;
   const medianLatency = totals?.median_latency_ms ?? null;
   const visible = visibleGateways(gateways, filter, search, sort);
+  // The server pages over every gateway it recorded, removed ones included
+  const pagedTotal = totals ? totals.registered + totals.removed : undefined;
 
   // The selected gateway opens in the side panel, kept in the URL by its endpoint
   const [searchParams, setSearchParams] = useSearchParams();
@@ -82,7 +84,7 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
           <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
             <div>
               <h2 className="text-lg font-semibold">Gateway directory</h2>
-              <p className={`mt-1 text-xs ${muted}`}>{visible.length} of {gateways.length} gateways on this page · {timeWindow.toUpperCase()} observed history · select a gateway for its keys, fees and activity</p>
+              <p className={`mt-1 text-xs ${muted}`}>{visible.length} of {gateways.length} gateways on this page · {timeWindow.toUpperCase()} observed history · search, sort and filters apply to this page; the counts on the filters cover all pages · select a gateway for its keys, fees and activity</p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search gateways" placeholder="Search this page" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-hidden focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900" />
@@ -104,13 +106,13 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
           />
         </div>
         {!registry && !error && <p className={`p-8 text-center text-sm ${muted}`}>Loading gateway details…</p>}
-        {registry && visible.length === 0 && <p className={`p-8 text-center text-sm ${muted}`}>{gateways.length ? 'No gateways match this view.' : registry.observed_at ? 'No registered gateways have been reported.' : 'Collecting gateway registrations…'}</p>}
+        {registry && visible.length === 0 && <p className={`p-8 text-center text-sm ${muted}`}>{gateways.length ? (pages.hasNext || pages.onLaterPage ? 'No gateways on this page match this view; other pages may have some.' : 'No gateways match this view.') : registry.observed_at ? 'No registered gateways have been reported.' : 'Collecting gateway registrations…'}</p>}
         <div className="divide-y divide-gray-200 dark:divide-gray-700">
           {visible.map((gateway) => <GatewayV2Row key={gateway.api_endpoint} gateway={gateway} timeWindow={timeWindow} onSelect={() => selectGateway(gateway.api_endpoint)} />)}
         </div>
         {registry && (
           <div className="border-t border-gray-200 p-3 empty:hidden dark:border-gray-700">
-            <CursorPager label="Gateway pages" page={pages.pageNumber} hasNext={pages.hasNext} loading={pages.loadingPage} onPrevious={pages.previous} onNext={pages.next} pageSize={pageSize} onPageSizeChange={setPageSize} total={totals?.registered} />
+            <CursorPager label="Gateway pages" page={pages.pageNumber} hasNext={pages.hasNext} loading={pages.loadingPage} onPrevious={pages.previous} onNext={pages.next} pageSize={pageSize} onPageSizeChange={setPageSize} total={pagedTotal} />
           </div>
         )}
       </section>
