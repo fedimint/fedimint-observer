@@ -2,12 +2,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use axum::extract::{Path, State};
+use axum::Json;
 use chrono::Utc;
 use fedimint_core::config::FederationId;
 use fedimint_core::encoding::Encodable;
 use serde_json::json;
 
-use super::api::authenticate;
+use super::api::{authenticate, federation_observations};
 use super::config::parse_push_sources;
 use super::sink::{prune, upsert, validate};
 use super::{
@@ -16,6 +18,7 @@ use super::{
 };
 use crate::error::ClientError;
 use crate::federation::observer::FederationObserver;
+use crate::AppState;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
@@ -441,6 +444,65 @@ async fn postgres_retention_runs_without_sources() -> anyhow::Result<()> {
         let waited = tokio::time::timeout(Duration::from_secs(10), pruned).await;
         observer.task_group().shutdown();
         waited.context("Retention didn't run in a build without sources")?
+    }
+    .await;
+    db.finish(result).await
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated FMO_SOURCES_TEST_DATABASE"]
+async fn postgres_public_endpoint_serves_only_public_kinds() -> anyhow::Result<()> {
+    let db = TestSchema::new("public").await?;
+    let result = async {
+        let federation_id = FederationId::dummy();
+        observe(&db.client, federation_id).await?;
+        let sources = registry(vec![pushing(
+            "probe",
+            vec![
+                SourceKind::new("latency").public(),
+                SourceKind::new("uptime")
+                    .public()
+                    .retention(Duration::from_secs(60 * 60)),
+                SourceKind::new("raw"),
+            ],
+        )])?;
+        // A public kind, one past its retention, a private kind and a source
+        // the build doesn't declare
+        db.client
+            .batch_execute(
+                r#"INSERT INTO source_observations (federation_id, source, kind, data, observed_at)
+                   SELECT federation_id, v.source, v.kind, v.data::jsonb, v.observed_at
+                   FROM federations, (VALUES
+                       ('probe', 'latency', '{"p50_ms": 1}', now()),
+                       ('probe', 'uptime', '{"up": true}', now() - INTERVAL '3 hours'),
+                       ('probe', 'raw', '{"private": 1}', now()),
+                       ('gone', 'latency', '{"private": 2}', now())
+                   ) AS v(source, kind, data, observed_at)"#,
+            )
+            .await?;
+        let observer = db.observer(sources).await?;
+        let state = AppState {
+            federation_config_cache: Default::default(),
+            meta_override_cache: Default::default(),
+            consensus_meta_cache: Default::default(),
+            federation_observer: observer,
+            http_metrics: Arc::new(crate::http::HttpMetrics::new(1)),
+        };
+        let Json(served) = federation_observations(Path(federation_id), State(state))
+            .await
+            .map_err(|_| anyhow::anyhow!("The request failed"))?;
+        let served: Vec<_> = served
+            .iter()
+            .map(|observation| {
+                (
+                    observation.source.as_str(),
+                    observation.kind.as_str(),
+                    &observation.data,
+                )
+            })
+            .collect();
+        assert_eq!(served, [("probe", "latency", &json!({ "p50_ms": 1 }))]);
+        anyhow::Ok(())
     }
     .await;
     db.finish(result).await

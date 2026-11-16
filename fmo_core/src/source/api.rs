@@ -101,22 +101,40 @@ pub(super) fn authenticate(
 }
 
 /// The newest public observations about an observed federation, of the
-/// sources and kinds this build declares, within their retention
-async fn federation_observations(
+/// sources and kinds this build declares, within their retention. Only rows of
+/// public kinds are read, so private payloads never reach this path.
+pub(super) async fn federation_observations(
     Path(federation_id): Path<FederationId>,
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<Vec<SourceObservation>>> {
     let observer = &state.federation_observer;
     observer.ensure_observed(federation_id).await?;
     let sources = observer.sources();
+    let (public_sources, public_kinds): (Vec<&str>, Vec<&str>) = sources
+        .iter()
+        .flat_map(|source| {
+            source
+                .kinds
+                .values()
+                .filter(|kind| kind.is_public())
+                .map(|kind| (source.id.as_str(), kind.name()))
+        })
+        .unzip();
     let now = Utc::now();
     let rows = observer
         .connection()
         .await?
         .query(
-            "SELECT source, kind, data, observed_at FROM source_observations
-             WHERE federation_id = $1 ORDER BY source, kind",
-            &[&federation_id.consensus_encode_to_vec()],
+            "SELECT o.source, o.kind, o.data, o.observed_at
+             FROM unnest($2::text[], $3::text[]) AS p(source, kind)
+             JOIN source_observations o
+               ON o.federation_id = $1 AND o.source = p.source AND o.kind = p.kind
+             ORDER BY o.source, o.kind",
+            &[
+                &federation_id.consensus_encode_to_vec(),
+                &public_sources,
+                &public_kinds,
+            ],
         )
         .await?;
     Ok(Json(
@@ -125,14 +143,13 @@ async fn federation_observations(
                 let source: String = row.get(0);
                 let kind: String = row.get(1);
                 let observed_at: DateTime<Utc> = row.get(3);
+                // The query reads public declared kinds only
                 let declared = sources.kind(&source, &kind)?;
-                (declared.is_public() && !declared.expired(observed_at, now)).then(|| {
-                    SourceObservation {
-                        source,
-                        kind,
-                        observed_at,
-                        data: row.get(2),
-                    }
+                (!declared.expired(observed_at, now)).then(|| SourceObservation {
+                    source,
+                    kind,
+                    observed_at,
+                    data: row.get(2),
                 })
             })
             .collect(),
