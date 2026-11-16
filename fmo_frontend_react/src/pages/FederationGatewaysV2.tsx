@@ -5,6 +5,7 @@ import { GatewayV2Modules } from '../features/gateways-v2/components/GatewayV2Mo
 import { GatewayV2WindowPicker } from '../features/gateways-v2/components/GatewayV2WindowPicker';
 import { useGatewayV2Config } from '../features/gateways-v2/hooks/useGatewayV2Config';
 import { GATEWAY_V2_WINDOWS } from '../features/gateways-v2/lib/gatewaysV2';
+import { GatewayTabs } from '../features/gateways/components/GatewayTabs';
 
 export function FederationGatewaysV2() {
   const { id = '' } = useParams<{ id: string }>();
@@ -31,6 +32,7 @@ export function FederationGatewaysV2() {
         </div>
         <GatewayV2WindowPicker value={timeWindow} onChange={selectWindow} />
       </div>
+      <GatewayTabs id={id} name={name} config={config} />
       {failed ? (
         <p role="alert" className={`${card} p-5`}>Could not load federation configuration. Reload to try again.</p>
       ) : !config ? (

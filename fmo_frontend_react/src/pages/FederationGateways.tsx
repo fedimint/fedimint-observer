@@ -6,6 +6,8 @@ import { GatewayPageHeader, GatewaySummaryBar } from '../features/gateways/compo
 import { UptimeTrendSection } from '../features/gateways/components/UptimeTrendSection';
 import { GatewayDirectory } from '../features/gateways/components/GatewayDirectory';
 import { RawAnnouncementDialog } from '../features/gateways/components/RawAnnouncementDialog';
+import { GatewayTabs } from '../features/gateways/components/GatewayTabs';
+import { useGatewayV2Config } from '../features/gateways-v2/hooks/useGatewayV2Config';
 import { useGatewayView } from '../features/gateways/hooks/useGatewayView';
 import { useGatewayFederation } from '../features/gateways/hooks/useGatewayFederation';
 import { useGatewayOverview } from '../features/gateways/hooks/useGatewayOverview';
@@ -28,6 +30,8 @@ export function FederationGateways() {
   const { timeWindow } = view;
   const { federation, failed: federationFailed, retry: retryFederation } = useGatewayFederation(id);
   const overview = useGatewayOverview(id, timeWindow);
+  // Which gateway pages to link; handed over from the federation page or a tab
+  const { config } = useGatewayV2Config(id);
   const { observed, trend, now } = overview;
   const federationOffline = federation?.health === 'offline';
   const live = useLiveGatewayLookup({
@@ -130,6 +134,7 @@ export function FederationGateways() {
       >
         {hasData && <GatewaySummaryBar summary={summary} liveCount={rows.length} switchingWindow={switchingWindow} />}
       </GatewayPageHeader>
+      <GatewayTabs id={id} name={federation?.name ?? null} config={config} />
 
       {(hasData || currentError) && selection.warning && (
         <GatewayWarningPage

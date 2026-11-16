@@ -50,19 +50,16 @@ export function mergeGatewayData(observedGateways: GatewayInfo[], liveGateways: 
     const observedGateway = observedById.get(liveGateway.gateway_id);
     if (!observedGateway) return liveGateway;
 
+    // Every recorded figure (timings, activity, uptime, coverage, status) comes
+    // from the history; a live lookup has none of them
     return {
       ...liveGateway,
+      ...observedGateway,
       lightning_alias: liveGateway.lightning_alias || observedGateway.lightning_alias,
       api_endpoint: liveGateway.api_endpoint || observedGateway.api_endpoint,
       node_pub_key: liveGateway.node_pub_key || observedGateway.node_pub_key,
       vetted: liveGateway.vetted || observedGateway.vetted,
       raw: liveGateway.raw ?? observedGateway.raw,
-      first_seen: observedGateway.first_seen ?? liveGateway.first_seen,
-      last_seen: observedGateway.last_seen ?? liveGateway.last_seen,
-      activity_7d: observedGateway.activity_7d ?? liveGateway.activity_7d,
-      activity_window: observedGateway.activity_window ?? liveGateway.activity_window,
-      uptime_window: observedGateway.uptime_window ?? liveGateway.uptime_window,
-      metrics_window: observedGateway.metrics_window ?? liveGateway.metrics_window,
     };
   });
 

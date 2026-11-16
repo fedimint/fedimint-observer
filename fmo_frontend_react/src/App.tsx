@@ -9,6 +9,7 @@ const Nostr = lazy(() => import('./pages/Nostr').then((module) => ({ default: mo
 const FederationDetail = lazy(() => import('./pages/FederationDetail').then((module) => ({ default: module.FederationDetail })));
 const FederationGateways = lazy(() => import('./pages/FederationGateways').then((module) => ({ default: module.FederationGateways })));
 const FederationGatewaysV2 = lazy(() => import('./pages/FederationGatewaysV2').then((module) => ({ default: module.FederationGatewaysV2 })));
+const FederationGatewayNodes = lazy(() => import('./pages/FederationGatewayNodes').then((module) => ({ default: module.FederationGatewayNodes })));
 
 // The router reuses a page when only :id changes; remount it so it never shows
 // the previous federation's data under the new URL
@@ -27,6 +28,7 @@ function AppRoutes() {
           <Route path="/nostr" element={<Nostr />} />
           <Route path="/federations/:id" element={<PerFederation page={FederationDetail} />} />
           <Route path="/federations/:id/gateways/v2" element={<PerFederation page={FederationGatewaysV2} />} />
+          <Route path="/federations/:id/gateways/nodes" element={<PerFederation page={FederationGatewayNodes} />} />
           <Route path="/federations/:id/gateways" element={<PerFederation page={FederationGateways} />} />
           <Route path="*" element={<div className="p-4 text-gray-900 dark:text-white">Page not found</div>} />
         </Routes>

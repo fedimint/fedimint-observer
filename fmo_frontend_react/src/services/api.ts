@@ -5,6 +5,7 @@ import type {
   FederationOverview,
   WalletV2History,
   GatewayV2Registry,
+  GatewayNodes,
   FederationSummary,
   FederationUtxosResponse,
   GatewayInfo,
@@ -68,6 +69,12 @@ export const api = {
     const query = new URLSearchParams({ module_instance_id: String(moduleInstanceId), window });
     if (after !== undefined) query.set('after', after);
     return request<GatewayV2Registry>(`${path`/federations/${id}/gateways/v2`}?${query}`, { signal });
+  },
+
+  // 404 without the Lightning v2 module in the observer's build, or for a federation it doesn't observe
+  getGatewayNodes(id: string, window: GatewayWindow, signal?: AbortSignal) {
+    const query = new URLSearchParams({ window });
+    return request<GatewayNodes>(`${path`/federations/${id}/gateways/nodes`}?${query}`, { signal });
   },
 
   // 400 names the bad parameter; 404 means the federation has no Wallet v1 module
