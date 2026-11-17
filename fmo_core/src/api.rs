@@ -8,6 +8,7 @@
 //!   modules' endpoints under `/federations/:federation_id`
 //! - `/nostr/*`, `/federations/nostr/*`: recommendations (`crate::recommend`)
 //! - `/sources/*`: pushes from external data sources (`crate::source`)
+//! - `/admin/*`: who the admins are and what they did (`crate::admin`)
 //! - `/health`, `/live`, `/ready`, `/metrics`: probes, outside admission
 //!   control
 
@@ -36,6 +37,7 @@ pub(crate) fn router(
         .route("/metrics", get(http::metrics))
         .nest("/config", get_config_routes())
         .nest("/federations", get_federations_routes())
+        .merge(crate::admin::routes())
         .merge(crate::recommend::routes())
         .merge(crate::source::routes());
     // The modules' endpoints, at the same paths core served them from

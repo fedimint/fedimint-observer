@@ -15,7 +15,6 @@ use fedimint_core::encoding::Encodable;
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::task::TaskGroup;
 use fedimint_core::PeerId;
-use subtle::ConstantTimeEq;
 use tracing::{info_span, Instrument};
 
 use crate::config::FederationConfigCache;
@@ -68,7 +67,6 @@ pub struct FederationObserver {
     pub(crate) work_notifications: crate::work::WorkNotifications,
     /// `FO_HEALTH_RETENTION_DAYS`; zero keeps health history indefinitely
     pub(crate) health_retention_days: u32,
-    admin_auth: String,
     /// Shared so requests reuse its connections to the mempool instance
     esplora: esplora_client::AsyncClient,
     task_group: TaskGroup,
@@ -93,7 +91,6 @@ pub struct FederationObserver {
 impl FederationObserver {
     pub async fn new(
         database: &str,
-        admin_auth: &str,
         mempool_url: &str,
         modules: ModuleRegistry,
         sources: SourceRegistry,
@@ -129,7 +126,6 @@ impl FederationObserver {
             external_io: Arc::new(tokio::sync::Semaphore::new(options.external_concurrency)),
             work_notifications,
             health_retention_days: options.health_retention_days,
-            admin_auth: admin_auth.to_owned(),
             esplora,
             task_group,
             connectors,
@@ -238,7 +234,6 @@ impl FederationObserver {
             external_io: Arc::new(tokio::sync::Semaphore::new(1)),
             work_notifications: Default::default(),
             health_retention_days: 0,
-            admin_auth: String::new(),
             // Nothing in tests calls it; connections open on first use
             esplora: esplora_client::Builder::new("http://127.0.0.1:9").build_async()?,
             task_group: TaskGroup::default(),
@@ -251,6 +246,14 @@ impl FederationObserver {
             nostr_pool: Default::default(),
             spawned_federations: Default::default(),
         })
+    }
+
+    /// Makes a test's observer the worker, which takes administrative
+    /// requests
+    #[cfg(test)]
+    pub(crate) fn with_worker_lease(mut self, lease: tokio_postgres::Client) -> Self {
+        self.worker_lease = Some(Arc::new(lease));
+        self
     }
 
     pub fn connectors(&self) -> &ConnectorRegistry {
@@ -559,19 +562,10 @@ impl FederationObserver {
         Ok(federation_id)
     }
 
-    // FIXME: use middleware for auth and get it out of here
-    pub fn check_auth(&self, bearer_token: &str) -> crate::error::Result<()> {
-        // Constant time, so response timing doesn't reveal how much of a
-        // guessed token is right
-        if !bool::from(self.admin_auth.as_bytes().ct_eq(bearer_token.as_bytes())) {
-            return Err(crate::error::AppError::unauthorized());
-        }
-        if self.worker_lease.is_none() {
-            return Err(crate::error::AppError::unavailable(
-                "Administrative operations must be sent to the worker instance",
-            ));
-        }
-        Ok(())
+    /// Whether this process is the worker, which alone takes administrative
+    /// operations: API replicas run no collectors to start or reset
+    pub(crate) fn is_worker(&self) -> bool {
+        self.worker_lease.is_some()
     }
 }
 

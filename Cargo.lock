@@ -2688,6 +2688,7 @@ dependencies = [
  "async-trait",
  "axum 0.7.9",
  "axum-auth",
+ "base64 0.22.1",
  "bitcoin 0.32.102",
  "chrono",
  "clap",

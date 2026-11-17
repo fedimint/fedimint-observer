@@ -17,6 +17,7 @@ anyhow = "1.0.81"
 async-trait = "0.1.92"
 axum = { version = "0.7.5", features = ["json"] }
 axum-auth = "0.7.0"
+base64 = "0.22"
 bitcoin = "0.32.5"
 esplora-client = { version = "0.10.0", default-features = false, features = [
     "async-https-rustls",

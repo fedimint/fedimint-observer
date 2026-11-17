@@ -550,6 +550,7 @@ async fn postgres_public_endpoint_serves_only_public_kinds() -> anyhow::Result<(
             consensus_meta_cache: Default::default(),
             federation_observer: observer,
             http_metrics: Arc::new(crate::http::HttpMetrics::new(1)),
+            admin: Arc::new(crate::admin::AdminAuth::new("test token", None, None)?),
         };
         let Json(served) = federation_observations(Path(federation_id), State(state))
             .await

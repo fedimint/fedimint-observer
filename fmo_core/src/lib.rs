@@ -35,6 +35,8 @@ use crate::federation::observer::FederationObserver;
 use crate::module::{ModuleRegistry, ObserverModule, Services};
 use crate::source::{ObservationSource, SourceRegistry};
 
+/// Admin authentication, delegated access and the audit log
+mod admin;
 /// The HTTP API: assembles every layer's routes
 mod api;
 /// Fedimint config fetching service implementation
@@ -63,8 +65,20 @@ struct Args {
     #[arg(long, env = "FO_DATABASE")]
     database: String,
 
-    #[arg(long, env = "FO_ADMIN_AUTH")]
+    /// Bearer token with owner rights, for scripts
+    #[arg(long, env = "FO_ADMIN_AUTH", hide_env_values = true)]
     admin_auth: String,
+
+    /// Nostr public keys of the owners, `npub1…` or hex, separated by commas.
+    /// Needs `FO_PUBLIC_API_URL`.
+    #[arg(long, env = "FO_ADMIN_NPUBS")]
+    admin_npubs: Option<String>,
+
+    /// The base URL browsers reach this API at, such as
+    /// `https://observer.example.com/api`. Setting it lets admins sign in
+    /// with a Nostr key: their signed requests are checked against it.
+    #[arg(long, env = "FO_PUBLIC_API_URL")]
+    public_api_url: Option<String>,
 
     #[arg(
         long,
@@ -89,6 +103,7 @@ struct AppState {
     consensus_meta_cache: ConsensusMetaCache,
     federation_observer: FederationObserver,
     http_metrics: Arc<http::HttpMetrics>,
+    admin: Arc<admin::AdminAuth>,
 }
 
 /// Entry point of an observer build
@@ -167,11 +182,20 @@ async fn run(
     if args.admin_auth.len() < 16 {
         warn!("FO_ADMIN_AUTH is shorter than 16 characters; use a long random secret");
     }
+    let admin = Arc::new(admin::AdminAuth::new(
+        &args.admin_auth,
+        args.admin_npubs.as_deref(),
+        args.public_api_url.as_deref(),
+    )?);
+    info!(
+        owners = admin.owners().count(),
+        nostr_sign_in = args.public_api_url.is_some(),
+        "Admin access configured"
+    );
     info!("Starting API server on {}", args.bind);
 
     let federation_observer = FederationObserver::new(
         &args.database,
-        &args.admin_auth,
         &args.mempool_url,
         modules.clone(),
         sources,
@@ -192,6 +216,7 @@ async fn run(
             consensus_meta_cache: Default::default(),
             federation_observer,
             http_metrics,
+            admin,
         },
     );
 

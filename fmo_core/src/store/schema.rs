@@ -27,6 +27,7 @@ const CORE_MIGRATIONS: &[&str] = &[
     include_str!("../../schema/v11.sql"),
     include_str!("../../schema/v12.sql"),
     include_str!("../../schema/v13.sql"),
+    include_str!("../../schema/v14.sql"),
 ];
 
 /// Core migrations a database of this build has applied
