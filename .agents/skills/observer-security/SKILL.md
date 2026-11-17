@@ -45,10 +45,21 @@ user holds or moves how many sats.
 
 ## Authentication and admin endpoints
 
-- Admin endpoints require the `FO_ADMIN_AUTH` bearer token, compared in
-  constant time (`subtle::ConstantTimeEq`), as in
-  `fmo_core/src/federation/observer.rs`. Every new endpoint that changes state
-  or triggers work must be admin-only.
+- Admin endpoints authenticate through the `crate::admin` extractors (`Admin`,
+  `AdminJson`), never by reading the `Authorization` header themselves. They
+  accept the `FO_ADMIN_AUTH` bearer token (compared in constant time) or a
+  NIP-98 event signed for that one request by an owner or a delegate. Every
+  new endpoint that changes state or triggers work must be admin-only.
+- Delegates are less trusted than owners: a new admin endpoint calls
+  `admin.require_owner()` unless delegates are meant to use it, and then it
+  needs its own bound on what one delegate can make the observer do.
+- Run admin actions through `admin::audited`, so they are on record. Never put
+  invite codes (they can carry an API secret) or other secrets in the audit
+  detail.
+- Signed requests are checked against `FO_PUBLIC_API_URL`, never the `Host`
+  header, and their ids are remembered so none works twice. Don't weaken
+  either, or the time window, to make a client work.
+- Admin answers differ by caller: keep them `Cache-Control: no-store`.
 - Never log, return or embed secrets (`FO_ADMIN_AUTH`, database URLs).
 
 ## Availability

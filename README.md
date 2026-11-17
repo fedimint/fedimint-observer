@@ -66,9 +66,10 @@ I currently run the public instance at https://observer.fedimint.org using the f
       FO_DATABASE = "postgresql:///fmo?user=fmo";
     };
     serviceConfig = {
-      # Holds `FO_ADMIN_AUTH=<long random secret>`, the admin password used to
-      # add federations via curl. Values in `environment` end up world-readable
-      # in the Nix store.
+      # Holds `FO_ADMIN_AUTH=<long random secret>`, the admin token for
+      # scripts. Values in `environment` end up world-readable in the Nix
+      # store. To add federations from the frontend's /admin page with a Nostr
+      # key instead, see "Admin access" in OPERATIONS.md.
       EnvironmentFile = "/var/lib/secrets/fedimint-observer.env";
       ExecStart = ''
         ${fmo.fmo_server}/bin/fmo_server

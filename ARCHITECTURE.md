@@ -51,6 +51,7 @@ is laid out, how data moves through it, and where new code belongs.
 | Storage | `store/schema.rs` | Core migrations, module schemas and migrations, materialized-view refresh |
 | | `store/rows.rs` | Writers of core's rows of session items, shared by ingest and projectors |
 | | `store/db.rs`, `store/observations.rs` | Row types of `federations` and `sessions`; last-known-good per-federation snapshots |
+| Administration | `admin/` | Who may change what the observer does: authenticates admin requests (bearer token, or a NIP-98 event signed by an owner's or delegate's Nostr key), stores delegated access, records every admin action, and serves `/admin/*` |
 | Recommendations | `recommend/` | Nostr federation announcements and ratings: relay sync, storage, publishing, routes |
 | Presentation | `api.rs` | Assembles every layer's routes and the shared middleware (`http.rs`) |
 | | `federation/mod.rs`, `summary.rs`, `session.rs`, `transaction.rs`, `meta.rs` | `/federations/*` handlers, each next to the read queries it serves |
@@ -153,6 +154,7 @@ API clients, one per set of guardians (see `CLAUDE.md`).
 | Derive tables from sessions | The owning module's `process_*`, or for core tables `projector.rs` |
 | Feed in data from an outside service | A push source in `FO_SOURCES_FILE`, or an `ObservationSource` added with `.with_source(..)` if it pulls |
 | Add an endpoint about observed federations | A handler in `federation/` (or the module's `federation_routes()`), reading stored data or read models |
+| Add an admin action | A handler taking `admin::Admin` or `admin::AdminJson` (owners only unless delegates are meant to use it), run through `admin::audited` |
 | Change the schema | A new `fmo_core/schema/vN+1.sql` added to `store/schema.rs` |
 
 ## Privacy
