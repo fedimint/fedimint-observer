@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ListCard } from '../components/ui/ListCard';
 import { RetryButton } from '../components/ui/RetryButton';
+import { ObserveButton } from '../features/admin/components/ObserveButton';
 import { InspectFederationCard } from '../features/nostr/components/InspectFederationCard';
 import { NostrFederationList, NostrListColumns } from '../features/nostr/components/NostrFederationList';
 import { useNostrFederations } from '../features/nostr/hooks/useNostrFederations';
@@ -39,9 +40,12 @@ export function Nostr() {
             <div className="flex items-center gap-2 flex-wrap">
               {fed.name}
               {observedById && !observedById.has(fed.id) && (
-                <span className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-sm dark:bg-blue-900 dark:text-blue-300">
-                  Unobserved
-                </span>
+                <>
+                  <span className="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-sm dark:bg-blue-900 dark:text-blue-300">
+                    Unobserved
+                  </span>
+                  <ObserveButton invite={fed.invite} />
+                </>
               )}
             </div>
           )}

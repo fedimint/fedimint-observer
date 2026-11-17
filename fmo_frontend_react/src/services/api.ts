@@ -21,7 +21,7 @@ const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedi
 
 // Path segments come from the URL or user input (invite codes), so they are always
 // encoded: a / ? or # would change which endpoint is asked
-const path = (strings: TemplateStringsArray, ...segments: (string | number)[]) =>
+export const path = (strings: TemplateStringsArray, ...segments: (string | number)[]) =>
   BASE_URL + strings.reduce((url, part, i) => url + part + (i < segments.length ? encodeURIComponent(segments[i]) : ''), '');
 
 // Failures reject with an ApiError (see ./http) whose message is fit to show
