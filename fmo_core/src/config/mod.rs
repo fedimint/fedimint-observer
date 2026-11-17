@@ -248,10 +248,17 @@ async fn try_download_client_config(
     observer: &FederationObserver,
 ) -> anyhow::Result<ClientConfig> {
     let federation_id = invite.federation_id();
+    let mut invite_peers = invite.peers();
+    if let Some(announced) = observer.get_guardian_endpoints(federation_id) {
+        for (peer_id, url) in invite_peers.iter_mut() {
+            if let Some(route) = announced.get(peer_id) {
+                *url = route.url.clone();
+            }
+        }
+    }
     let invite_api = observer.lookup_api(
         &endpoints_config(
-            invite
-                .peers()
+            invite_peers
                 .into_iter()
                 .map(|(peer_id, url)| {
                     (
