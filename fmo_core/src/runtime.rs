@@ -26,6 +26,9 @@ pub struct RuntimeOptions {
     /// Zero retains raw health indefinitely. Otherwise keep at least 31 days.
     #[arg(long, env = "FO_HEALTH_RETENTION_DAYS", default_value_t = 90)]
     pub health_retention_days: u32,
+    /// Bounded refresh interval for API replicas to reload dynamic guardian endpoints from database.
+    #[arg(long, env = "FO_REPLICA_ENDPOINT_REFRESH_SECS", default_value_t = 60)]
+    pub replica_endpoint_refresh_secs: u64,
 }
 
 impl RuntimeOptions {
@@ -35,7 +38,8 @@ impl RuntimeOptions {
                 && self.worker_db_connections > 0
                 && self.worker_concurrency > 0
                 && self.external_concurrency > 0
-                && self.http_concurrency > 0,
+                && self.http_concurrency > 0
+                && self.replica_endpoint_refresh_secs > 0,
             "Connection and concurrency limits must be positive"
         );
         anyhow::ensure!(
