@@ -4,11 +4,14 @@ import { ApiError } from '../../services/http';
 import { browserSigner } from '../../services/nostrAuth';
 import type { AdminSession } from '../../types/api';
 import { errorMessage } from '../../utils/errors';
+import { SessionTracker } from './lib/sessions';
 
 /** A signed-in admin: who they are to the observer, and what signs their requests */
 export interface SignedInAdmin {
   session: AdminSession;
   identity: AdminIdentity;
+  /** Which sign-in this is; requests remember it, see `accessLost` */
+  sessionId: number;
 }
 
 /** Why signing in did not work, and the key that was refused, to pass on to an owner */
@@ -26,8 +29,12 @@ interface AdminSessionValue {
   failure: SignInFailure | null;
   signIn: () => Promise<void>;
   signOut: () => void;
-  /** The server refused the signed-in key: its access was revoked or ran out */
-  accessLost: () => void;
+  /**
+   * The server refused a request made in session `sessionId`: the key's access
+   * was revoked or ran out. Ignored unless that session is still the current
+   * one, so a late answer can't sign out a newer session.
+   */
+  accessLost: (sessionId: number | undefined) => void;
 }
 
 const AdminSessionContext = createContext<AdminSessionValue | undefined>(undefined);
@@ -48,6 +55,7 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
   const attempt = useRef(0);
   // The signed-in key, for callbacks that must not depend on the state
   const signedInKey = useRef<string | null>(null);
+  const sessions = useRef(new SessionTracker());
 
   const signIn = useCallback(async () => {
     const current = ++attempt.current;
@@ -61,11 +69,13 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
       const session = await adminApi.session(identity);
       if (current === attempt.current) {
         signedInKey.current = pubkey;
-        setAdmin({ session, identity });
+        setFailure(null);
+        setAdmin({ session, identity, sessionId: sessions.current.begin() });
       }
     } catch (err) {
       if (current !== attempt.current) return;
       const refused = err instanceof ApiError && err.status === 403;
+      sessions.current.end();
       signedInKey.current = null;
       setAdmin(null);
       setFailure({ title: 'Could not sign in', message: errorMessage(err), refusedKey: refused ? pubkey : null });
@@ -76,14 +86,17 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(() => {
     attempt.current++;
+    sessions.current.end();
     signedInKey.current = null;
     setAdmin(null);
     setFailure(null);
     setSigningIn(false);
   }, []);
 
-  const accessLost = useCallback(() => {
-    attempt.current++;
+  // A sign-in running meanwhile carries on: it may be with another key
+  const accessLost = useCallback((sessionId: number | undefined) => {
+    if (!sessions.current.isCurrent(sessionId)) return;
+    sessions.current.end();
     setFailure({
       title: 'You were signed out',
       message: 'Your admin access was revoked or has expired.',
@@ -91,7 +104,6 @@ export function AdminSessionProvider({ children }: { children: ReactNode }) {
     });
     signedInKey.current = null;
     setAdmin(null);
-    setSigningIn(false);
   }, []);
 
   const value = useMemo(

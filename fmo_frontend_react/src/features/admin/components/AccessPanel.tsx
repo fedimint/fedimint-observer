@@ -213,7 +213,15 @@ function DelegateRow({ admin, delegate, onRevoked }: { admin: SignedInAdmin; del
             {/* A label is whatever an owner typed: shown as text only */}
             <span className="text-sm font-medium text-gray-900 break-all dark:text-white">{delegate.label}</span>
             <ShortKey id={delegate.key} />
-            {delegate.expired && (
+            {delegate.also_owner && (
+            <span
+              title="This key is also an owner in the server's configuration. Removing it from there leaves this grant; revoke it here too to take all access away."
+              className="rounded-sm bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-900 dark:text-indigo-300"
+            >
+              also an owner
+            </span>
+          )}
+          {delegate.expired && (
               <span className="rounded-sm bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300">
                 expired
               </span>

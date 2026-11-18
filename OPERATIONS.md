@@ -110,16 +110,20 @@ admins the same way before refusing them with `503`.
 
 `GET /admin/audit` (owners) lists every administrative action with who did it,
 kept indefinitely in `admin_audit_log`. Entries are written before the action
-runs; one left `started` was cut off, for example by the request deadline.
+runs and get their outcome after. An entry left `started`, shown as "outcome
+not recorded", was cut off, for example by the request deadline: the action
+may or may not have happened, so check the actual state (is the federation
+observed, did the backfill run) before trying it again.
 
 At the reverse proxy:
 
 - Serve admin requests over TLS only, and on the frontend's own origin, or
   allow `PUT`, `DELETE` and the `Authorization` header in its CORS policy.
-- Never cache `/admin/*`. The observer answers these with
-  `Cache-Control: no-store`, which Nginx honors unless `proxy_ignore_headers`
-  lists `Cache-Control`; a cache keyed by URL would otherwise hand one admin's
-  answer to anyone.
+- Never cache admin answers. The observer sends `Cache-Control: no-store` on
+  everything under `/admin/*`, on `PUT /federations`, the backfill and module
+  reset routes, and on every refused admin request. Nginx honors it unless
+  `proxy_ignore_headers` lists `Cache-Control`; a cache keyed by URL would
+  otherwise hand one admin's answer to anyone. Public reads keep their caching.
 - Rate limit `/admin/*` and `PUT /federations` per client. A refused request
   costs the observer one signature check and at most one indexed lookup.
 - Don't log the `Authorization` header. A signed event is useless after a
@@ -128,8 +132,21 @@ At the reverse proxy:
 Owners should use a Nostr key kept for administration, and approve "HTTP auth"
 (kind 27235) signing requests only on the observer's own site: any site can ask
 an extension to sign one, and a signed request works from anywhere for a
-minute. If an owner key is lost or leaked, remove it from `FO_ADMIN_NPUBS` and
-restart; if the token leaks, change `FO_ADMIN_AUTH`.
+minute.
+
+To take all access from a key that is lost or leaked:
+
+1. Remove it from `FO_ADMIN_NPUBS`, if it is listed there, and restart the
+   collector and every API replica.
+2. Revoke its grant, if it has one, on the admin page's Access tab or with
+   `DELETE /admin/keys/:pubkey`. A key granted delegate access before it was
+   made an owner keeps that grant when it stops being an owner. The Access tab
+   marks such keys "also an owner", and the collector logs a warning for each
+   at startup.
+
+Its next request is refused. Requests it signed in the last minute were
+already accepted or are refused as used. If the token leaks, change
+`FO_ADMIN_AUTH` and restart.
 
 ## Data sources
 

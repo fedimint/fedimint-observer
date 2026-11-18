@@ -202,6 +202,9 @@ async fn run(
         &args.runtime,
     )
     .await?;
+    if !args.runtime.api_only {
+        admin::warn_about_owner_grants(&federation_observer, &admin).await?;
+    }
     let services = Services::new(federation_observer.clone());
     let shutdown_observer = federation_observer.clone();
     let http_metrics = Arc::new(http::HttpMetrics::new(args.runtime.http_concurrency));

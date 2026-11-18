@@ -20,6 +20,7 @@ mod summary;
 mod transaction;
 
 use axum::extract::{Path, State};
+use axum::middleware::map_response;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use fedimint_core::config::{ClientConfig, FederationId, JsonClientConfig};
@@ -29,7 +30,7 @@ use fmo_api_types::{FederationOverview, FederationSummary, FedimintTotals};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::admin::{audited, Action, AdminJson};
+use crate::admin::{self, audited, Action, AdminJson};
 use crate::error::ClientError;
 use crate::federation::guardians::get_federation_health;
 use crate::federation::meta::get_federation_meta;
@@ -46,7 +47,10 @@ pub fn get_federations_routes() -> Router<AppState> {
         .merge(crate::recommend::federations_routes())
         .merge(crate::source::federations_routes())
         .route("/", get(list_observed_federations))
-        .route("/", put(add_observed_federation))
+        .route(
+            "/",
+            put(add_observed_federation).layer(map_response(admin::no_store)),
+        )
         .route("/totals", get(get_federation_totals))
         .route("/:federation_id", get(get_federation_overview))
         .route(
@@ -70,10 +74,13 @@ pub fn get_federations_routes() -> Router<AppState> {
         )
         .route("/:federation_id/sessions", get(list_sessions))
         .route("/:federation_id/sessions/count", get(count_sessions))
-        .route("/:federation_id/backfill", post(backfill_federation))
+        .route(
+            "/:federation_id/backfill",
+            post(backfill_federation).layer(map_response(admin::no_store)),
+        )
         .route(
             "/:federation_id/modules/:kind/reset",
-            post(reset_module_cursor),
+            post(reset_module_cursor).layer(map_response(admin::no_store)),
         )
 }
 

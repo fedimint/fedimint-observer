@@ -567,6 +567,9 @@ pub struct AdminDelegate {
     pub expires_at: Option<DateTime<Utc>>,
     /// Past `expires_at`: the grant no longer works until it is renewed
     pub expired: bool,
+    /// The key is also in `FO_ADMIN_NPUBS`. It acts as an owner, and keeps
+    /// this grant if it is removed from there.
+    pub also_owner: bool,
 }
 
 /// `GET /admin/keys`

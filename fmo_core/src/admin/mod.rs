@@ -9,10 +9,21 @@
 //!   owner revokes a grant at any time, and it stops working with the
 //!   delegate's next request.
 //!
+//! A key listed in `FO_ADMIN_NPUBS` is an owner, whatever `admin_keys` says.
+//! A grant it held before it was listed stays stored, so removing the key
+//! from `FO_ADMIN_NPUBS` makes it a delegate again, not a stranger. To take
+//! all access from a key, remove it from `FO_ADMIN_NPUBS` and revoke its
+//! grant; the worker warns at startup about owners that hold one, and the
+//! Access tab marks them.
+//!
 //! Files: `auth.rs` authenticates a request ([`Admin`], [`AdminJson`]),
 //! `keys.rs` stores grants and used request ids, `audit.rs` records actions.
 //! Admin handlers elsewhere (`crate::federation`) take one of the two
 //! extractors, so a handler can't run before its caller is authenticated.
+//! Authenticated is not the same as owner: the extractors accept delegates
+//! too, so a handler only owners may use calls [`Admin::require_owner`]
+//! first. Admin routes are wrapped in [`no_store`], and the extractors'
+//! refusals are `no-store` as well.
 //!
 //! Endpoints, all `Cache-Control: no-store`:
 //!
@@ -27,7 +38,7 @@ mod auth;
 mod keys;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderValue, StatusCode};
+use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, put};
 use axum::{Json, Router};
@@ -58,12 +69,26 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 /// Admin answers differ by caller while their URLs don't, so no cache between
-/// the observer and the admin may keep one
-async fn no_store(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+/// the observer and the admin may keep one. A layer for every admin route:
+/// `.layer(axum::middleware::map_response(admin::no_store))`.
+pub(crate) async fn no_store(response: Response) -> Response {
+    auth::without_caching(response)
+}
+
+/// Logs the owners that also hold a delegate grant, which removing them from
+/// `FO_ADMIN_NPUBS` would leave in place
+pub(crate) async fn warn_about_owner_grants(
+    observer: &crate::federation::observer::FederationObserver,
+    admin: &AdminAuth,
+) -> anyhow::Result<()> {
+    let connection = observer.connection().await?;
+    for key in keys::owners_with_grants(&connection, admin.owners()).await? {
+        tracing::warn!(
+            owner = %key_id(&key).npub,
+            "An owner in FO_ADMIN_NPUBS also holds a delegate grant; removing it from FO_ADMIN_NPUBS leaves that grant in place. Revoke the grant on the admin page's Access tab if the key should lose all access."
+        );
+    }
+    Ok(())
 }
 
 /// A key in both spellings: hex for the API, `npub1…` for people
@@ -75,7 +100,7 @@ pub(crate) fn key_id(key: &PublicKey) -> AdminKeyId {
     }
 }
 
-fn delegate_view(delegate: &Delegate, now: DateTime<Utc>) -> AdminDelegate {
+fn delegate_view(delegate: &Delegate, now: DateTime<Utc>, admin: &AdminAuth) -> AdminDelegate {
     AdminDelegate {
         key: key_id(&delegate.pubkey),
         label: delegate.label.clone(),
@@ -83,6 +108,7 @@ fn delegate_view(delegate: &Delegate, now: DateTime<Utc>) -> AdminDelegate {
         granted_at: delegate.granted_at,
         expires_at: delegate.expires_at,
         expired: delegate.expired(now),
+        also_owner: admin.is_owner(&delegate.pubkey),
     }
 }
 
@@ -108,7 +134,7 @@ async fn list_keys(
         delegates: keys::list_delegates(&connection)
             .await?
             .iter()
-            .map(|delegate| delegate_view(delegate, now))
+            .map(|delegate| delegate_view(delegate, now, &state.admin))
             .collect(),
         max_delegates: keys::MAX_DELEGATES as u32,
     }))
@@ -147,7 +173,7 @@ async fn grant_key(
         body.expires_at,
     )
     .await?;
-    Ok(Json(delegate_view(&delegate, now)))
+    Ok(Json(delegate_view(&delegate, now, &state.admin)))
 }
 
 async fn revoke_key(

@@ -9,7 +9,7 @@ use serde_json::json;
 use tokio_postgres::Row;
 
 use super::audit::{self, Action, Outcome};
-use super::auth::{Admin, MAX_CLOCK_SKEW};
+use super::auth::Admin;
 use crate::error::ClientError;
 
 /// Keys that can hold a grant at once. Owners grant by hand; the cap keeps a
@@ -76,15 +76,17 @@ pub(super) async fn active_delegate(
         .transpose()
 }
 
-/// Remembers a signed request's event id. `false` if it was used before.
+/// Remembers a signed request's event id until `valid_until`, the end of its
+/// signature window. `false` if it was used before.
 ///
-/// Ids are kept for twice the accepted clock skew: an event is accepted from
-/// `created_at - skew` to `created_at + skew`, so by then it is too old to be
-/// accepted again. Ids past that are deleted here, which keeps the table to
-/// the admins' requests of the last two minutes.
+/// Ids whose window ended before `now` are deleted first. An id is kept for
+/// exactly as long as its signature is accepted, so a replay accepted at time
+/// `t <= valid_until` always finds the id still here, and the table holds no
+/// more than the admins' requests of the last two minutes.
 pub(super) async fn record_signed_request(
     client: &impl GenericClient,
     event_id: &[u8; 32],
+    valid_until: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> anyhow::Result<bool> {
     client
@@ -97,10 +99,31 @@ pub(super) async fn record_signed_request(
         .execute(
             "INSERT INTO admin_auth_events (event_id, expires_at) VALUES ($1, $2)
              ON CONFLICT DO NOTHING",
-            &[&event_id.as_slice(), &(now + 2 * MAX_CLOCK_SKEW)],
+            &[&event_id.as_slice(), &valid_until],
         )
         .await?;
     Ok(inserted == 1)
+}
+
+/// The owners that also hold a delegate grant, from before they were made
+/// owners. Removing such a key from `FO_ADMIN_NPUBS` leaves it a delegate.
+pub(crate) async fn owners_with_grants(
+    client: &impl GenericClient,
+    owners: impl Iterator<Item = &PublicKey>,
+) -> anyhow::Result<Vec<PublicKey>> {
+    let owners: Vec<Vec<u8>> = owners.map(|key| key.to_bytes().to_vec()).collect();
+    client
+        .query(
+            "SELECT pubkey FROM admin_keys WHERE pubkey = ANY($1) ORDER BY pubkey",
+            &[&owners],
+        )
+        .await?
+        .iter()
+        .map(|row| {
+            PublicKey::from_slice(&row.try_get::<_, Vec<u8>>(0)?)
+                .context("admin_keys holds an invalid public key")
+        })
+        .collect()
 }
 
 /// Every stored grant, expired ones included so owners can see and remove

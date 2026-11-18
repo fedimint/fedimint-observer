@@ -154,7 +154,7 @@ API clients, one per set of guardians (see `CLAUDE.md`).
 | Derive tables from sessions | The owning module's `process_*`, or for core tables `projector.rs` |
 | Feed in data from an outside service | A push source in `FO_SOURCES_FILE`, or an `ObservationSource` added with `.with_source(..)` if it pulls |
 | Add an endpoint about observed federations | A handler in `federation/` (or the module's `federation_routes()`), reading stored data or read models |
-| Add an admin action | A handler taking `admin::Admin` or `admin::AdminJson` (owners only unless delegates are meant to use it), run through `admin::audited` |
+| Add an admin action | A handler taking `admin::Admin` or `admin::AdminJson`, run through `admin::audited`, on a route wrapped in `map_response(admin::no_store)`. The extractors authenticate any admin, delegates included: a handler for owners only calls `admin.require_owner()` first. Test it on the route as the server mounts it |
 | Change the schema | A new `fmo_core/schema/vN+1.sql` added to `store/schema.rs` |
 
 ## Privacy

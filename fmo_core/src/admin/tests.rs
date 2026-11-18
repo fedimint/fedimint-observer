@@ -13,7 +13,8 @@ use tower::ServiceExt;
 
 use super::audit::{self, audited, Action, DELEGATE_ADDS_PER_DAY};
 use super::auth::{
-    credentials, verify_signed_request, Admin, AdminAuth, Credentials, Principal, MAX_CLOCK_SKEW,
+    credentials, signature_window, verify_signed_request, Admin, AdminAuth, Credentials, Principal,
+    MAX_CLOCK_SKEW,
 };
 use super::keys::{self, valid_label, MAX_DELEGATES};
 use crate::error::ClientError;
@@ -134,26 +135,33 @@ fn a_signed_request_authorizes_only_the_request_it_names() {
 }
 
 #[test]
-fn a_signed_request_expires_with_the_clock_skew() {
+fn a_signed_request_is_accepted_exactly_within_its_window() {
     let keys = Keys::generate();
-    let now = Utc::now();
+    // Events carry whole seconds; the server's clock doesn't
+    let created_at = DateTime::from_timestamp(1_800_000_000, 0).expect("valid");
     let skew = chrono::Duration::from_std(MAX_CLOCK_SKEW).expect("small");
+    let nanosecond = chrono::Duration::nanoseconds(1);
     let get = Method::GET;
-    let at = |created_at: DateTime<Utc>| {
-        let mut signed = Signed::new(&get, "/admin/session", b"");
-        signed.created_at = created_at;
-        verify_signed_request(
-            &signed.header(&keys),
-            &url("/admin/session"),
-            &get,
-            b"",
-            now,
-        )
-    };
-    assert!(at(now - skew).is_ok());
-    assert!(at(now + skew).is_ok());
-    assert!(at(now - skew - chrono::Duration::seconds(1)).is_err());
-    assert!(at(now + skew + chrono::Duration::seconds(1)).is_err());
+    let mut signed = Signed::new(&get, "/admin/session", b"");
+    signed.created_at = created_at;
+    let header = signed.header(&keys);
+    let at =
+        |now: DateTime<Utc>| verify_signed_request(&header, &url("/admin/session"), &get, b"", now);
+
+    let (not_before, valid_until) = signature_window(created_at);
+    assert_eq!(
+        (not_before, valid_until),
+        (created_at - skew, created_at + skew)
+    );
+    assert!(at(not_before).is_ok());
+    assert!(at(valid_until).is_ok());
+    assert!(at(not_before - nanosecond).is_err());
+    assert!(at(valid_until + nanosecond).is_err());
+    // The id must be kept until the window's end, whenever it was first used
+    assert_eq!(
+        at(not_before).map(|signed| signed.valid_until),
+        Ok(valid_until)
+    );
 }
 
 #[test]
@@ -268,7 +276,25 @@ fn admin_settings_are_validated() {
 
     assert!(AdminAuth::new("", None, None).is_err());
     assert!(AdminAuth::new(TOKEN, Some(&npub), None).is_err());
-    assert!(AdminAuth::new(TOKEN, Some("npub1nonsense"), Some(PUBLIC_URL)).is_err());
+    // A bad entry is named by its position, never echoed: it may be a secret
+    let secret = Keys::generate()
+        .secret_key()
+        .expect("generated keys have one")
+        .to_bech32()
+        .expect("encodes");
+    for (list, position) in [
+        (format!("{npub}, npub1nonsense"), "entry 2"),
+        (secret.clone(), "entry 1"),
+    ] {
+        let error = AdminAuth::new(TOKEN, Some(&list), Some(PUBLIC_URL))
+            .expect_err("invalid")
+            .to_string();
+        assert!(error.contains(position), "{error}");
+        assert!(
+            !error.contains("nonsense") && !error.contains(&secret),
+            "{error}"
+        );
+    }
     for bad_url in [
         "http://observer.example.com/api",
         "ftp://observer.example.com",
@@ -321,6 +347,7 @@ impl TestSchema {
             .batch_execute(&format!(
                 "CREATE SCHEMA {name}; SET search_path TO {name};
                  CREATE TABLE schema_version(version INTEGER);
+                 CREATE TABLE federations(federation_id BYTEA PRIMARY KEY, config BYTEA NOT NULL);
                  {}",
                 include_str!("../../schema/v14.sql")
             ))
@@ -473,24 +500,30 @@ async fn postgres_signed_requests_are_used_once() -> anyhow::Result<()> {
     let result = async {
         let observer = db.observer(true).await?;
         let connection = observer.connection().await?;
-        let now = Utc::now();
+        let created_at = DateTime::from_timestamp(1_800_000_000, 0).expect("valid");
+        let (not_before, valid_until) = signature_window(created_at);
+        let microsecond = chrono::Duration::microseconds(1);
         let (first, second) = ([1u8; 32], [2u8; 32]);
 
-        assert!(keys::record_signed_request(&connection, &first, now).await?);
-        assert!(!keys::record_signed_request(&connection, &first, now).await?);
-        assert!(keys::record_signed_request(&connection, &second, now).await?);
+        // First used as early as its signature is accepted
+        assert!(keys::record_signed_request(&connection, &first, valid_until, not_before).await?);
+        assert!(!keys::record_signed_request(&connection, &first, valid_until, not_before).await?);
+        assert!(keys::record_signed_request(&connection, &second, valid_until, not_before).await?);
+        // A replay at the last instant its signature is accepted still finds it
+        assert!(!keys::record_signed_request(&connection, &first, valid_until, valid_until).await?);
 
-        // Ids are kept for as long as their event could still be accepted
-        let skew = chrono::Duration::from_std(MAX_CLOCK_SKEW)?;
-        assert!(!keys::record_signed_request(&connection, &first, now + skew * 2).await?);
-        // After that they are forgotten, and the table doesn't grow
-        let later = now + skew * 2 + chrono::Duration::seconds(1);
-        assert!(keys::record_signed_request(&connection, &[3u8; 32], later).await?);
-        let kept: i64 = connection
-            .query_one("SELECT COUNT(*) FROM admin_auth_events", &[])
+        // Once the window has ended the ids are forgotten, and the table
+        // doesn't grow; the signatures are refused by then anyway
+        let later = valid_until + microsecond;
+        let (_, third_until) = signature_window(created_at + chrono::Duration::seconds(61));
+        assert!(keys::record_signed_request(&connection, &[3u8; 32], third_until, later).await?);
+        let kept: Vec<Vec<u8>> = connection
+            .query("SELECT event_id FROM admin_auth_events", &[])
             .await?
-            .get(0);
-        assert_eq!(kept, 1);
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        assert_eq!(kept, vec![vec![3u8; 32]]);
         Ok(())
     }
     .await;
@@ -585,27 +618,35 @@ async fn postgres_delegates_add_a_limited_number_of_federations() -> anyhow::Res
     db.finish(result).await
 }
 
-/// The admin API as the server mounts it, with one owner key
+/// The admin API and the federation routes as the server mounts them, with
+/// the given owner keys
 struct Api {
     router: Router,
 }
 
 impl Api {
     fn new(observer: FederationObserver, owner: &Keys) -> anyhow::Result<Self> {
+        Self::with_owners(observer, &[owner])
+    }
+
+    fn with_owners(observer: FederationObserver, owners: &[&Keys]) -> anyhow::Result<Self> {
+        let owners = owners
+            .iter()
+            .map(|keys| keys.public_key().to_hex())
+            .collect::<Vec<_>>()
+            .join(",");
         let state = AppState {
             federation_config_cache: Default::default(),
             meta_override_cache: Default::default(),
             consensus_meta_cache: Default::default(),
             federation_observer: observer,
             http_metrics: Arc::new(crate::http::HttpMetrics::new(1)),
-            admin: Arc::new(AdminAuth::new(
-                TOKEN,
-                Some(&owner.public_key().to_hex()),
-                Some(PUBLIC_URL),
-            )?),
+            admin: Arc::new(AdminAuth::new(TOKEN, Some(&owners), Some(PUBLIC_URL))?),
         };
         Ok(Self {
-            router: super::routes().with_state(state),
+            router: super::routes()
+                .nest("/federations", crate::federation::get_federations_routes())
+                .with_state(state),
         })
     }
 
@@ -806,14 +847,187 @@ async fn postgres_admin_api_enforces_roles_and_revocation() -> anyhow::Result<()
             .await?;
         assert_eq!(status, StatusCode::FORBIDDEN);
 
-        // API replicas refuse admins, after checking who they are
+        // API replicas refuse admins, after checking who they are, and
+        // without spending the signature: the worker still takes it
         let replica = Api::new(db.observer(false).await?, &owner)?;
         let (status, _, _) = replica
             .send(get.clone(), "/admin/session", token, b"")
             .await?;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        let (status, _, _) = replica.send(get, "/admin/session", None, b"").await?;
+        let (status, _, _) = replica
+            .send(get.clone(), "/admin/session", None, b"")
+            .await?;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let header = Signed::new(&get, "/admin/session", b"").header(&owner);
+        let signed = Some(format!("Nostr {header}"));
+        let (status, _, _) = replica
+            .send(get.clone(), "/admin/session", signed.clone(), b"")
+            .await?;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let (status, _, _) = api.send(get, "/admin/session", signed, b"").await?;
+        assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+    .await;
+    db.finish(result).await
+}
+
+/// The status and role `keys` gets from `GET /admin/session`
+async fn role_of(api: &Api, keys: &Keys) -> anyhow::Result<(StatusCode, Option<String>)> {
+    let (status, session) = api.signed(keys, Method::GET, "/admin/session", b"").await?;
+    Ok((status, session["role"].as_str().map(str::to_owned)))
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated FMO_ADMIN_TEST_DATABASE"]
+async fn postgres_a_grant_outlives_owner_status_until_revoked() -> anyhow::Result<()> {
+    let db = TestSchema::new("owner_grant").await?;
+    let result = async {
+        let (owner, alice) = (Keys::generate(), Keys::generate());
+        let get = Method::GET;
+        let alice_path = format!("/admin/keys/{}", alice.public_key().to_hex());
+        let grant = serde_json::to_vec(&json!({ "label": "Alice" }))?;
+
+        // A delegate first
+        let before = Api::new(db.observer(true).await?, &owner)?;
+        let (status, _) = before
+            .signed(&owner, Method::PUT, &alice_path, &grant)
+            .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            role_of(&before, &alice).await?,
+            (StatusCode::OK, Some("delegate".into()))
+        );
+
+        // Then listed as an owner: an owner, whatever the grant says, and the
+        // grant shows as held by an owner
+        let both = Api::with_owners(db.observer(true).await?, &[&owner, &alice])?;
+        assert_eq!(
+            role_of(&both, &alice).await?,
+            (StatusCode::OK, Some("owner".into()))
+        );
+        let (status, listed) = both.signed(&owner, get.clone(), "/admin/keys", b"").await?;
+        assert_eq!(status, StatusCode::OK);
+        let listed: AdminKeys = serde_json::from_value(listed)?;
+        assert!(listed.delegates[0].also_owner);
+        let observer = db.observer(true).await?;
+        let auth = AdminAuth::new(
+            TOKEN,
+            Some(&format!(
+                "{},{}",
+                owner.public_key().to_hex(),
+                alice.public_key().to_hex()
+            )),
+            Some(PUBLIC_URL),
+        )?;
+        assert_eq!(
+            keys::owners_with_grants(&observer.connection().await?, auth.owners()).await?,
+            vec![alice.public_key()]
+        );
+
+        // Removed from the owners, the grant still makes it a delegate, as
+        // documented; only revoking it takes all access away
+        let after = Api::new(db.observer(true).await?, &owner)?;
+        assert_eq!(
+            role_of(&after, &alice).await?,
+            (StatusCode::OK, Some("delegate".into()))
+        );
+        let (status, _) = after
+            .signed(&owner, Method::DELETE, &alice_path, b"")
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(role_of(&after, &alice).await?.0, StatusCode::FORBIDDEN);
+        Ok(())
+    }
+    .await;
+    db.finish(result).await
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated FMO_ADMIN_TEST_DATABASE"]
+async fn postgres_federation_admin_routes_check_roles_and_are_not_cached() -> anyhow::Result<()> {
+    let db = TestSchema::new("fed_routes").await?;
+    let result = async {
+        let (owner, alice) = (Keys::generate(), Keys::generate());
+        let api = Api::new(db.observer(true).await?, &owner)?;
+        let alice_path = format!("/admin/keys/{}", alice.public_key().to_hex());
+        let grant = serde_json::to_vec(&json!({ "label": "Alice" }))?;
+        let (status, _) = api.signed(&owner, Method::PUT, &alice_path, &grant).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        // An id the observer doesn't observe: owners get past authentication
+        // to the handler's 404 without anything reaching a guardian
+        let unobserved = "00".repeat(32);
+        let backfill = format!("/federations/{unobserved}/backfill");
+        let reset = format!("/federations/{unobserved}/modules/mint/reset");
+        let body = b"{}".to_vec();
+        let add = serde_json::to_vec(&json!({ "invite": "not an invite" }))?;
+        let routes = [
+            (Method::POST, backfill.as_str(), &body),
+            (Method::POST, reset.as_str(), &body),
+            (Method::PUT, "/federations", &add),
+        ];
+        let audited = || async {
+            let count: i64 = db
+                .client
+                .query_one(
+                    "SELECT COUNT(*) FROM admin_audit_log WHERE action <> 'key.grant'",
+                    &[],
+                )
+                .await?
+                .get(0);
+            anyhow::Ok(count)
+        };
+
+        for (method, path, body) in &routes {
+            // Nobody, and a wrong token
+            for authorization in [None, Some("Bearer wrong".to_owned())] {
+                let (status, headers, _) = api
+                    .send(method.clone(), path, authorization, body)
+                    .await?;
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {path}");
+                assert_eq!(headers[header::CACHE_CONTROL], "no-store", "{method} {path}");
+            }
+        }
+        // A delegate may add federations, and nothing else
+        for (method, path, body) in &routes[..2] {
+            let (status, _) = api.signed(&alice, method.clone(), path, body).await?;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {path}");
+        }
+        let (status, _) = api.signed(&alice, Method::PUT, "/federations", &add).await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(audited().await?, 0, "refused requests ran nothing");
+
+        // Owners reach the handlers, and their answers aren't cached either
+        for (method, path, body) in &routes[..2] {
+            let header = Signed::new(method, path, body).header(&owner);
+            let (status, headers, _) = api
+                .send(method.clone(), path, Some(format!("Nostr {header}")), body)
+                .await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}");
+            assert_eq!(headers[header::CACHE_CONTROL], "no-store", "{method} {path}");
+        }
+        assert_eq!(audited().await?, 2);
+        let failed: i64 = db
+            .client
+            .query_one(
+                "SELECT COUNT(*) FROM admin_audit_log WHERE action <> 'key.grant' AND outcome = 'failed'",
+                &[],
+            )
+            .await?
+            .get(0);
+        assert_eq!(failed, 2);
+
+        // The public list shares the path of PUT /federations, but not its
+        // no-store layer (this schema lacks its tables, so it answers 500;
+        // the header is what matters here)
+        let (_, headers, _) = api
+            .send(Method::GET, "/federations", None, b"")
+            .await?;
+        assert_ne!(
+            headers.get(header::CACHE_CONTROL).map(|value| value.as_bytes()),
+            Some(&b"no-store"[..])
+        );
         Ok(())
     }
     .await;

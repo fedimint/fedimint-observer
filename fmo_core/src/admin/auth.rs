@@ -11,7 +11,7 @@
 //! A signed request is accepted only if all of this holds:
 //!
 //! - the event's id and signature are valid, and its kind is 27235
-//! - it was signed within [`MAX_CLOCK_SKEW`] of now
+//! - now is within [`MAX_CLOCK_SKEW`] of its `created_at`, either way
 //! - its one `u` tag is this request's URL under `FO_PUBLIC_API_URL`. The
 //!   `Host` header is never used: whoever sends the request picks it, so a
 //!   request an admin signed for another site could be replayed here.
@@ -21,6 +21,11 @@
 //! - its key is an owner's or holds a current grant, looked up for every
 //!   request, so revoking takes effect at once
 //! - its id was not used before (`admin_auth_events`)
+//!
+//! Single use rests on one rule, [`signature_window`]: an event is accepted
+//! only until `created_at + MAX_CLOCK_SKEW`, and its id is kept until that
+//! same instant. Only the worker records ids and accepts signed requests, so
+//! one clock decides both.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -28,7 +33,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::extract::{FromRequest, OriginalUri, Request};
-use axum::http::{header, HeaderMap, Method, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, Uri};
+use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use bitcoin::hashes::{sha256, Hash};
 use chrono::{DateTime, Utc};
@@ -58,6 +64,14 @@ const MAX_OWNERS: usize = 16;
 
 /// What the frontend shows when it could not have known better
 const NO_ACCESS: &str = "This Nostr key has no admin access to this observer";
+
+/// The interval in which an event signed at `created_at` is accepted, both
+/// ends included. A used event's id is kept until the end, so it is refused
+/// for as long as its signature would otherwise still be accepted.
+pub(super) fn signature_window(created_at: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+    let skew = chrono::Duration::from_std(MAX_CLOCK_SKEW).expect("a minute fits");
+    (created_at - skew, created_at + skew)
+}
 
 /// The admin a request was authenticated as
 #[derive(Debug, Clone)]
@@ -170,14 +184,24 @@ impl AdminAuth {
     }
 }
 
-/// `FO_ADMIN_NPUBS`: keys as `npub1…` or hex, separated by commas or spaces
+/// `FO_ADMIN_NPUBS`: keys as `npub1…` or hex, separated by commas or spaces.
+/// An invalid entry is named by its position, never its value: it could be a
+/// secret key pasted by mistake, and startup errors end up in logs.
 fn parse_owners(list: &str) -> anyhow::Result<BTreeSet<PublicKey>> {
     let owners = list
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|key| !key.is_empty())
-        .map(|key| {
-            PublicKey::parse(key)
-                .map_err(|_| anyhow::anyhow!("FO_ADMIN_NPUBS has an invalid public key: {key}"))
+        .enumerate()
+        .map(|(index, key)| {
+            let position = index + 1;
+            if key.get(..5).is_some_and(|prefix| prefix.eq_ignore_ascii_case("nsec1")) {
+                anyhow::bail!(
+                    "FO_ADMIN_NPUBS entry {position} is a secret key (nsec); remove it, treat that key as leaked, and list public keys (npub) only"
+                );
+            }
+            PublicKey::parse(key).map_err(|_| {
+                anyhow::anyhow!("FO_ADMIN_NPUBS entry {position} is not a valid public key")
+            })
         })
         .collect::<anyhow::Result<BTreeSet<_>>>()?;
     anyhow::ensure!(
@@ -254,6 +278,8 @@ pub(super) fn credentials(headers: &HeaderMap) -> Result<Credentials<'_>, AppErr
 pub(super) struct SignedRequest {
     pub pubkey: PublicKey,
     pub event_id: [u8; 32],
+    /// The end of its [`signature_window`]: until then its id must be kept
+    pub valid_until: DateTime<Utc>,
 }
 
 /// Checks the event of an `Authorization: Nostr` header against the request.
@@ -274,8 +300,12 @@ pub(super) fn verify_signed_request(
     if event.kind() != Kind::HttpAuth {
         return Err("The signed event is not an HTTP auth event (kind 27235)");
     }
-    let created_at = i64::try_from(event.created_at().as_u64()).map_err(|_| MALFORMED)?;
-    if created_at.abs_diff(now.timestamp()) > MAX_CLOCK_SKEW.as_secs() {
+    let created_at = i64::try_from(event.created_at().as_u64())
+        .ok()
+        .and_then(|seconds| DateTime::from_timestamp(seconds, 0))
+        .ok_or(MALFORMED)?;
+    let (not_before, valid_until) = signature_window(created_at);
+    if now < not_before || now > valid_until {
         return Err("The request was signed too long ago or your clock is off; try again");
     }
 
@@ -307,6 +337,7 @@ pub(super) fn verify_signed_request(
     Ok(SignedRequest {
         pubkey: event.author(),
         event_id: event.id().to_bytes(),
+        valid_until,
     })
 }
 
@@ -341,6 +372,8 @@ async fn authenticate(request: Request, state: &AppState) -> Result<(Admin, Byte
         .map_err(|_| AppError::payload_too_large("The request body is too large"))?;
     let observer = &state.federation_observer;
 
+    // The signed request to record as used, once everything else passed
+    let mut signed_request = None;
     let admin = match credentials {
         Credentials::Bearer(token) => {
             if !state.admin.token.verify(token) {
@@ -367,48 +400,86 @@ async fn authenticate(request: Request, state: &AppState) -> Result<(Admin, Byte
             let url = nostr
                 .request_url(uri)
                 .ok_or_else(|| AppError::bad_request("Invalid request URL"))?;
-            let now = Utc::now();
-            let signed = verify_signed_request(encoded, &url, &parts.method, &body, now)
+            let signed = verify_signed_request(encoded, &url, &parts.method, &body, Utc::now())
                 .map_err(AppError::unauthorized_because)?;
 
-            let connection = observer.connection().await?;
             let (role, grant) = if nostr.owners.contains(&signed.pubkey) {
                 (AdminRole::Owner, None)
             } else {
-                let grant = keys::active_delegate(&connection, &signed.pubkey, now)
-                    .await?
-                    .ok_or_else(|| AppError::forbidden(NO_ACCESS))?;
+                let grant = keys::active_delegate(
+                    &observer.connection().await?,
+                    &signed.pubkey,
+                    Utc::now(),
+                )
+                .await?
+                .ok_or_else(|| AppError::forbidden(NO_ACCESS))?;
                 (AdminRole::Delegate, Some(grant))
             };
-            // Only requests of admin keys are remembered, so strangers can't
-            // make the observer write
-            if !keys::record_signed_request(&connection, &signed.event_id, now).await? {
-                return Err(AppError::unauthorized_because(
-                    "This signed request was already used; sign a new one",
-                ));
-            }
-            Admin {
+            let admin = Admin {
                 principal: Principal::Key(signed.pubkey),
                 role,
                 grant,
-            }
+            };
+            signed_request = Some(signed);
+            admin
         }
     };
 
     // After the credentials, so other callers learn nothing about the
-    // deployment
+    // deployment, and before the signature is recorded as used, so a replica
+    // that refuses the request doesn't spend it
     if !observer.is_worker() {
         return Err(AppError::unavailable(
             "Administrative operations must be sent to the worker instance",
         ));
     }
+    // Only requests of admin keys are remembered, so strangers can't make the
+    // observer write
+    if let Some(signed) = signed_request {
+        let recorded = keys::record_signed_request(
+            &observer.connection().await?,
+            &signed.event_id,
+            signed.valid_until,
+            Utc::now(),
+        )
+        .await?;
+        if !recorded {
+            return Err(AppError::unauthorized_because(
+                "This signed request was already used; sign a new one",
+            ));
+        }
+    }
     Ok((admin, body))
+}
+
+/// A refused admin request. Like every admin answer it is `no-store`: whether
+/// a request is refused depends on who sends it, not on its URL.
+pub(crate) struct AdminRejection(AppError);
+
+impl From<AppError> for AdminRejection {
+    fn from(error: AppError) -> Self {
+        Self(error)
+    }
+}
+
+impl IntoResponse for AdminRejection {
+    fn into_response(self) -> Response {
+        without_caching(self.0.into_response())
+    }
+}
+
+/// Marks an answer as never to be cached, by the browser or a proxy
+pub(crate) fn without_caching(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// An admin request without a body
 #[async_trait]
 impl FromRequest<AppState> for Admin {
-    type Rejection = AppError;
+    type Rejection = AdminRejection;
 
     async fn from_request(request: Request, state: &AppState) -> Result<Self, Self::Rejection> {
         Ok(authenticate(request, state).await?.0)
@@ -421,7 +492,7 @@ pub(crate) struct AdminJson<T>(pub Admin, pub T);
 
 #[async_trait]
 impl<T: DeserializeOwned> FromRequest<AppState> for AdminJson<T> {
-    type Rejection = AppError;
+    type Rejection = AdminRejection;
 
     async fn from_request(request: Request, state: &AppState) -> Result<Self, Self::Rejection> {
         let (admin, body) = authenticate(request, state).await?;

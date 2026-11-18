@@ -4,6 +4,7 @@ import { test } from 'node:test';
 
 const { authorizationHeader, NostrSignerError } = await import('../src/services/nostrAuth.ts');
 const { inviteProblem, keyProblem, shortKey } = await import('../src/features/admin/lib/format.ts');
+const { SessionTracker } = await import('../src/features/admin/lib/sessions.ts');
 
 const PUBKEY = 'a'.repeat(64);
 const URL = 'https://observer.test/api/federations';
@@ -98,4 +99,19 @@ test('invite codes and public keys are checked before asking for a signature', (
 test('keys are shortened only when long', () => {
   assert.equal(shortKey('short'), 'short');
   assert.equal(shortKey(`npub1${'q'.repeat(52)}uvwxyz`), 'npub1qqqqqqq…uvwxyz');
+});
+
+test('a late refusal ends only the session its request was made in', () => {
+  const sessions = new SessionTracker();
+  const first = sessions.begin();
+  assert.ok(sessions.isCurrent(first));
+  // Signed out, then in again with the same key: the first session's answers are stale
+  sessions.end();
+  assert.equal(sessions.isCurrent(first), false);
+  const second = sessions.begin();
+  assert.notEqual(second, first);
+  assert.equal(sessions.isCurrent(first), false);
+  assert.ok(sessions.isCurrent(second));
+  // Requests made while signed out belong to no session
+  assert.equal(sessions.isCurrent(undefined), false);
 });

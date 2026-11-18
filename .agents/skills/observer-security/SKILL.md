@@ -59,7 +59,11 @@ user holds or moves how many sats.
 - Signed requests are checked against `FO_PUBLIC_API_URL`, never the `Host`
   header, and their ids are remembered so none works twice. Don't weaken
   either, or the time window, to make a client work.
-- Admin answers differ by caller: keep them `Cache-Control: no-store`.
+- Admin answers differ by caller: wrap admin routes in
+  `map_response(admin::no_store)` so they are `Cache-Control: no-store`; the
+  extractors' refusals already are.
+- Test a new admin route as the server mounts it, with an owner, a delegate
+  and no credentials, not only through the handler.
 - Never log, return or embed secrets (`FO_ADMIN_AUTH`, database URLs).
 
 ## Availability

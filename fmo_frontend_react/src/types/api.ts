@@ -373,6 +373,8 @@ export interface AdminDelegate {
   expires_at: string | null;
   /** Past `expires_at`: no longer works until renewed */
   expired: boolean;
+  /** Also in FO_ADMIN_NPUBS: acts as an owner, and keeps this grant if removed from there */
+  also_owner: boolean;
 }
 
 /** `GET /admin/keys` */

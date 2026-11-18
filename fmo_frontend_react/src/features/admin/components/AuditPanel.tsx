@@ -11,7 +11,8 @@ import { ShortKey } from './ShortKey';
 const outcomeStyles: Record<AdminAuditEntry['outcome'], string> = {
   succeeded: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300',
   failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
-  // Recorded before the action ran, and never finished: the request was cut off
+  // Recorded before the action ran, with no outcome after: the request was cut
+  // off, so the action may or may not have happened
   started: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
 };
 
@@ -93,8 +94,11 @@ function AuditRow({ entry }: { entry: AdminAuditEntry }) {
             )}
           </>
         )}
-        <span className={`rounded-sm px-2 py-0.5 text-xs font-medium ${outcomeStyles[entry.outcome] ?? outcomeStyles.started}`}>
-          {entry.outcome === 'started' ? 'not finished' : entry.outcome}
+        <span
+          title={entry.outcome === 'started' ? 'The request ended before its outcome was stored. Check the actual state before trying again.' : undefined}
+          className={`rounded-sm px-2 py-0.5 text-xs font-medium ${outcomeStyles[entry.outcome] ?? outcomeStyles.started}`}
+        >
+          {entry.outcome === 'started' ? 'outcome not recorded' : entry.outcome}
         </span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
