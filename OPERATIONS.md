@@ -31,7 +31,7 @@ just run
 
 1. Take a database backup and verify a restore in an isolated database.
 2. Stop the existing collector and start the updated one. It applies the core
-   schema (currently v12) and the module migrations. Populated databases upgrade
+   schema (currently v14) and the module migrations. Populated databases upgrade
    from core v11 or newer; older ones need the previous release's migrations
    first.
 3. Allow time for backfills and index builds. Migrations run transactionally
@@ -40,8 +40,9 @@ just run
    migrations reset only their own projector cursor to backfill from stored
    sessions (Wallet v2 deposits, Lightning v2 contract activity); the gateway
    API reports `activity_caught_up` once that replay has finished.
-4. Check `/ready`, then start API replicas with the same binary and module set,
-   and deploy the matching frontend.
+4. Check `/ready`, then start API replicas with the same binary, module set and
+   sources file (see [Data sources](#data-sources)), and deploy the matching
+   frontend.
 5. Downgrading the binary after migration is refused. Roll back by restoring a
    verified backup, or ship a forward fix.
 
@@ -76,6 +77,100 @@ gateways per federation module instance, and probe history kept for
 activity is attributed by the module key a gateway reports about itself, which
 the observer cannot verify; a key claimed by more than one gateway is shown as
 contested and credited to neither.
+
+## Admin access
+
+Adding a federation, backfills and module resets are administrative requests,
+served by the collector only. Two kinds of admins exist (`fmo_core/src/admin`):
+
+- **Owners** run the observer and can do everything, including granting and
+  revoking access. They are whoever holds `FO_ADMIN_AUTH` or a key in
+  `FO_ADMIN_NPUBS`. Owners are configuration, never database rows: restoring a
+  database can't change them.
+- **Delegates** are Nostr keys an owner granted access to, on the frontend's
+  `/admin` page or with `PUT /admin/keys/:pubkey`. A delegate can add
+  federations, at most 20 attempts in any 24 hours, and nothing else. At most 64
+  keys hold a grant. Revoking (`DELETE /admin/keys/:pubkey`) or a grant's expiry
+  takes effect with the delegate's next request; there are no sessions to end.
+
+| Environment variable | Default | Purpose |
+| --- | ---: | --- |
+| `FO_ADMIN_AUTH` | required | Bearer token with owner rights, for scripts. A long random secret, for example from `openssl rand -hex 32`; an empty one is refused |
+| `FO_ADMIN_NPUBS` | unset | Owners' Nostr public keys, `npub1…` or hex, separated by commas; at most 16. Needs `FO_PUBLIC_API_URL` |
+| `FO_PUBLIC_API_URL` | unset | The API's base URL exactly as browsers reach it, the frontend's `VITE_FMO_API_BASE_URL` (`https://observer.example.com/api`). Setting it enables signing in with Nostr; unset, only the bearer token works. Must be `https`, or `http` on a loopback address |
+
+Admins who sign in with Nostr send no password: their browser extension signs a
+NIP-98 event for each request, naming its URL, method and body hash. The
+observer accepts an event for 60 seconds around its timestamp and only once, so
+keep the server's clock synchronized. The URL is checked against
+`FO_PUBLIC_API_URL` and never against the `Host` header; if admin requests fail
+with "signed for a different URL", this variable doesn't match the URL the
+frontend calls. Give API replicas the same three variables: they authenticate
+admins the same way before refusing them with `503`.
+
+`GET /admin/audit` (owners) lists every administrative action with who did it,
+kept indefinitely in `admin_audit_log`. Entries are written before the action
+runs and get their outcome after. An entry left `started`, shown as "outcome
+not recorded", was cut off, for example by the request deadline: the action
+may or may not have happened, so check the actual state (is the federation
+observed, did the backfill run) before trying it again.
+
+At the reverse proxy:
+
+- Serve admin requests over TLS only, and on the frontend's own origin, or
+  allow `PUT`, `DELETE` and the `Authorization` header in its CORS policy.
+- Never cache admin answers. The observer sends `Cache-Control: no-store` on
+  everything under `/admin/*`, on `PUT /federations`, the backfill and module
+  reset routes, and on every refused admin request. Nginx honors it unless
+  `proxy_ignore_headers` lists `Cache-Control`; a cache keyed by URL would
+  otherwise hand one admin's answer to anyone. Public reads keep their caching.
+- Rate limit `/admin/*` and `PUT /federations` per client. A refused request
+  costs the observer one signature check and at most one indexed lookup.
+- Don't log the `Authorization` header. A signed event is useless after a
+  minute, but the bearer token is not.
+
+Owners should use a Nostr key kept for administration, and approve "HTTP auth"
+(kind 27235) signing requests only on the observer's own site: any site can ask
+an extension to sign one, and a signed request works from anywhere for a
+minute.
+
+To take all access from a key that is lost or leaked:
+
+1. Remove it from `FO_ADMIN_NPUBS`, if it is listed there, and restart the
+   collector and every API replica.
+2. Revoke its grant, if it has one, on the admin page's Access tab or with
+   `DELETE /admin/keys/:pubkey`. A key granted delegate access before it was
+   made an owner keeps that grant when it stops being an owner. The Access tab
+   marks such keys "also an owner", and the collector logs a warning for each
+   at startup.
+
+Its next request is refused. Requests it signed in the last minute were
+already accepted or are refused as used. If the token leaks, change
+`FO_ADMIN_AUTH` and restart.
+
+## Data sources
+
+Services outside the build push observations about federations to
+`PUT /sources/:source/federations/:federation_id/:kind` (see `ARCHITECTURE.md`).
+Push sources are declared at deploy time:
+
+| Environment variable | Default | Purpose |
+| --- | ---: | --- |
+| `FO_SOURCES_FILE` | unset | Path of the JSON document declaring the push sources and their kinds (format in `fmo_core/src/source/config.rs`); unset declares none |
+| `FO_SOURCE_TOKEN_<ID>` | none | Bearer token of the push source `<id>`, its id in upper case (`FO_SOURCE_TOKEN_UPTIME_PROBE`); 32 to 512 bytes, for example from `openssl rand -hex 32` |
+
+The file holds no secrets; the tokens do, so keep them out of it and out of
+logs. Startup fails if a declared source has no token or a short one.
+
+Give the collector and every API replica the same sources file and tokens. Any
+instance accepts pushes and serves `GET /federations/:id/sources`, so a replica
+without them answers that source's pushes with `401` and leaves its public
+observations out. The collector deletes observations past their kind's
+retention, and those of sources or kinds it no longer declares 30 days after
+their last write; it does so whether or not it declares any sources. `/metrics`
+counts each source's writes in
+`fmo_source_observations_total{source,result}`, with `result` one of `stored`,
+`superseded` or `rejected`.
 
 ## Egress policy
 
@@ -194,6 +289,8 @@ empty, isolated database, rolls back its fixtures, and does not use
 | `FMO_WORK_TEST_DATABASE` | `cargo test -p fmo_core postgres_ -- --ignored` |
 | `FMO_WALLETV2_TEST_DATABASE` | `cargo test -p fmo_module_walletv2 postgres_ -- --ignored` |
 | `FMO_LNV2_TEST_DATABASE` | `cargo test -p fmo_module_lnv2 postgres_ -- --ignored` |
+| `FMO_SOURCES_TEST_DATABASE` | `cargo test -p fmo_core source::tests::postgres_ -- --ignored` |
+| `FMO_ADMIN_TEST_DATABASE` | `cargo test -p fmo_core admin::tests::postgres_ -- --ignored` |
 
 `fmo_core/tests/run-session-time-repair.sh` creates and drops its own database
 to check upgrades from v11; set `PGHOST`, `PGPORT`, and `PGUSER` to a disposable

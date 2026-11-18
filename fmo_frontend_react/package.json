@@ -13,7 +13,8 @@
     "test:config": "node --experimental-strip-types --test scripts/test-config.mjs",
     "test:format": "node --experimental-strip-types --test scripts/test-format.mjs",
     "test:gateways": "node --experimental-strip-types --test scripts/test-gateways.mjs",
-    "test:http": "node --experimental-strip-types --test scripts/test-http.mjs"
+    "test:http": "node --experimental-strip-types --test scripts/test-http.mjs",
+    "test:admin": "node --experimental-strip-types --test scripts/test-admin.mjs"
   },
   "dependencies": {
     "echarts": "^6.1.0",

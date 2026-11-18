@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useAdminSession } from '../../features/admin/useAdminSession';
 import type { Theme } from '../../hooks/useTheme';
 
 interface NavBarProps {
@@ -10,6 +11,7 @@ interface NavBarProps {
 export function NavBar({ theme, onToggleTheme }: NavBarProps) {
   const location = useLocation();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const { admin } = useAdminSession();
 
   return (
     <nav className="bg-white border-gray-200 dark:bg-gray-900">
@@ -42,6 +44,23 @@ export function NavBar({ theme, onToggleTheme }: NavBarProps) {
             )}
           </button>
           
+          {/* Admin sign-in: a key, with a dot while someone is signed in */}
+          <Link
+            to="/admin"
+            onClick={() => setIsMenuOpen(false)}
+            aria-label={admin ? `Admin, signed in as ${admin.session.role}` : 'Admin sign-in'}
+            title={admin ? `Admin (signed in as ${admin.session.role})` : 'Admin sign-in'}
+            aria-current={location.pathname === '/admin' ? 'page' : undefined}
+            className={`relative inline-flex items-center justify-center p-2 w-9 h-9 rounded-lg hover:bg-gray-200 focus:outline-hidden focus:ring-2 focus:ring-gray-300 dark:hover:bg-gray-700 dark:focus:ring-gray-600 ${
+              location.pathname === '/admin' ? 'text-blue-700 dark:text-blue-500' : 'text-gray-500 dark:text-gray-400'
+            }`}
+          >
+            <svg className="w-5 h-5" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 0 1 2 2m4 0a6 6 0 0 1-7.74 5.74L11 17H9v2H7v2H4a1 1 0 0 1-1-1v-2.59a1 1 0 0 1 .29-.7l6.97-6.97A6 6 0 1 1 21 9Z" />
+            </svg>
+            {admin && <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-green-500 ring-2 ring-white dark:ring-gray-900" />}
+          </Link>
+
           <a
             href="https://github.com/elsirion/fedimint-observer/"
             aria-label="Fedimint Observer source on GitHub"

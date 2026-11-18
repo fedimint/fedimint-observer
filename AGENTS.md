@@ -58,8 +58,16 @@ The frontend unit tests are the `test:` scripts in `package.json`
 Environment (`sample.env` is a template; the server doesn't load `.env`, so
 export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
 `FO_DATABASE`, `FO_ADMIN_AUTH`, `FO_MEMPOOL_URL` (default
-`https://mempool.space/api`). Limits and other `FO_*` variables are in
+`https://mempool.space/api`). `FO_ADMIN_NPUBS` and `FO_PUBLIC_API_URL` let
+admins sign in with a Nostr key. Limits and other `FO_*` variables are in
 `OPERATIONS.md`.
+
+Data sources that push observations over HTTP are optional (`OPERATIONS.md`,
+"Data sources"): `FO_SOURCES_FILE` is the path of the JSON document declaring
+the push sources and their kinds (`fmo_core/src/source/config.rs`), and
+`FO_SOURCE_TOKEN_<ID>` is each declared source's bearer token, its id in upper
+case, 32 to 512 bytes. Startup fails without it. API replicas need the same
+sources file and tokens as the worker.
 
 ## Architecture
 
@@ -86,7 +94,12 @@ export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
 - `/config/*`: stable configuration-inspection API; don't change existing
   response shapes.
 - `/federations/*`: unstable monitoring API.
-- Admin endpoints need the `FO_ADMIN_AUTH` bearer token.
+- Admin endpoints take the `crate::admin` extractors (`Admin`, `AdminJson`),
+  which accept the `FO_ADMIN_AUTH` bearer token or a NIP-98 event signed by an
+  owner (`FO_ADMIN_NPUBS`) or a delegate (`admin_keys`). Delegates only add
+  federations; everything else calls `require_owner()`. Admin actions go
+  through `admin::audited`, and `/admin/*` manages access (`OPERATIONS.md`,
+  "Admin access").
 - Errors: `AppError` carries an HTTP status and a client-safe message;
   unexpected errors are logged and returned as a sanitized `500`. Errors the
   client caused or should see (unknown federation, bad parameters, unreachable
@@ -135,7 +148,7 @@ export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
 
 ### Database
 
-PostgreSQL. Core migrations are `fmo_core/schema/v0.sql` to `v12.sql`; some
+PostgreSQL. Core migrations are `fmo_core/schema/v0.sql` to `v14.sql`; some
 modules also keep SQL in `fmo_modules/<module>/schema/`. A populated database
 upgrades only from v11 or newer (`MIN_UPGRADE_VERSION`); older ones need the
 previous release's backfills. Old migrations stay for fresh setups.
@@ -145,7 +158,8 @@ Key tables:
 - Core: `federations`, `sessions`, `transactions`, `guardian_health`,
   `nostr_*`, `federation_observations` (metadata and other observations, kept
   on failed polls), `federation_session_counts`, `session_time_repairs`,
-  `module_cursors`.
+  `module_cursors`, `admin_keys` (delegated access), `admin_auth_events` (used
+  request signatures), `admin_audit_log`.
 - `fmo_wallet`: peg-ins, peg-out transactions, signatures, inputs and outputs,
   the `utxos` materialized view, and `enrichment_jobs` (leased Bitcoin lookups,
   kept out of projection transactions).

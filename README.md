@@ -40,6 +40,8 @@ This service is already used by [bitcoinmints.com](https://bitcoinmints.com/?tab
 be considered kinda stable.
 
 ## Development
+[ARCHITECTURE.md](ARCHITECTURE.md) describes how the code is laid out, how data moves through it and where new code belongs.
+
 Fedimint Observer comes with a [nix](https://nixos.org/) development environment. You can enter it by running `nix develop`.
 In there you can run a variety of `just` commands (to be called as `just <COMMAND> <ARGS...>`), the most important ones are:
 * `check`: run `cargo check` on the entire workspace
@@ -64,9 +66,10 @@ I currently run the public instance at https://observer.fedimint.org using the f
       FO_DATABASE = "postgresql:///fmo?user=fmo";
     };
     serviceConfig = {
-      # Holds `FO_ADMIN_AUTH=<long random secret>`, the admin password used to
-      # add federations via curl. Values in `environment` end up world-readable
-      # in the Nix store.
+      # Holds `FO_ADMIN_AUTH=<long random secret>`, the admin token for
+      # scripts. Values in `environment` end up world-readable in the Nix
+      # store. To add federations from the frontend's /admin page with a Nostr
+      # key instead, see "Admin access" in OPERATIONS.md.
       EnvironmentFile = "/var/lib/secrets/fedimint-observer.env";
       ExecStart = ''
         ${fmo.fmo_server}/bin/fmo_server

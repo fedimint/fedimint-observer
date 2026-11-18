@@ -1,22 +1,36 @@
-pub mod db;
+//! Observed federations. Files by layer:
+//!
+//! - collection: `ingest.rs` (sessions, block times, backfill), `guardians.rs`
+//!   (health polling and retention), `metadata.rs`
+//! - processing: `projector.rs` (module tables, read-model rebuilds)
+//! - presentation: this file's routes, and the read queries of `summary.rs`,
+//!   `session.rs`, `transaction.rs`, `meta.rs` and `guardians.rs`
+//! - wiring: `observer.rs`, which owns the clients, pools and tasks
+//!
+//! See `ARCHITECTURE.md` at the repository root.
+
 mod guardians;
+mod ingest;
 mod meta;
-pub(crate) mod nostr;
+mod metadata;
 pub mod observer;
 mod projector;
 mod session;
+mod summary;
 mod transaction;
 
 use axum::extract::{Path, State};
+use axum::middleware::map_response;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use axum_auth::AuthBearer;
 use fedimint_core::config::{ClientConfig, FederationId, JsonClientConfig};
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::invite_code::InviteCode;
 use fmo_api_types::{FederationOverview, FederationSummary, FedimintTotals};
 use serde::Deserialize;
+use serde_json::json;
 
+use crate::admin::{self, audited, Action, AdminJson};
 use crate::error::ClientError;
 use crate::federation::guardians::get_federation_health;
 use crate::federation::meta::get_federation_meta;
@@ -30,11 +44,14 @@ use crate::{federation, AppState};
 
 pub fn get_federations_routes() -> Router<AppState> {
     Router::new()
+        .merge(crate::recommend::federations_routes())
+        .merge(crate::source::federations_routes())
         .route("/", get(list_observed_federations))
-        .route("/", put(add_observed_federation))
+        .route(
+            "/",
+            put(add_observed_federation).layer(map_response(admin::no_store)),
+        )
         .route("/totals", get(get_federation_totals))
-        // TODO: move to nostr module
-        .route("/nostr/rating", put(publish_rating_event))
         .route("/:federation_id", get(get_federation_overview))
         .route(
             "/:federation_id/config",
@@ -57,10 +74,13 @@ pub fn get_federations_routes() -> Router<AppState> {
         )
         .route("/:federation_id/sessions", get(list_sessions))
         .route("/:federation_id/sessions/count", get(count_sessions))
-        .route("/:federation_id/backfill", post(backfill_federation))
+        .route(
+            "/:federation_id/backfill",
+            post(backfill_federation).layer(map_response(admin::no_store)),
+        )
         .route(
             "/:federation_id/modules/:kind/reset",
-            post(reset_module_cursor),
+            post(reset_module_cursor).layer(map_response(admin::no_store)),
         )
 }
 
@@ -74,23 +94,30 @@ pub async fn list_observed_federations(
         .into())
 }
 
+/// Admin: starts observing the federation of an invite code. Owners and
+/// delegates may; a delegate only so many per day (`crate::admin`).
 pub async fn add_observed_federation(
-    AuthBearer(auth): AuthBearer,
     State(state): State<AppState>,
-    Json(body): Json<serde_json::Value>,
+    AdminJson(admin, body): AdminJson<serde_json::Value>,
 ) -> crate::error::Result<Json<FederationId>> {
-    state.federation_observer.check_auth(&auth)?;
-
     let invite = body
         .get("invite")
         .ok_or_else(|| ClientError::bad_request("Request did not contain invite field"))?;
     let invite = serde_json::from_value::<InviteCode>(invite.clone())
         .map_err(|_| ClientError::bad_request("Invalid invite code"))?;
-    Ok(state
-        .federation_observer
-        .add_federation(&invite)
-        .await?
-        .into())
+    let observer = &state.federation_observer;
+    // The invite itself is never recorded: it can carry an API secret
+    let federation_id = invite.federation_id();
+    Ok(audited(
+        observer,
+        &admin,
+        Action::FederationAdd,
+        &federation_id.to_string(),
+        json!({}),
+        observer.add_federation(&invite),
+    )
+    .await?
+    .into())
 }
 
 pub(crate) async fn get_federation_config(
@@ -133,36 +160,34 @@ async fn get_federation_totals(
     Ok(state.federation_observer.totals().await?.into())
 }
 
-async fn publish_rating_event(
-    State(state): State<AppState>,
-    Json(event): Json<nostr_sdk::Event>,
-) -> crate::error::Result<()> {
-    Ok(state.federation_observer.submit_rating(event).await?)
-}
-
 #[derive(Deserialize, Debug)]
 struct BackfillParams {
     session_start: Option<i32>,
     session_end: Option<i32>,
 }
 
-/// Admin: reprocesses stored sessions in the background, answering 202
+/// Owners: reprocesses stored sessions in the background, answering 202
 /// Accepted with the sessions it covers once it has started
 async fn backfill_federation(
     Path(federation_id): Path<FederationId>,
-    AuthBearer(auth): AuthBearer,
     State(state): State<AppState>,
-    Json(params): Json<BackfillParams>,
+    AdminJson(admin, params): AdminJson<BackfillParams>,
 ) -> crate::error::Result<(axum::http::StatusCode, Json<serde_json::Value>)> {
-    state.federation_observer.check_auth(&auth)?;
+    admin.require_owner()?;
 
-    let (session_start, session_end) = state
-        .federation_observer
-        .start_backfill(federation_id, params.session_start, params.session_end)
-        .await?;
+    let observer = &state.federation_observer;
+    let (session_start, session_end) = audited(
+        observer,
+        &admin,
+        Action::FederationBackfill,
+        &federation_id.to_string(),
+        json!({ "session_start": params.session_start, "session_end": params.session_end }),
+        observer.start_backfill(federation_id, params.session_start, params.session_end),
+    )
+    .await?;
     Ok((
         axum::http::StatusCode::ACCEPTED,
-        Json(serde_json::json!({ "session_start": session_start, "session_end": session_end })),
+        Json(json!({ "session_start": session_start, "session_end": session_end })),
     ))
 }
 
@@ -177,21 +202,30 @@ struct ResetModuleParams {
     clean: bool,
 }
 
-/// Admin: makes a module process a federation's stored sessions again from
+/// Owners: makes a module process a federation's stored sessions again from
 /// `session_start`, by moving its cursor
 async fn reset_module_cursor(
     Path((federation_id, kind)): Path<(FederationId, String)>,
-    AuthBearer(auth): AuthBearer,
     State(state): State<AppState>,
-    Json(params): Json<ResetModuleParams>,
+    AdminJson(admin, params): AdminJson<ResetModuleParams>,
 ) -> crate::error::Result<()> {
-    state.federation_observer.check_auth(&auth)?;
+    admin.require_owner()?;
 
-    Ok(state
-        .federation_observer
-        .worker()
-        .reset_module_cursor(federation_id, &kind, params.session_start, params.clean)
-        .await?)
+    let worker = state.federation_observer.worker();
+    Ok(audited(
+        &state.federation_observer,
+        &admin,
+        Action::ModuleReset,
+        &federation_id.to_string(),
+        // The path is the caller's: record the kind only if it is a module's
+        json!({
+            "kind": worker.modules().get(&kind).map(|_| kind.as_str()),
+            "session_start": params.session_start,
+            "clean": params.clean,
+        }),
+        worker.reset_module_cursor(federation_id, &kind, params.session_start, params.clean),
+    )
+    .await?)
 }
 
 fn instance_to_kind(config: &ClientConfig, module_instance_id: ModuleInstanceId) -> String {

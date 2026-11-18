@@ -42,11 +42,19 @@ const DEFAULT_TIMEOUT_MS = 35_000;
 // The server's messages are short sentences; anything longer is not one of them
 const MAX_SERVER_MESSAGE_LENGTH = 300;
 
+export type HttpMethod = 'GET' | 'PUT' | 'POST' | 'DELETE';
+
 interface RequestOptions {
   signal?: AbortSignal;
-  method?: 'GET' | 'PUT';
+  method?: HttpMethod;
   /** Sent as a JSON body */
   json?: unknown;
+  /** A JSON body already serialized, for callers that signed these exact bytes; replaces `json` */
+  body?: string;
+  /** Further request headers, such as Authorization */
+  headers?: Record<string, string>;
+  /** Never answer from, or store in, the browser's cache: for answers that depend on who asks */
+  noStore?: boolean;
   timeoutMs?: number;
 }
 
@@ -60,7 +68,7 @@ export async function requestNoContent(url: string, options: RequestOptions = {}
   await send(url, options, false);
 }
 
-async function send(url: string, { signal, method = 'GET', json, timeoutMs = DEFAULT_TIMEOUT_MS }: RequestOptions, parseBody: boolean): Promise<unknown> {
+async function send(url: string, { signal, method = 'GET', json, body: rawBody, headers, noStore, timeoutMs = DEFAULT_TIMEOUT_MS }: RequestOptions, parseBody: boolean): Promise<unknown> {
   signal?.throwIfAborted();
 
   // One signal for both the caller's cancel and the time limit, so the limit also
@@ -84,10 +92,13 @@ async function send(url: string, { signal, method = 'GET', json, timeoutMs = DEF
   try {
     let response: Response;
     try {
+      const sentBody = rawBody ?? (json === undefined ? undefined : JSON.stringify(json));
       response = await fetch(url, {
         method,
         signal: controller.signal,
-        ...(json === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(json) }),
+        ...(noStore ? { cache: 'no-store' as const } : {}),
+        headers: { ...(sentBody === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
+        ...(sentBody === undefined ? {} : { body: sentBody }),
       });
     } catch (err) {
       throw transportError(err);
@@ -145,6 +156,9 @@ function httpError(status: number, message: string | null, requestId: string | n
 
 function statusMessage(status: number): string {
   switch (status) {
+    case 401:
+    case 403:
+      return 'You are not allowed to do this';
     case 404:
       return 'Not found';
     case 429:

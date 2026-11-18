@@ -18,6 +18,27 @@ impl AppError {
             message: "Invalid bearer token".to_owned(),
         }
     }
+    /// 401 with the reason the credentials were refused. The reason must not
+    /// say anything about secrets or about who the admins are.
+    pub fn unauthorized_because(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+    /// 403: the caller is who they say, and may not do this
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
+    }
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: message.into(),
+        }
+    }
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
@@ -35,6 +56,10 @@ impl AppError {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn status(&self) -> StatusCode {
+        self.status
     }
 }
 
@@ -74,6 +99,14 @@ impl ClientError {
     /// 503: the server can't take this request now; retrying later may work
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
+    }
+    /// 403: the caller is who they say, and may not do this
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, message)
+    }
+    /// 429: the caller sends more than its share; retrying shortly may work
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, message)
     }
     pub fn status(&self) -> StatusCode {
         self.status

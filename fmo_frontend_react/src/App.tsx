@@ -3,8 +3,10 @@ import { BrowserRouter as Router, Routes, Route, useLocation, useParams } from '
 import { NavBar } from './components/layout/NavBar';
 import { ErrorBoundary, ReloadMessage } from './components/ui/ErrorBoundary';
 import { Home } from './pages/Home';
+import { AdminSessionProvider } from './features/admin/useAdminSession';
 import { useTheme } from './hooks/useTheme';
 
+const Admin = lazy(() => import('./pages/Admin').then((module) => ({ default: module.Admin })));
 const Nostr = lazy(() => import('./pages/Nostr').then((module) => ({ default: module.Nostr })));
 const FederationDetail = lazy(() => import('./pages/FederationDetail').then((module) => ({ default: module.FederationDetail })));
 const FederationGateways = lazy(() => import('./pages/FederationGateways').then((module) => ({ default: module.FederationGateways })));
@@ -25,6 +27,7 @@ function AppRoutes() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/nostr" element={<Nostr />} />
+          <Route path="/admin" element={<Admin />} />
           <Route path="/federations/:id" element={<PerFederation page={FederationDetail} />} />
           <Route path="/federations/:id/gateways/v2" element={<PerFederation page={FederationGatewaysV2} />} />
           <Route path="/federations/:id/gateways" element={<PerFederation page={FederationGateways} />} />
@@ -40,10 +43,12 @@ function App() {
 
   return (
     <Router>
-      <main className="container mx-auto max-w-6xl px-4 min-h-screen pb-4">
-        <NavBar theme={theme} onToggleTheme={toggleTheme} />
-        <AppRoutes />
-      </main>
+      <AdminSessionProvider>
+        <main className="container mx-auto max-w-6xl px-4 min-h-screen pb-4">
+          <NavBar theme={theme} onToggleTheme={toggleTheme} />
+          <AppRoutes />
+        </main>
+      </AdminSessionProvider>
     </Router>
   );
 }

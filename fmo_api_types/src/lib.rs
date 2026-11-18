@@ -512,3 +512,110 @@ pub struct GatewayV2Activity {
     pub outgoing_refunded: u64,
     pub outgoing_cancelled: u64,
 }
+
+/// The newest observation of one kind from a data source other than the
+/// federation's guardians (`GET /federations/:id/sources`). `data` is the
+/// source's own JSON object, declared public by the build.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceObservation {
+    pub source: String,
+    pub kind: String,
+    /// When the source made the observation
+    pub observed_at: DateTime<Utc>,
+    pub data: serde_json::Value,
+}
+
+/// What an admin may do (`/admin/*`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminRole {
+    /// Runs the observer: everything, including granting and revoking access
+    Owner,
+    /// Was granted access by an owner: adds federations
+    Delegate,
+}
+
+/// A Nostr public key in both of its spellings
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminKeyId {
+    /// 64 hex characters, as in Nostr events
+    pub pubkey: String,
+    /// `npub1…`
+    pub npub: String,
+}
+
+/// Who an admin request was authenticated as (`GET /admin/session`)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminSession {
+    pub role: AdminRole,
+    /// The signing key; `None` for the bearer token
+    pub key: Option<AdminKeyId>,
+    /// A delegate's label, as its owner named it
+    pub label: Option<String>,
+    /// When a delegate's access ends, if it does
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// A key holding delegated admin access
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminDelegate {
+    pub key: AdminKeyId,
+    pub label: String,
+    /// The owner who granted it; `None` when granted with the bearer token
+    pub granted_by: Option<AdminKeyId>,
+    pub granted_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Past `expires_at`: the grant no longer works until it is renewed
+    pub expired: bool,
+    /// The key is also in `FO_ADMIN_NPUBS`. It acts as an owner, and keeps
+    /// this grant if it is removed from there.
+    pub also_owner: bool,
+}
+
+/// `GET /admin/keys`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminKeys {
+    /// Configured in `FO_ADMIN_NPUBS`; not changeable through the API
+    pub owners: Vec<AdminKeyId>,
+    pub delegates: Vec<AdminDelegate>,
+    pub max_delegates: u32,
+}
+
+/// The body of `PUT /admin/keys/:pubkey`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GrantAdminKey {
+    /// The owner's name for the key holder, 1 to 64 characters
+    pub label: String,
+    /// When the access ends; left out, it lasts until revoked
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// One action of an admin, as recorded before it ran
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAuditEntry {
+    pub id: i64,
+    pub at: DateTime<Utc>,
+    /// The admin's key; `None` for the bearer token
+    pub actor: Option<AdminKeyId>,
+    pub actor_role: AdminRole,
+    /// `federation.add`, `federation.backfill`, `module.reset`, `key.grant`
+    /// or `key.revoke`
+    pub action: String,
+    /// The federation id or public key the action was about, in hex
+    pub subject: String,
+    /// `subject` in both spellings, when the action was about a key
+    pub subject_key: Option<AdminKeyId>,
+    pub detail: serde_json::Value,
+    /// `started`, `succeeded` or `failed`
+    pub outcome: String,
+}
+
+/// `GET /admin/audit`, newest first
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAuditPage {
+    pub entries: Vec<AdminAuditEntry>,
+    /// Pass as `after` for the next, older page; `None` at the end
+    pub next: Option<i64>,
+}

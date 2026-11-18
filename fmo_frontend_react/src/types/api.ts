@@ -326,3 +326,90 @@ export interface GatewayOverviewSummary {
 }
 
 export type FederationHealth = 'online' | 'degraded' | 'offline';
+
+/**
+ * The newest observation of one kind from a data source other than the
+ * federation's guardians (`GET /federations/:id/sources`). Mirrors
+ * `fmo_api_types::SourceObservation`; `data` is the source's own JSON object.
+ */
+export interface SourceObservation {
+  source: string;
+  kind: string;
+  /** When the source made the observation, RFC 3339 */
+  observed_at: string;
+  data: Record<string, unknown>;
+}
+
+// Administration (`/admin/*`), see fmo_core/src/admin
+
+/** `owner` runs the observer; `delegate` was granted access and adds federations */
+export type AdminRole = 'owner' | 'delegate';
+
+/** A Nostr public key in both spellings */
+export interface AdminKeyId {
+  /** 64 hex characters */
+  pubkey: string;
+  /** npub1… */
+  npub: string;
+}
+
+/** `GET /admin/session` */
+export interface AdminSession {
+  role: AdminRole;
+  /** null for the bearer token */
+  key: AdminKeyId | null;
+  /** A delegate's label, as its owner named it */
+  label: string | null;
+  /** When a delegate's access ends, if it does */
+  expires_at: string | null;
+}
+
+export interface AdminDelegate {
+  key: AdminKeyId;
+  label: string;
+  /** null when granted with the bearer token */
+  granted_by: AdminKeyId | null;
+  granted_at: string;
+  expires_at: string | null;
+  /** Past `expires_at`: no longer works until renewed */
+  expired: boolean;
+  /** Also in FO_ADMIN_NPUBS: acts as an owner, and keeps this grant if removed from there */
+  also_owner: boolean;
+}
+
+/** `GET /admin/keys` */
+export interface AdminKeys {
+  owners: AdminKeyId[];
+  delegates: AdminDelegate[];
+  max_delegates: number;
+}
+
+/** The body of `PUT /admin/keys/:pubkey` */
+export interface GrantAdminKey {
+  label: string;
+  /** RFC 3339; left out, the access lasts until revoked */
+  expires_at?: string;
+}
+
+export interface AdminAuditEntry {
+  id: number;
+  at: string;
+  /** null for the bearer token */
+  actor: AdminKeyId | null;
+  actor_role: AdminRole;
+  /** federation.add, federation.backfill, module.reset, key.grant or key.revoke */
+  action: string;
+  /** The federation id or public key the action was about, in hex */
+  subject: string;
+  /** `subject` in both spellings, when the action was about a key */
+  subject_key: AdminKeyId | null;
+  detail: Record<string, unknown>;
+  outcome: 'started' | 'succeeded' | 'failed';
+}
+
+/** `GET /admin/audit`, newest first */
+export interface AdminAuditPage {
+  entries: AdminAuditEntry[];
+  /** Pass as `after` for the next, older page; null at the end */
+  next: number | null;
+}
