@@ -26,7 +26,8 @@ pub struct RuntimeOptions {
     /// Zero retains raw health indefinitely. Otherwise keep at least 31 days.
     #[arg(long, env = "FO_HEALTH_RETENTION_DAYS", default_value_t = 90)]
     pub health_retention_days: u32,
-    /// Bounded refresh interval for API replicas to reload dynamic guardian endpoints from database.
+    /// Bounded refresh interval for API replicas to reload dynamic guardian
+    /// endpoints from database.
     #[arg(long, env = "FO_REPLICA_ENDPOINT_REFRESH_SECS", default_value_t = 60)]
     pub replica_endpoint_refresh_secs: u64,
 }

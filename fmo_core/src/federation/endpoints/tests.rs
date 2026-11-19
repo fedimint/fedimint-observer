@@ -48,9 +48,9 @@ fn sample_global_config(
 }
 
 #[test]
-fn test_accept_valid_announcement_and_rotation() {
+fn signed_rotation_overrides_only_the_target_guardian() {
     let (p0, _, k0, pk0) = generate_test_guardian(0);
-    let (p1, _, k1, pk1) = generate_test_guardian(1);
+    let (p1, _, _k1, pk1) = generate_test_guardian(1);
 
     let url0_initial = SafeUrl::from_str("ws://guardian0.example.com:8173").unwrap();
     let url1_initial = SafeUrl::from_str("ws://guardian1.example.com:8173").unwrap();
@@ -60,57 +60,70 @@ fn test_accept_valid_announcement_and_rotation() {
         (p1, pk1, url1_initial.clone()),
     ]);
 
-    // Baseline: fall back to config URLs when no announcements
-    let initial_peers = active_api_peers(&config, None);
-    assert_eq!(initial_peers.get(&p0), Some(&url0_initial));
-    assert_eq!(initial_peers.get(&p1), Some(&url1_initial));
-
-    let existing = BTreeMap::new();
     let url0_migrated = SafeUrl::from_str("wss://guardian0-new.example.com:8173").unwrap();
-
     let signed0 = ApiAnnouncement::new(url0_migrated.clone(), 10).sign(SECP256K1, &k0);
-
     let mut incoming = BTreeMap::new();
-    incoming.insert(p0, signed0.clone());
+    incoming.insert(p0, signed0);
 
     let (updated, changed) = verify_and_merge_announcements(
         fed_id,
         config.broadcast_public_keys.as_ref(),
-        &existing,
+        &BTreeMap::new(),
         &incoming,
     );
 
-    assert!(changed);
-    assert_eq!(updated.len(), 1);
-    assert_eq!(updated.get(&p0).unwrap().url, url0_migrated);
-    assert_eq!(updated.get(&p0).unwrap().nonce, 10);
-
-    // Active peers should reflect updated endpoint for p0 and fallback to config for p1
+    assert!(changed, "the valid signed rotation must be accepted");
     let active = active_api_peers(&config, Some(&updated));
-    assert_eq!(active.get(&p0), Some(&url0_migrated));
-    assert_eq!(active.get(&p1), Some(&url1_initial));
-
-    // Monotonic nonce rotation: newer announcement with nonce 20 is accepted
-    let url0_rotated_again = SafeUrl::from_str("wss://guardian0-v2.example.com:8173").unwrap();
-    let signed0_v2 = ApiAnnouncement::new(url0_rotated_again.clone(), 20).sign(SECP256K1, &k0);
-
-    let mut incoming_v2 = BTreeMap::new();
-    incoming_v2.insert(p0, signed0_v2);
-
-    let (updated_v2, changed_v2) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &updated,
-        &incoming_v2,
+    assert_eq!(
+        active.get(&p0),
+        Some(&url0_migrated),
+        "the rotated guardian must be dialed at its announced route"
     );
-
-    assert!(changed_v2);
-    assert_eq!(updated_v2.get(&p0).unwrap().url, url0_rotated_again);
-    assert_eq!(updated_v2.get(&p0).unwrap().nonce, 20);
+    assert_eq!(
+        active.get(&p1),
+        Some(&url1_initial),
+        "an unannounced guardian must keep its canonical route"
+    );
 }
 
 #[test]
-fn test_reject_forged_signature() {
+fn higher_nonce_replaces_the_previously_accepted_route() {
+    let (peer, _, keypair, public_key) = generate_test_guardian(0);
+    let canonical_url = SafeUrl::from_str("ws://guardian.example.com:8173").unwrap();
+    let (federation_id, config) = sample_global_config(&[(peer, public_key, canonical_url)]);
+
+    let first_url = SafeUrl::from_str("wss://guardian-v1.example.com:8173").unwrap();
+    let first = ApiAnnouncement::new(first_url, 10).sign(SECP256K1, &keypair);
+    let (current, first_changed) = verify_and_merge_announcements(
+        federation_id,
+        config.broadcast_public_keys.as_ref(),
+        &BTreeMap::new(),
+        &[(peer, first)].into_iter().collect(),
+    );
+
+    let newest_url = SafeUrl::from_str("wss://guardian-v2.example.com:8173").unwrap();
+    let newest = ApiAnnouncement::new(newest_url.clone(), 20).sign(SECP256K1, &keypair);
+    let (updated, changed) = verify_and_merge_announcements(
+        federation_id,
+        config.broadcast_public_keys.as_ref(),
+        &current,
+        &[(peer, newest)].into_iter().collect(),
+    );
+
+    assert!(
+        first_changed,
+        "the first valid announcement must be accepted"
+    );
+    assert!(changed, "a strictly newer announcement must replace it");
+    let route = updated
+        .get(&peer)
+        .expect("the guardian must have an accepted route");
+    assert_eq!(route.url(), &newest_url);
+    assert_eq!(route.nonce(), 20);
+}
+
+#[test]
+fn announcement_signed_by_another_guardian_is_ignored() {
     let (p0, _, _, pk0) = generate_test_guardian(0);
     let (_, _, k1_attacker, _) = generate_test_guardian(1);
 
@@ -132,12 +145,15 @@ fn test_reject_forged_signature() {
         &incoming,
     );
 
-    assert!(!changed);
-    assert!(updated.is_empty());
+    assert!(!changed, "a signature from the wrong guardian must fail");
+    assert!(
+        updated.is_empty(),
+        "a forged announcement must not enter the routing cache"
+    );
 }
 
 #[test]
-fn test_reject_stale_or_equal_nonce() {
+fn equal_or_lower_nonce_cannot_roll_back_an_accepted_route() {
     let (p0, _, k0, pk0) = generate_test_guardian(0);
     let url0 = SafeUrl::from_str("ws://guardian0.example.com:8173").unwrap();
     let (fed_id, config) = sample_global_config(&[(p0, pk0, url0)]);
@@ -173,18 +189,24 @@ fn test_reject_stale_or_equal_nonce() {
         &existing,
         &incoming_equal,
     );
-    assert!(!changed_equal);
+    assert!(
+        !changed_equal,
+        "an equal nonce must not replace the accepted route"
+    );
     assert_eq!(
-        updated_equal.get(&p0).unwrap().url.as_str(),
-        "ws://migrated.example.com:8173/"
+        updated_equal
+            .get(&p0)
+            .expect("the previously accepted route must remain")
+            .url()
+            .as_str(),
+        "ws://migrated.example.com:8173/",
+        "an equal nonce must not change the destination"
     );
 
     // 2. Lower nonce (5) rejected
-    let signed_lower = ApiAnnouncement::new(
-        SafeUrl::from_str("ws://lower.example.com:8173").unwrap(),
-        5,
-    )
-    .sign(SECP256K1, &k0);
+    let signed_lower =
+        ApiAnnouncement::new(SafeUrl::from_str("ws://lower.example.com:8173").unwrap(), 5)
+            .sign(SECP256K1, &k0);
     let mut incoming_lower = BTreeMap::new();
     incoming_lower.insert(p0, signed_lower);
 
@@ -194,18 +216,23 @@ fn test_reject_stale_or_equal_nonce() {
         &existing,
         &incoming_lower,
     );
-    assert!(!changed_lower);
+    assert!(!changed_lower, "a lower nonce must not roll the route back");
     assert_eq!(
-        updated_lower.get(&p0).unwrap().url.as_str(),
-        "ws://migrated.example.com:8173/"
+        updated_lower
+            .get(&p0)
+            .expect("the previously accepted route must remain")
+            .url()
+            .as_str(),
+        "ws://migrated.example.com:8173/",
+        "a lower nonce must not change the destination"
     );
 }
 
 #[test]
-fn test_reject_unsupported_url_schemes() {
+fn unsupported_transport_is_never_added_to_active_routes() {
     let (p0, _, k0, pk0) = generate_test_guardian(0);
-    let url0 = SafeUrl::from_str("ws://guardian0.example.com:8173").unwrap();
-    let (fed_id, config) = sample_global_config(&[(p0, pk0, url0)]);
+    let canonical_url = SafeUrl::from_str("ws://guardian0.example.com:8173").unwrap();
+    let (fed_id, config) = sample_global_config(&[(p0, pk0, canonical_url.clone())]);
 
     let invalid_url = SafeUrl::from_str("ftp://guardian0.example.com:8173").unwrap();
     let signed = ApiAnnouncement::new(invalid_url, 10).sign(SECP256K1, &k0);
@@ -220,12 +247,16 @@ fn test_reject_unsupported_url_schemes() {
         &incoming,
     );
 
-    assert!(!changed);
-    assert!(updated.is_empty());
+    assert!(!changed, "an unsupported transport must be rejected");
+    assert_eq!(
+        active_api_peers(&config, Some(&updated)).get(&p0),
+        Some(&canonical_url),
+        "rejecting the announcement must leave the canonical route active"
+    );
 }
 
 #[test]
-fn test_missing_broadcast_public_keys() {
+fn federation_without_broadcast_keys_keeps_canonical_routes() {
     let (p0, _, k0, _) = generate_test_guardian(0);
 
     let url0 = SafeUrl::from_str("ws://guardian0.example.com:8173").unwrap();
@@ -233,7 +264,7 @@ fn test_missing_broadcast_public_keys() {
         api_endpoints: [(
             p0,
             PeerUrl {
-                url: url0,
+                url: url0.clone(),
                 name: "g0".into(),
             },
         )]
@@ -245,11 +276,8 @@ fn test_missing_broadcast_public_keys() {
     };
     let fed_id = global.calculate_federation_id();
 
-    let signed = ApiAnnouncement::new(
-        SafeUrl::from_str("ws://new.example.com:8173").unwrap(),
-        10,
-    )
-    .sign(SECP256K1, &k0);
+    let signed = ApiAnnouncement::new(SafeUrl::from_str("ws://new.example.com:8173").unwrap(), 10)
+        .sign(SECP256K1, &k0);
 
     let mut incoming = BTreeMap::new();
     incoming.insert(p0, signed);
@@ -261,55 +289,72 @@ fn test_missing_broadcast_public_keys() {
         &incoming,
     );
 
-    assert!(!changed);
-    assert!(updated.is_empty());
+    assert!(
+        !changed,
+        "an announcement cannot be trusted without canonical broadcast keys"
+    );
+    assert_eq!(
+        active_api_peers(&global, Some(&updated)).get(&p0),
+        Some(&url0),
+        "the canonical route must remain active when verification is impossible"
+    );
 }
 
 #[test]
-fn test_verify_restored_routes_preserves_code_invariant() {
+fn replica_restore_reverifies_signatures_and_preserves_newest_nonce() {
     let (p0, _, k0, pk0) = generate_test_guardian(0);
-    let (_p1, _, k1_attacker, _) = generate_test_guardian(1);
+    let (p1, _, _, pk1) = generate_test_guardian(1);
+    let (_, _, attacker, _) = generate_test_guardian(2);
 
     let url0 = SafeUrl::from_str("ws://guardian0.example.com:8173").unwrap();
-    let (fed_id, config) = sample_global_config(&[(p0, pk0, url0)]);
+    let url1 = SafeUrl::from_str("ws://guardian1.example.com:8173").unwrap();
+    let (fed_id, config) = sample_global_config(&[(p0, pk0, url0), (p1, pk1, url1)]);
 
-    // Valid route
-    let valid_signed = ApiAnnouncement::new(
-        SafeUrl::from_str("ws://valid.example.com:8173").unwrap(),
-        5,
-    )
-    .sign(SECP256K1, &k0);
-    let valid_route = VerifiedRoute::verify(valid_signed, &pk0).unwrap();
-
-    // Forged route that somehow got into stored data
+    let valid_signed =
+        ApiAnnouncement::new(SafeUrl::from_str("ws://valid.example.com:8173").unwrap(), 5)
+            .sign(SECP256K1, &k0);
     let forged_signed = ApiAnnouncement::new(
         SafeUrl::from_str("ws://forged.example.com:8173").unwrap(),
         6,
     )
-    .sign(SECP256K1, &k1_attacker);
-    let forged_route = VerifiedRoute {
-        url: SafeUrl::from_str("ws://forged.example.com:8173").unwrap(),
-        nonce: 6,
-        announcement: forged_signed,
-    };
+    .sign(SECP256K1, &attacker);
 
     let mut stored = BTreeMap::new();
-    stored.insert(p0, valid_route.clone());
-    stored.insert(PeerId::from(99), forged_route);
+    stored.insert(p0, valid_signed);
+    stored.insert(p1, forged_signed);
 
-    let verified = verify_restored_routes(
+    let (verified, changed) = verify_and_merge_restored_announcements(
         fed_id,
         config.broadcast_public_keys.as_ref(),
+        &BTreeMap::new(),
         &stored,
     );
 
-    // Only p0 with valid signature survives restoration
-    assert_eq!(verified.len(), 1);
-    assert_eq!(verified.get(&p0), Some(&valid_route));
+    assert!(changed, "the valid persisted route must be restored");
+    assert_eq!(
+        verified.len(),
+        1,
+        "the forged persisted route must be discarded"
+    );
+    assert_eq!(verified.get(&p0).map(VerifiedRoute::nonce), Some(5));
+
+    let stale = ApiAnnouncement::new(SafeUrl::from_str("ws://stale.example.com:8173").unwrap(), 4)
+        .sign(SECP256K1, &k0);
+    let (restored, changed) = verify_and_merge_restored_announcements(
+        fed_id,
+        config.broadcast_public_keys.as_ref(),
+        &verified,
+        &[(p0, stale)].into_iter().collect(),
+    );
+    assert!(
+        !changed,
+        "a stale database snapshot must not downgrade a replica"
+    );
+    assert_eq!(restored, verified, "the newest verified route must survive");
 }
 
 #[test]
-fn test_federation_id_stability_across_rotations() {
+fn route_rotation_does_not_change_the_canonical_federation_id() {
     let (p0, _, k0, pk0) = generate_test_guardian(0);
     let (p1, _, _, pk1) = generate_test_guardian(1);
 
@@ -338,76 +383,88 @@ fn test_federation_id_stability_across_rotations() {
         &BTreeMap::new(),
         &incoming,
     );
-    assert!(changed);
+    assert!(changed, "the signed rotation must affect active dialing");
 
     // Dialing peers uses the rotated URL
     let active_peers = active_api_peers(&config, Some(&announced));
-    assert_eq!(active_peers.get(&p0), Some(&url0_rotated));
+    assert_eq!(
+        active_peers.get(&p0),
+        Some(&url0_rotated),
+        "active dialing must use the rotated route"
+    );
 
-    // Invariant: The canonical config is untouched and the FederationId remains identical
-    assert_eq!(config.calculate_federation_id(), baseline_fed_id);
-    assert_eq!(config.api_endpoints.get(&p0).unwrap().url, url0_initial);
+    // Invariant: The canonical config is untouched and the FederationId remains
+    // identical
+    assert_eq!(
+        config.calculate_federation_id(),
+        baseline_fed_id,
+        "routing changes must not mutate federation identity"
+    );
+    assert_eq!(
+        config
+            .api_endpoints
+            .get(&p0)
+            .expect("peer zero is in the canonical config")
+            .url,
+        url0_initial,
+        "the exported canonical endpoint must remain unchanged"
+    );
 }
 
 #[test]
-fn test_concurrent_multi_peer_announcement_merge_keeps_highest_nonce() {
+fn valid_rotation_from_another_peer_survives_a_forged_high_nonce() {
     let (p0, _, k0, pk0) = generate_test_guardian(0);
     let (p1, _, k1, pk1) = generate_test_guardian(1);
 
     let (fed_id, config) = sample_global_config(&[
-        (p0, pk0, SafeUrl::from_str("ws://g0.example.com:8173").unwrap()),
-        (p1, pk1, SafeUrl::from_str("ws://g1.example.com:8173").unwrap()),
+        (
+            p0,
+            pk0,
+            SafeUrl::from_str("ws://g0.example.com:8173").unwrap(),
+        ),
+        (
+            p1,
+            pk1,
+            SafeUrl::from_str("ws://g1.example.com:8173").unwrap(),
+        ),
     ]);
 
-    // Guardian 0 announces rotation with nonce 1
-    let url0_v1 = SafeUrl::from_str("ws://g0-v1.example.com:8173").unwrap();
-    let ann0_v1 = ApiAnnouncement::new(url0_v1, 1).sign(SECP256K1, &k0);
-
-    // Later, Guardian 0 rotates to v2 with nonce 2
     let url0_v2 = SafeUrl::from_str("ws://g0-v2.example.com:8173").unwrap();
     let ann0_v2 = ApiAnnouncement::new(url0_v2.clone(), 2).sign(SECP256K1, &k0);
-
-    // Peer 1 has up-to-date announcement for Guardian 1 with nonce 5
     let url1_v5 = SafeUrl::from_str("ws://g1-v5.example.com:8173").unwrap();
     let ann1_v5 = ApiAnnouncement::new(url1_v5.clone(), 5).sign(SECP256K1, &k1);
+    let forged_high_nonce = ApiAnnouncement::new(
+        SafeUrl::from_str("ws://forged.example.com:8173").unwrap(),
+        100,
+    )
+    .sign(SECP256K1, &k1);
 
-    // Peer A response: has stale v1 for Peer 0
     let mut peer_a_response = BTreeMap::new();
-    peer_a_response.insert(p0, ann0_v1);
-
-    // Peer B response: has fresh v2 for Peer 0 and fresh v5 for Peer 1
+    peer_a_response.insert(p0, forged_high_nonce);
     let mut peer_b_response = BTreeMap::new();
     peer_b_response.insert(p0, ann0_v2);
     peer_b_response.insert(p1, ann1_v5);
 
-    // Simulated multi-peer merge (same logic as in guardians.rs)
     let peer_responses = vec![peer_a_response, peer_b_response];
-    let mut merged_incoming = BTreeMap::new();
-    for announcements in peer_responses {
-        for (target_peer, announcement) in announcements {
-            match merged_incoming.entry(target_peer) {
-                std::collections::btree_map::Entry::Vacant(e) => {
-                    e.insert(announcement);
-                }
-                std::collections::btree_map::Entry::Occupied(mut e) => {
-                    if announcement.api_announcement.nonce > e.get().api_announcement.nonce {
-                        e.insert(announcement);
-                    }
-                }
-            }
-        }
-    }
-
-    let (updated, changed) = verify_and_merge_announcements(
+    let (updated, changed) = verify_and_merge_announcement_sets(
         fed_id,
         config.broadcast_public_keys.as_ref(),
         &BTreeMap::new(),
-        &merged_incoming,
+        &peer_responses,
     );
 
-    assert!(changed);
-    assert_eq!(updated.get(&p0).unwrap().url, url0_v2);
-    assert_eq!(updated.get(&p0).unwrap().nonce, 2);
-    assert_eq!(updated.get(&p1).unwrap().url, url1_v5);
-    assert_eq!(updated.get(&p1).unwrap().nonce, 5);
+    assert!(
+        changed,
+        "valid responses must still update routes despite the forged response"
+    );
+    let peer0_route = updated
+        .get(&p0)
+        .expect("peer zero's valid rotation must be retained");
+    assert_eq!(peer0_route.url(), &url0_v2);
+    assert_eq!(peer0_route.nonce(), 2);
+    let peer1_route = updated
+        .get(&p1)
+        .expect("peer one's valid rotation must be retained");
+    assert_eq!(peer1_route.url(), &url1_v5);
+    assert_eq!(peer1_route.nonce(), 5);
 }

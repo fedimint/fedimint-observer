@@ -56,6 +56,7 @@ just run
 | `FO_EXTERNAL_CONCURRENCY` | `8` | Concurrent metadata, Wallet v2, and enrichment operations |
 | `FO_HTTP_CONCURRENCY` | `128` | Concurrent application requests per process |
 | `FO_HEALTH_RETENTION_DAYS` | `90` | Raw guardian history and Lightning v2 gateway health retention; `0` disables pruning |
+| `FO_REPLICA_ENDPOINT_REFRESH_SECS` | `60` | API-only replica refresh interval for verified guardian routes in shared storage |
 
 Retention must be at least 31 days when enabled. Size the sum of the pools
 across all replicas below PostgreSQL's connection limit, leaving room for

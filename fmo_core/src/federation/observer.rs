@@ -81,13 +81,6 @@ struct ApiClients {
     lookups: HashMap<(ApiPeers, Option<String>), fedimint_api_client::api::DynGlobalApi>,
 }
 
-fn api_peers(
-    global: &fedimint_core::config::GlobalClientConfig,
-    announced: Option<&crate::federation::endpoints::GuardianEndpointsMap>,
-) -> ApiPeers {
-    crate::federation::endpoints::active_api_peers(global, announced)
-}
-
 #[derive(Debug, Clone)]
 pub struct FederationObserver {
     connection_pool: deadpool_postgres::Pool,
@@ -109,7 +102,11 @@ pub struct FederationObserver {
     /// [`Self::federation_api`]
     api_clients: Arc<std::sync::Mutex<ApiClients>>,
     /// Verified dynamic guardian endpoint announcements per federation
-    guardian_endpoints: Arc<std::sync::RwLock<HashMap<FederationId, crate::federation::endpoints::GuardianEndpointsMap>>>,
+    guardian_endpoints: Arc<
+        std::sync::RwLock<
+            HashMap<FederationId, crate::federation::endpoints::GuardianEndpointsMap>,
+        >,
+    >,
     modules: ModuleRegistry,
     /// Tells a federation's module projectors about stored sessions and moved
     /// cursors
@@ -286,7 +283,8 @@ impl FederationObserver {
             .cloned()
     }
 
-    /// Resolves the active API peers for a federation by overlaying announced endpoints onto config.
+    /// Resolves the active API peers for a federation by overlaying announced
+    /// endpoints onto config.
     pub fn active_api_peers(
         &self,
         federation_id: FederationId,
@@ -299,14 +297,19 @@ impl FederationObserver {
         crate::federation::endpoints::active_api_peers(global, guard.get(&federation_id))
     }
 
-    /// Persists accepted guardian endpoint announcements and updates the in-memory cache.
+    /// Persists accepted guardian endpoint announcements and updates the
+    /// in-memory cache.
     pub async fn update_guardian_endpoints(
         &self,
         federation_id: FederationId,
         endpoints: &crate::federation::endpoints::GuardianEndpointsMap,
     ) -> anyhow::Result<()> {
-        let data = serde_json::to_value(endpoints)
-            .context("Failed to serialize guardian endpoints observation")?;
+        let announcements: BTreeMap<_, _> = endpoints
+            .iter()
+            .map(|(&peer_id, route)| (peer_id, route.announcement().clone()))
+            .collect();
+        let data = serde_json::to_value(announcements)
+            .context("Failed to serialize guardian endpoint announcements")?;
         let services = Services::new(self.clone());
         services
             .save_observation(
@@ -325,26 +328,17 @@ impl FederationObserver {
         Ok(())
     }
 
-    /// Loads and cryptographically verifies all persisted guardian endpoint observations from the database into memory.
+    /// Loads and cryptographically verifies all persisted guardian endpoint
+    /// observations from the database into memory.
     pub async fn load_guardian_endpoints(&self) -> anyhow::Result<()> {
         let conn = self.connection().await?;
-        let rows = match conn
+        let rows = conn
             .query(
                 "SELECT federation_id, data FROM federation_observations WHERE kind = $1",
                 &[&crate::federation::endpoints::GUARDIAN_ENDPOINTS_OBSERVATION_KIND],
             )
             .await
-        {
-            Ok(rows) => rows,
-            Err(e) => {
-                debug!(err = %e, "Could not load guardian endpoints from database (schema may be unmigrated)");
-                return Ok(());
-            }
-        };
-
-        if rows.is_empty() {
-            return Ok(());
-        }
+            .context("Failed to load persisted guardian endpoint announcements")?;
 
         let federations = self.list_federations().await?;
         let configs: HashMap<FederationId, fedimint_core::config::ClientConfig> = federations
@@ -352,73 +346,88 @@ impl FederationObserver {
             .map(|fed| (fed.federation_id, fed.config))
             .collect();
 
-        let mut stale_peers_to_invalidate = Vec::new();
+        let previous = self
+            .guardian_endpoints
+            .read()
+            .expect("guardian endpoints lock poisoned")
+            .clone();
+        let mut loaded = previous.clone();
+        for row in rows {
+            let fed_bytes: Vec<u8> = row.get(0);
+            let data: serde_json::Value = row.get(1);
+            let federation_id =
+                match FederationId::consensus_decode_whole(&fed_bytes, &Default::default()) {
+                    Ok(federation_id) => federation_id,
+                    Err(err) => {
+                        warn!(
+                            ?err,
+                            "Skipping guardian endpoints with an invalid federation id"
+                        );
+                        continue;
+                    }
+                };
+            let Some(config) = configs.get(&federation_id) else {
+                warn!(%federation_id, "Skipping stored endpoints: federation not found in config");
+                continue;
+            };
+
+            // Persisted values are signed input, never trusted routing state.
+            // Every process verifies them against the canonical config before
+            // admitting them to its active routing cache.
+            let raw_announcements = match serde_json::from_value::<
+                BTreeMap<
+                    fedimint_core::PeerId,
+                    fedimint_core::net::api_announcement::SignedApiAnnouncement,
+                >,
+            >(data)
+            {
+                Ok(announcements) => announcements,
+                Err(err) => {
+                    warn!(%federation_id, %err, "Failed to deserialize stored guardian endpoints");
+                    continue;
+                }
+            };
+            let existing = loaded.get(&federation_id).cloned().unwrap_or_default();
+            let (verified, changed) =
+                crate::federation::endpoints::verify_and_merge_restored_announcements(
+                    federation_id,
+                    config.global.broadcast_public_keys.as_ref(),
+                    &existing,
+                    &raw_announcements,
+                );
+            if changed {
+                loaded.insert(federation_id, verified);
+            }
+        }
 
         {
             let mut cache = self
                 .guardian_endpoints
                 .write()
                 .expect("guardian endpoints write lock poisoned");
-
-            for row in rows {
-                let fed_bytes: Vec<u8> = row.get(0);
-                let data: serde_json::Value = row.get(1);
-                if let Ok(federation_id) =
-                    FederationId::consensus_decode_whole(&fed_bytes, &Default::default())
-                {
-                    let Some(config) = configs.get(&federation_id) else {
-                        warn!(%federation_id, "Skipping stored endpoints: federation not found in config");
-                        continue;
-                    };
-
-                    // Distinguish between raw wire input and verified routes:
-                    // Deserialization extracts signed announcements; cryptographically re-verifying
-                    // against the canonical broadcast public keys is strictly required before
-                    // admitting into the active routing cache.
-                    let raw_announcements: BTreeMap<fedimint_core::PeerId, fedimint_core::net::api_announcement::SignedApiAnnouncement> =
-                        if let Ok(routes) = serde_json::from_value::<crate::federation::endpoints::VerifiedRoutesMap>(data.clone()) {
-                            routes.into_iter().map(|(p, r)| (p, r.announcement)).collect()
-                        } else if let Ok(announcements) = serde_json::from_value::<BTreeMap<fedimint_core::PeerId, fedimint_core::net::api_announcement::SignedApiAnnouncement>>(data) {
-                            announcements
-                        } else {
-                            warn!(%federation_id, "Failed to deserialize stored guardian endpoints");
-                            continue;
-                        };
-
-                    let verified = crate::federation::endpoints::verify_restored_announcements(
-                        federation_id,
-                        config.global.broadcast_public_keys.as_ref(),
-                        &raw_announcements,
-                    );
-
-                    if !verified.is_empty() {
-                        let prev = cache.get(&federation_id);
-                        let old_peers = crate::federation::endpoints::active_api_peers(&config.global, prev);
-                        let new_peers = crate::federation::endpoints::active_api_peers(&config.global, Some(&verified));
-                        if old_peers != new_peers {
-                            stale_peers_to_invalidate.push(old_peers);
-                        }
-                        if prev != Some(&verified) {
-                            info!(
-                                %federation_id,
-                                num_endpoints = verified.len(),
-                                "Loaded and verified restored guardian endpoints"
-                            );
-                            cache.insert(federation_id, verified);
-                        }
-                    }
-                }
-            }
+            *cache = loaded.clone();
         }
-
-        for stale_peers in stale_peers_to_invalidate {
-            self.invalidate_observed_client(&stale_peers);
+        for (&federation_id, config) in &configs {
+            if previous.get(&federation_id) == loaded.get(&federation_id) {
+                continue;
+            }
+            let old_peers = crate::federation::endpoints::active_api_peers(
+                &config.global,
+                previous.get(&federation_id),
+            );
+            self.invalidate_observed_client(&old_peers);
+            info!(
+                %federation_id,
+                num_endpoints = loaded.get(&federation_id).map_or(0, BTreeMap::len),
+                "Refreshed verified guardian endpoints"
+            );
         }
 
         Ok(())
     }
 
-    /// Removes a stale client from the observed client cache so new connections use updated endpoints.
+    /// Removes a stale client from the observed client cache so new connections
+    /// use updated endpoints.
     pub fn invalidate_observed_client(&self, peers: &ApiPeers) {
         let mut clients = self
             .api_clients
@@ -470,6 +479,15 @@ impl FederationObserver {
         api_secret: Option<String>,
     ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
         let federation_id = global.calculate_federation_id();
+        self.lookup_api_for_federation(federation_id, global, api_secret)
+    }
+
+    pub(crate) fn lookup_api_for_federation(
+        &self,
+        federation_id: FederationId,
+        global: &fedimint_core::config::GlobalClientConfig,
+        api_secret: Option<String>,
+    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
         let peers = self.active_api_peers(federation_id, global);
         let mut clients = self
             .api_clients
@@ -1203,7 +1221,8 @@ impl FederationObserver {
                         background_backoff(),
                         || async {
                             gate.wait_turn(session_index).await;
-                            // Dynamically resolve the active API client across retries so rotated routes are dialed
+                            // Dynamically resolve the active API client across retries so rotated
+                            // routes are dialed
                             let api = match observer.federation_api(&global) {
                                 Ok(api) => api,
                                 Err(e) => {
@@ -1211,11 +1230,9 @@ impl FederationObserver {
                                     return Err(e);
                                 }
                             };
-                            let result = api
-                                .await_block(session_index, &decoders_single)
-                                .await;
+                            let result = api.await_block(session_index, &decoders_single).await;
                             gate.record(result.is_ok());
-                            Ok(result?)
+                            result
                         },
                     )
                     .await

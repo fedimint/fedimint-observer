@@ -18,8 +18,7 @@ use futures::future::join_all;
 use postgres_from_row::FromRow;
 use tracing::info;
 
-use crate::federation::endpoints::verify_and_merge_announcements;
-
+use crate::federation::endpoints::verify_and_merge_announcement_sets;
 use crate::federation::observer::FederationObserver;
 use crate::util::{module_instance_id, query};
 
@@ -41,7 +40,7 @@ impl FederationObserver {
             log_poll_interval(poll_interval, offline_since);
         }
 
-        let mut last_announcement_check = Instant::now() - Duration::from_secs(3600);
+        let mut last_announcement_check = Instant::now() - ANNOUNCEMENT_REFRESH_INTERVAL;
 
         loop {
             let poll_started = tokio::time::Instant::now();
@@ -66,7 +65,8 @@ impl FederationObserver {
                 .any(|(_, status, ..)| status.is_none());
 
             if any_answered
-                && (any_offline || last_announcement_check.elapsed() >= Duration::from_secs(300))
+                && (any_offline
+                    || last_announcement_check.elapsed() >= ANNOUNCEMENT_REFRESH_INTERVAL)
             {
                 let answering_peers: Vec<PeerId> = peer_status_responses
                     .iter()
@@ -77,7 +77,7 @@ impl FederationObserver {
                     let api = &api;
                     async move {
                         match tokio::time::timeout(
-                            Duration::from_secs(5),
+                            ANNOUNCEMENT_QUERY_TIMEOUT,
                             api.api_announcements(answering_peer),
                         )
                         .await
@@ -105,37 +105,17 @@ impl FederationObserver {
                 });
 
                 let results = futures::future::join_all(queries).await;
+                last_announcement_check = Instant::now();
+
                 if results.iter().any(Option::is_some) {
-                    last_announcement_check = Instant::now();
-                }
-
-                let mut merged_incoming = BTreeMap::new();
-                for announcements in results.into_iter().flatten() {
-                    for (target_peer, announcement) in announcements {
-                        match merged_incoming.entry(target_peer) {
-                            std::collections::btree_map::Entry::Vacant(e) => {
-                                e.insert(announcement);
-                            }
-                            std::collections::btree_map::Entry::Occupied(mut e) => {
-                                if announcement.api_announcement.nonce
-                                    > e.get().api_announcement.nonce
-                                {
-                                    e.insert(announcement);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if !merged_incoming.is_empty() {
                     let existing = self
                         .get_guardian_endpoints(federation_id)
                         .unwrap_or_default();
-                    let (updated, changed) = verify_and_merge_announcements(
+                    let (updated, changed) = verify_and_merge_announcement_sets(
                         federation_id,
                         config.global.broadcast_public_keys.as_ref(),
                         &existing,
-                        &merged_incoming,
+                        results.iter().filter_map(Option::as_ref),
                     );
 
                     if changed {
@@ -539,6 +519,8 @@ impl BlockHeightSource {
 
 /// Polls of a federation that is online, or partly so
 const ONLINE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const ANNOUNCEMENT_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const ANNOUNCEMENT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Retry of a poll that got no answer while backed off
 const BACKED_OFF_RETRY_DELAY: Duration = Duration::from_secs(30);

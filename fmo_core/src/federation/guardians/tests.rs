@@ -47,16 +47,18 @@ fn reported_session_counts_are_clamped() {
 
 #[test]
 fn test_migrated_guardian_endpoint_resolution() {
-    use crate::federation::endpoints::{
-        active_api_peers, verify_and_merge_announcements, GuardianEndpointsMap,
-    };
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+
     use fedimint_core::config::{GlobalClientConfig, PeerUrl};
     use fedimint_core::net::api_announcement::ApiAnnouncement;
     use fedimint_core::secp256k1::{Keypair, PublicKey, SecretKey, SECP256K1};
     use fedimint_core::util::SafeUrl;
     use fedimint_core::PeerId;
-    use std::collections::BTreeMap;
-    use std::str::FromStr;
+
+    use crate::federation::endpoints::{
+        active_api_peers, verify_and_merge_announcements, GuardianEndpointsMap,
+    };
 
     let peer1 = PeerId::from(1);
     let mut key_bytes = [0u8; 32];
@@ -120,13 +122,7 @@ fn test_migrated_guardian_endpoint_resolution() {
         &incoming_stale,
     );
     assert!(!changed_stale);
-    assert_eq!(
-        updated_after_stale
-            .get(&peer1)
-            .unwrap()
-            .url,
-        new_url
-    );
+    assert_eq!(updated_after_stale.get(&peer1).unwrap().url(), &new_url);
 
     // 5. Forged signature is rejected
     let mut fake_key_bytes = [0u8; 32];
@@ -143,11 +139,5 @@ fn test_migrated_guardian_endpoint_resolution() {
         &incoming_forged,
     );
     assert!(!changed_forge);
-    assert_eq!(
-        updated_after_forge
-            .get(&peer1)
-            .unwrap()
-            .url,
-        new_url
-    );
+    assert_eq!(updated_after_forge.get(&peer1).unwrap().url(), &new_url);
 }
