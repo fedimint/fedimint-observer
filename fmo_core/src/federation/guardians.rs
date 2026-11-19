@@ -15,10 +15,15 @@ use fedimint_core::{NumPeers, PeerId};
 use fedimint_wallet_common::endpoint_constants::BLOCK_COUNT_LOCAL_ENDPOINT;
 use fmo_api_types::{FederationHealth, GuardianHealth, GuardianHealthLatest};
 use futures::future::join_all;
+use futures::stream::StreamExt;
 use postgres_from_row::FromRow;
 use tracing::info;
 
 use crate::federation::endpoints::verify_and_merge_announcements;
+
+const MAX_CONCURRENT_DISCOVERY_QUERIES: usize = 4;
+const DISCOVERY_TIMEOUT_PER_PEER: Duration = Duration::from_secs(5);
+const MAX_DISCOVERY_PEERS_PER_ROUND: usize = 8;
 
 use crate::federation::observer::FederationObserver;
 use crate::util::{module_instance_id, query};
@@ -65,64 +70,113 @@ impl FederationObserver {
                 .iter()
                 .any(|(_, status, ..)| status.is_none());
 
+            // 1. Publish the health sample immediately: discovery must never block or delay health sampling
+            let timestamp = chrono::Utc::now().naive_utc();
+            offline_since = if any_answered {
+                None
+            } else {
+                offline_since.or(Some(timestamp))
+            };
+            let next_interval = health_poll_interval(offline_since.map(|since| timestamp - since));
+
+            let mut conn = self.connection().await?;
+            let dbtx = conn.transaction().await?;
+            for (peer_id, status, software_version, block_height, api_latency) in
+                &peer_status_responses
+            {
+                dbtx.execute(
+                    "INSERT INTO guardian_health (
+                        federation_id,
+                        time,
+                        guardian_id,
+                        status,
+                        block_height,
+                        latency_ms,
+                        software_version,
+                        poll_interval_s
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    &[
+                        &federation_id.consensus_encode_to_vec(),
+                        &timestamp,
+                        &(peer_id.to_usize() as i32),
+                        &status
+                            .as_ref()
+                            .map(|s| serde_json::to_value(s).expect("Can be serialized")),
+                        // Heights beyond the column's range are nonsense, not wrapped
+                        &block_height.and_then(|height| i32::try_from(height).ok()),
+                        api_latency,
+                        software_version,
+                        // The sample stands for the time until the next poll
+                        &(next_interval.as_secs() as i32),
+                    ],
+                )
+                .await?;
+            }
+            dbtx.commit().await?;
+            drop(conn);
+
+            // 2. Off-path discovery: poll signed announcements with bounded concurrency & work
             if any_answered
                 && (any_offline || last_announcement_check.elapsed() >= Duration::from_secs(300))
             {
                 let answering_peers: Vec<PeerId> = peer_status_responses
                     .iter()
                     .filter_map(|(id, status, ..)| status.as_ref().map(|_| *id))
+                    .take(MAX_DISCOVERY_PEERS_PER_ROUND)
                     .collect();
 
-                let queries = answering_peers.iter().map(|&answering_peer| {
-                    let api = &api;
-                    async move {
-                        match tokio::time::timeout(
-                            Duration::from_secs(5),
-                            api.api_announcements(answering_peer),
-                        )
-                        .await
-                        {
-                            Ok(Ok(announcements)) => Some(announcements),
-                            Ok(Err(err)) => {
-                                tracing::debug!(
-                                    %federation_id,
-                                    %answering_peer,
-                                    err = %err,
-                                    "Failed to fetch API announcements from peer"
-                                );
-                                None
-                            }
-                            Err(_) => {
-                                tracing::debug!(
-                                    %federation_id,
-                                    %answering_peer,
-                                    "Timed out fetching API announcements from peer"
-                                );
-                                None
-                            }
+                let mut query_stream = futures::stream::iter(answering_peers)
+                    .map(|answering_peer| {
+                        let api = api.clone();
+                        async move {
+                            tokio::time::timeout(
+                                DISCOVERY_TIMEOUT_PER_PEER,
+                                api.api_announcements(answering_peer),
+                            )
+                            .await
                         }
-                    }
-                });
-
-                let results = futures::future::join_all(queries).await;
-                if results.iter().any(Option::is_some) {
-                    last_announcement_check = Instant::now();
-                }
+                    })
+                    .buffer_unordered(MAX_CONCURRENT_DISCOVERY_QUERIES);
 
                 let mut merged_incoming = BTreeMap::new();
-                for announcements in results.into_iter().flatten() {
-                    for (target_peer, announcement) in announcements {
-                        merged_incoming
-                            .entry(target_peer)
-                            .and_modify(|existing: &mut fedimint_core::net::api_announcement::SignedApiAnnouncement| {
-                                if announcement.api_announcement.nonce
-                                    > existing.api_announcement.nonce
-                                {
-                                    *existing = announcement.clone();
-                                }
-                            })
-                            .or_insert(announcement);
+                let mut any_discovery_succeeded = false;
+
+                while let Some(res) = query_stream.next().await {
+                    match res {
+                        Ok(Ok(announcements)) => {
+                            any_discovery_succeeded = true;
+                            for (target_peer, announcement) in announcements {
+                                merged_incoming
+                                    .entry(target_peer)
+                                    .and_modify(|existing: &mut fedimint_core::net::api_announcement::SignedApiAnnouncement| {
+                                        if announcement.api_announcement.nonce
+                                            > existing.api_announcement.nonce
+                                        {
+                                            *existing = announcement.clone();
+                                        }
+                                    })
+                                    .or_insert(announcement);
+                            }
+                        }
+                        Ok(Err(err)) => {
+                            tracing::debug!(
+                                %federation_id,
+                                %answering_peer = "?",
+                                err = %err,
+                                "Failed to fetch API announcements from peer"
+                            );
+                        }
+                        Err(_) => {
+                            tracing::debug!(
+                                %federation_id,
+                                "Timed out fetching API announcements from peer"
+                            );
+                        }
                     }
+                }
+
+                if any_discovery_succeeded {
+                    last_announcement_check = Instant::now();
                 }
 
                 if !merged_incoming.is_empty() {
@@ -148,13 +202,7 @@ impl FederationObserver {
                             match self.federation_api(&config.global) {
                                 Ok(new_api) => {
                                     api = new_api;
-                                    if any_offline {
-                                        peer_status_responses =
-                                            poll_guardians(&api, &peer_ids, block_source).await;
-                                        any_answered = peer_status_responses
-                                            .iter()
-                                            .any(|(_, status, ..)| status.is_some());
-                                    }
+                                    // The refreshed routes will be used naturally on the next poll cycle
                                 }
                                 Err(e) => {
                                     tracing::error!(%federation_id, err = %e, "Failed to rebuild API client with updated endpoints");
@@ -164,50 +212,6 @@ impl FederationObserver {
                     }
                 }
             }
-
-            let timestamp = chrono::Utc::now().naive_utc();
-            offline_since = if any_answered {
-                None
-            } else {
-                offline_since.or(Some(timestamp))
-            };
-            let next_interval = health_poll_interval(offline_since.map(|since| timestamp - since));
-
-            let mut conn = self.connection().await?;
-            let dbtx = conn.transaction().await?;
-            for (peer_id, status, software_version, block_height, api_latency) in
-                peer_status_responses
-            {
-                dbtx.execute(
-                    "INSERT INTO guardian_health (
-                        federation_id,
-                        time,
-                        guardian_id,
-                        status,
-                        block_height,
-                        latency_ms,
-                        software_version,
-                        poll_interval_s
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                    &[
-                        &federation_id.consensus_encode_to_vec(),
-                        &timestamp,
-                        &(peer_id.to_usize() as i32),
-                        &status.map(|s| serde_json::to_value(s).expect("Can be serialized")),
-                        // Heights beyond the column's range are nonsense, not wrapped
-                        &block_height.and_then(|height| i32::try_from(height).ok()),
-                        &api_latency,
-                        &software_version,
-                        // The sample stands for the time until the next poll
-                        &(next_interval.as_secs() as i32),
-                    ],
-                )
-                .await?;
-            }
-            dbtx.commit().await?;
-            // The next poll can be a minute or more away. Return the connection
-            // before sleeping so other federations can record their health.
-            drop(conn);
 
             if next_interval != poll_interval {
                 log_poll_interval(next_interval, offline_since);

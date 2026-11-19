@@ -348,7 +348,9 @@ impl FederationObserver {
             return Ok(());
         }
 
-        let federations = self.list_federations().await?;
+        let federations: Vec<db::Federation> =
+            query(&conn, "SELECT * FROM federations", &[]).await?;
+        drop(conn);
         let configs: HashMap<FederationId, fedimint_core::config::ClientConfig> = federations
             .into_iter()
             .map(|fed| (fed.federation_id, fed.config))
@@ -454,6 +456,7 @@ impl FederationObserver {
             .lock()
             .expect("API client cache lock poisoned");
         clients.observed.remove(peers);
+        clients.lookups.retain(|(p, _), _| p != peers);
     }
 
     /// The shared client for the API of the guardians of an observed
@@ -1240,7 +1243,17 @@ impl FederationObserver {
                                     return Err(e);
                                 }
                             };
-                            let result = api.await_block(session_index, &decoders_single).await;
+                            // Bounded fetch attempt so an in-flight websocket to an old or unreachable route
+                            // does not hang indefinitely on route rotation.
+                            let result = tokio::time::timeout(
+                                Duration::from_secs(60),
+                                api.await_block(session_index, &decoders_single),
+                            )
+                            .await
+                            .map_err(|_| {
+                                anyhow::anyhow!("Timed out awaiting session block from guardians")
+                            })
+                            .and_then(|res| res);
                             gate.record(result.is_ok());
                             result
                         },

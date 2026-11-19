@@ -205,21 +205,27 @@ fn test_reject_unsupported_url_schemes() {
     let url0 = SafeUrl::from_str("ws://guardian0.example.com:8173").unwrap();
     let (fed_id, config) = sample_global_config(&[(p0, pk0, url0)]);
 
-    let invalid_url = SafeUrl::from_str("ftp://guardian0.example.com:8173").unwrap();
-    let signed = ApiAnnouncement::new(invalid_url, 10).sign(SECP256K1, &k0);
+    for unsupported_url in [
+        "ftp://guardian0.example.com:8173",
+        "http://guardian0.example.com:8173",
+        "https://guardian0.example.com:8173",
+    ] {
+        let invalid_url = SafeUrl::from_str(unsupported_url).unwrap();
+        let signed = ApiAnnouncement::new(invalid_url, 10).sign(SECP256K1, &k0);
 
-    let mut incoming = BTreeMap::new();
-    incoming.insert(p0, signed);
+        let mut incoming = BTreeMap::new();
+        incoming.insert(p0, signed);
 
-    let (updated, changed) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &BTreeMap::new(),
-        &incoming,
-    );
+        let (updated, changed) = verify_and_merge_announcements(
+            fed_id,
+            config.broadcast_public_keys.as_ref(),
+            &BTreeMap::new(),
+            &incoming,
+        );
 
-    assert!(!changed);
-    assert!(updated.is_empty());
+        assert!(!changed);
+        assert!(updated.is_empty());
+    }
 }
 
 #[test]

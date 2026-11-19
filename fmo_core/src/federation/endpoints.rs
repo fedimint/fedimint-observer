@@ -15,7 +15,10 @@ mod tests;
 pub const GUARDIAN_ENDPOINTS_OBSERVATION_KIND: &str = "guardian_endpoints";
 
 /// Supported guardian endpoint URL schemes.
-const ALLOWED_URL_SCHEMES: &[&str] = &["ws", "wss", "http", "https", "iroh"];
+///
+/// Guardian RPC connections only communicate over WebSocket (`ws`, `wss`) or `iroh`.
+/// Standard HTTP/HTTPS schemes are supported for external gateways, not for guardian RPC.
+const ALLOWED_URL_SCHEMES: &[&str] = &["ws", "wss", "iroh"];
 
 /// Validates whether the given URL uses a supported communication scheme for Fedimint guardians.
 pub fn is_valid_endpoint_scheme(url: &SafeUrl) -> bool {
@@ -23,6 +26,17 @@ pub fn is_valid_endpoint_scheme(url: &SafeUrl) -> bool {
     ALLOWED_URL_SCHEMES.contains(&scheme)
 }
 
+/// # Egress Controls and Destination Security
+///
+/// Cryptographic verification ensures that an announcement was signed by a guardian possessing
+/// the federation's broadcast public key and that the announcement nonce is strictly increasing.
+///
+/// **Important Security Notice**:
+/// A valid Schnorr signature authenticates the *announcer*, NOT the safety or reachability of the network destination.
+/// Deployment egress firewalls and network routing policies on workers and API replicas must constrain
+/// outbound connections to prevent SSRF and block access to sensitive internal networks or metadata endpoints
+/// (e.g. `127.0.0.0/8`, `169.254.169.254`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
+///
 /// A cryptographically verified guardian API route.
 ///
 /// Invariant: instances of `VerifiedRoute` represent routes whose Schnorr signatures have
