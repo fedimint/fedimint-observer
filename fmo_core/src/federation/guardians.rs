@@ -112,18 +112,16 @@ impl FederationObserver {
                 let mut merged_incoming = BTreeMap::new();
                 for announcements in results.into_iter().flatten() {
                     for (target_peer, announcement) in announcements {
-                        match merged_incoming.entry(target_peer) {
-                            std::collections::btree_map::Entry::Vacant(e) => {
-                                e.insert(announcement);
-                            }
-                            std::collections::btree_map::Entry::Occupied(mut e) => {
+                        merged_incoming
+                            .entry(target_peer)
+                            .and_modify(|existing: &mut fedimint_core::net::api_announcement::SignedApiAnnouncement| {
                                 if announcement.api_announcement.nonce
-                                    > e.get().api_announcement.nonce
+                                    > existing.api_announcement.nonce
                                 {
-                                    e.insert(announcement);
+                                    *existing = announcement.clone();
                                 }
-                            }
-                        }
+                            })
+                            .or_insert(announcement);
                     }
                 }
 

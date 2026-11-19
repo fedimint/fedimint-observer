@@ -120,13 +120,7 @@ fn test_migrated_guardian_endpoint_resolution() {
         &incoming_stale,
     );
     assert!(!changed_stale);
-    assert_eq!(
-        updated_after_stale
-            .get(&peer1)
-            .unwrap()
-            .url,
-        new_url
-    );
+    assert_eq!(updated_after_stale.get(&peer1).unwrap().url, new_url);
 
     // 5. Forged signature is rejected
     let mut fake_key_bytes = [0u8; 32];
@@ -143,11 +137,5 @@ fn test_migrated_guardian_endpoint_resolution() {
         &incoming_forged,
     );
     assert!(!changed_forge);
-    assert_eq!(
-        updated_after_forge
-            .get(&peer1)
-            .unwrap()
-            .url,
-        new_url
-    );
+    assert_eq!(updated_after_forge.get(&peer1).unwrap().url, new_url);
 }

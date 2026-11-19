@@ -74,10 +74,10 @@ pub fn active_api_peers(
         .api_endpoints
         .iter()
         .map(|(&peer_id, endpoint)| {
-            let url = announced
-                .and_then(|map| map.get(&peer_id))
-                .map(|route| route.url.clone())
-                .unwrap_or_else(|| endpoint.url.clone());
+            let url = match announced.and_then(|map| map.get(&peer_id)) {
+                Some(route) => route.url.clone(),
+                None => endpoint.url.clone(),
+            };
             (peer_id, url)
         })
         .collect()
@@ -131,24 +131,22 @@ pub fn verify_and_merge_announcements(
 
         // 3. Accept announcement only if nonce is strictly higher than currently accepted
         let new_nonce = verified_route.nonce;
-        if let Some(current) = updated.get(&peer_id) {
-            if new_nonce <= current.nonce {
-                debug!(
-                    %federation_id,
-                    %peer_id,
-                    new_nonce,
-                    current_nonce = current.nonce,
-                    "Ignoring announcement with stale or equal nonce"
-                );
-                continue;
-            }
+        if let Some(current) = updated.get(&peer_id).filter(|c| new_nonce <= c.nonce) {
+            debug!(
+                %federation_id,
+                %peer_id,
+                new_nonce,
+                current_nonce = current.nonce,
+                "Ignoring announcement with stale or equal nonce"
+            );
+            continue;
         }
 
-        let old_url = updated.get(&peer_id).map(|a| a.url.to_string());
+        let old_url = updated.get(&peer_id).map(|a| a.url.as_str());
         info!(
             %federation_id,
             %peer_id,
-            old_url = old_url.as_deref().unwrap_or("<config>"),
+            old_url = old_url.unwrap_or("<config>"),
             new_url = %verified_route.url,
             new_nonce,
             "Accepted verified guardian endpoint announcement"

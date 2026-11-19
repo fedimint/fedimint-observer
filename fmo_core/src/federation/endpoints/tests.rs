@@ -180,11 +180,9 @@ fn test_reject_stale_or_equal_nonce() {
     );
 
     // 2. Lower nonce (5) rejected
-    let signed_lower = ApiAnnouncement::new(
-        SafeUrl::from_str("ws://lower.example.com:8173").unwrap(),
-        5,
-    )
-    .sign(SECP256K1, &k0);
+    let signed_lower =
+        ApiAnnouncement::new(SafeUrl::from_str("ws://lower.example.com:8173").unwrap(), 5)
+            .sign(SECP256K1, &k0);
     let mut incoming_lower = BTreeMap::new();
     incoming_lower.insert(p0, signed_lower);
 
@@ -245,11 +243,8 @@ fn test_missing_broadcast_public_keys() {
     };
     let fed_id = global.calculate_federation_id();
 
-    let signed = ApiAnnouncement::new(
-        SafeUrl::from_str("ws://new.example.com:8173").unwrap(),
-        10,
-    )
-    .sign(SECP256K1, &k0);
+    let signed = ApiAnnouncement::new(SafeUrl::from_str("ws://new.example.com:8173").unwrap(), 10)
+        .sign(SECP256K1, &k0);
 
     let mut incoming = BTreeMap::new();
     incoming.insert(p0, signed);
@@ -274,11 +269,9 @@ fn test_verify_restored_routes_preserves_code_invariant() {
     let (fed_id, config) = sample_global_config(&[(p0, pk0, url0)]);
 
     // Valid route
-    let valid_signed = ApiAnnouncement::new(
-        SafeUrl::from_str("ws://valid.example.com:8173").unwrap(),
-        5,
-    )
-    .sign(SECP256K1, &k0);
+    let valid_signed =
+        ApiAnnouncement::new(SafeUrl::from_str("ws://valid.example.com:8173").unwrap(), 5)
+            .sign(SECP256K1, &k0);
     let valid_route = VerifiedRoute::verify(valid_signed, &pk0).unwrap();
 
     // Forged route that somehow got into stored data
@@ -297,11 +290,7 @@ fn test_verify_restored_routes_preserves_code_invariant() {
     stored.insert(p0, valid_route.clone());
     stored.insert(PeerId::from(99), forged_route);
 
-    let verified = verify_restored_routes(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &stored,
-    );
+    let verified = verify_restored_routes(fed_id, config.broadcast_public_keys.as_ref(), &stored);
 
     // Only p0 with valid signature survives restoration
     assert_eq!(verified.len(), 1);
@@ -355,8 +344,16 @@ fn test_concurrent_multi_peer_announcement_merge_keeps_highest_nonce() {
     let (p1, _, k1, pk1) = generate_test_guardian(1);
 
     let (fed_id, config) = sample_global_config(&[
-        (p0, pk0, SafeUrl::from_str("ws://g0.example.com:8173").unwrap()),
-        (p1, pk1, SafeUrl::from_str("ws://g1.example.com:8173").unwrap()),
+        (
+            p0,
+            pk0,
+            SafeUrl::from_str("ws://g0.example.com:8173").unwrap(),
+        ),
+        (
+            p1,
+            pk1,
+            SafeUrl::from_str("ws://g1.example.com:8173").unwrap(),
+        ),
     ]);
 
     // Guardian 0 announces rotation with nonce 1
@@ -385,16 +382,14 @@ fn test_concurrent_multi_peer_announcement_merge_keeps_highest_nonce() {
     let mut merged_incoming = BTreeMap::new();
     for announcements in peer_responses {
         for (target_peer, announcement) in announcements {
-            match merged_incoming.entry(target_peer) {
-                std::collections::btree_map::Entry::Vacant(e) => {
-                    e.insert(announcement);
-                }
-                std::collections::btree_map::Entry::Occupied(mut e) => {
-                    if announcement.api_announcement.nonce > e.get().api_announcement.nonce {
-                        e.insert(announcement);
+            merged_incoming
+                .entry(target_peer)
+                .and_modify(|existing| {
+                    if announcement.api_announcement.nonce > existing.api_announcement.nonce {
+                        *existing = announcement.clone();
                     }
-                }
-            }
+                })
+                .or_insert(announcement);
         }
     }
 

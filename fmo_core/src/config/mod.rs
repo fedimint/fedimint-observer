@@ -250,7 +250,7 @@ async fn try_download_client_config(
     let federation_id = invite.federation_id();
     let mut invite_peers = invite.peers();
     if let Some(announced) = observer.get_guardian_endpoints(federation_id) {
-        for (peer_id, url) in invite_peers.iter_mut() {
+        for (peer_id, url) in &mut invite_peers {
             if let Some(route) = announced.get(peer_id) {
                 *url = route.url.clone();
             }

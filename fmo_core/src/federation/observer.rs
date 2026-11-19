@@ -109,7 +109,11 @@ pub struct FederationObserver {
     /// [`Self::federation_api`]
     api_clients: Arc<std::sync::Mutex<ApiClients>>,
     /// Verified dynamic guardian endpoint announcements per federation
-    guardian_endpoints: Arc<std::sync::RwLock<HashMap<FederationId, crate::federation::endpoints::GuardianEndpointsMap>>>,
+    guardian_endpoints: Arc<
+        std::sync::RwLock<
+            HashMap<FederationId, crate::federation::endpoints::GuardianEndpointsMap>,
+        >,
+    >,
     modules: ModuleRegistry,
     /// Tells a federation's module projectors about stored sessions and moved
     /// cursors
@@ -192,12 +196,10 @@ impl FederationObserver {
                 supervise("API replica guardian endpoints refresh", move || {
                     let observer = observer.clone();
                     async move {
-                        loop {
-                            fedimint_core::runtime::sleep(refresh_interval).await;
-                            if let Err(e) = observer.load_guardian_endpoints().await {
-                                tracing::warn!(err = %e, "Failed to refresh guardian endpoints in API replica");
-                            }
-                        }
+                        observer
+                            .sync_replica_guardian_endpoints(refresh_interval)
+                            .await;
+                        Ok(())
                     }
                 }),
             );
@@ -375,15 +377,29 @@ impl FederationObserver {
                     // Deserialization extracts signed announcements; cryptographically re-verifying
                     // against the canonical broadcast public keys is strictly required before
                     // admitting into the active routing cache.
-                    let raw_announcements: BTreeMap<fedimint_core::PeerId, fedimint_core::net::api_announcement::SignedApiAnnouncement> =
-                        if let Ok(routes) = serde_json::from_value::<crate::federation::endpoints::VerifiedRoutesMap>(data.clone()) {
-                            routes.into_iter().map(|(p, r)| (p, r.announcement)).collect()
-                        } else if let Ok(announcements) = serde_json::from_value::<BTreeMap<fedimint_core::PeerId, fedimint_core::net::api_announcement::SignedApiAnnouncement>>(data) {
-                            announcements
-                        } else {
-                            warn!(%federation_id, "Failed to deserialize stored guardian endpoints");
-                            continue;
-                        };
+                    let raw_announcements: BTreeMap<
+                        fedimint_core::PeerId,
+                        fedimint_core::net::api_announcement::SignedApiAnnouncement,
+                    > = if let Ok(routes) = serde_json::from_value::<
+                        crate::federation::endpoints::VerifiedRoutesMap,
+                    >(data.clone())
+                    {
+                        routes
+                            .into_iter()
+                            .map(|(p, r)| (p, r.announcement))
+                            .collect()
+                    } else if let Ok(announcements) = serde_json::from_value::<
+                        BTreeMap<
+                            fedimint_core::PeerId,
+                            fedimint_core::net::api_announcement::SignedApiAnnouncement,
+                        >,
+                    >(data)
+                    {
+                        announcements
+                    } else {
+                        warn!(%federation_id, "Failed to deserialize stored guardian endpoints");
+                        continue;
+                    };
 
                     let verified = crate::federation::endpoints::verify_restored_announcements(
                         federation_id,
@@ -393,8 +409,12 @@ impl FederationObserver {
 
                     if !verified.is_empty() {
                         let prev = cache.get(&federation_id);
-                        let old_peers = crate::federation::endpoints::active_api_peers(&config.global, prev);
-                        let new_peers = crate::federation::endpoints::active_api_peers(&config.global, Some(&verified));
+                        let old_peers =
+                            crate::federation::endpoints::active_api_peers(&config.global, prev);
+                        let new_peers = crate::federation::endpoints::active_api_peers(
+                            &config.global,
+                            Some(&verified),
+                        );
                         if old_peers != new_peers {
                             stale_peers_to_invalidate.push(old_peers);
                         }
@@ -416,6 +436,15 @@ impl FederationObserver {
         }
 
         Ok(())
+    }
+
+    async fn sync_replica_guardian_endpoints(&self, interval: Duration) {
+        loop {
+            fedimint_core::runtime::sleep(interval).await;
+            if let Err(e) = self.load_guardian_endpoints().await {
+                tracing::warn!(err = %e, "Failed to refresh guardian endpoints in API replica");
+            }
+        }
     }
 
     /// Removes a stale client from the observed client cache so new connections use updated endpoints.
@@ -1211,11 +1240,9 @@ impl FederationObserver {
                                     return Err(e);
                                 }
                             };
-                            let result = api
-                                .await_block(session_index, &decoders_single)
-                                .await;
+                            let result = api.await_block(session_index, &decoders_single).await;
                             gate.record(result.is_ok());
-                            Ok(result?)
+                            result
                         },
                     )
                     .await
