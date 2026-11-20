@@ -153,7 +153,8 @@ async fn load_guardian_endpoint_inputs(
     .context("Failed to load persisted guardian endpoint announcements")
 }
 
-/// An evictable client; evicting it closes its connections once unused
+/// An evictable route client. Endpoint connections live in a separate,
+/// non-evicting bounded registry because pinned Iroh Next retains them too.
 #[derive(Debug)]
 struct CachedApi {
     api: fedimint_api_client::api::DynGlobalApi,
@@ -169,6 +170,8 @@ struct ApiClients {
     recovery: HashMap<ApiPeers, CachedApi>,
     /// Invite lookups, by endpoints and the invite's API secret
     lookups: HashMap<(ApiPeers, Option<String>), CachedApi>,
+    /// Shared by URL and credential across every route client
+    connections: crate::guardian_api::GuardianConnectionRegistry,
     generation: u64,
 }
 
@@ -736,7 +739,8 @@ impl FederationObserver {
         Ok(batch_was_full)
     }
 
-    /// Drops clients on superseded routes; their sockets close when idle
+    /// Drops route clients on superseded routes. The bounded connection
+    /// registry retains endpoint state for safe reuse and Iroh ownership.
     pub(crate) fn retire_superseded_api_clients(&self, old: &ApiPeers, new: &ApiPeers) {
         let mut clients = self.api_clients();
         clients
@@ -798,7 +802,15 @@ impl FederationObserver {
             .into());
         }
         let api = clients.recovery.remove(&peers).map_or_else(
-            || crate::util::federation_api(&self.connectors, &peers, None),
+            || {
+                crate::util::federation_api(
+                    &self.connectors,
+                    &clients.connections,
+                    &peers,
+                    None,
+                    crate::guardian_api::ConnectionClass::Trusted,
+                )
+            },
             |entry| entry.api,
         );
         clients.observed.insert(peers, api.clone());
@@ -814,12 +826,21 @@ impl FederationObserver {
             return Ok(api.clone());
         }
         let generation = clients.next_generation();
+        let connections = clients.connections.clone();
         Ok(cached_api(
             &mut clients.recovery,
             generation,
             peers,
             MAX_RECOVERY_API_CLIENTS,
-            |peers| crate::util::federation_api(&self.connectors, peers, None),
+            |peers| {
+                crate::util::federation_api(
+                    &self.connectors,
+                    &connections,
+                    peers,
+                    None,
+                    crate::guardian_api::ConnectionClass::Trusted,
+                )
+            },
         ))
     }
 
@@ -845,7 +866,12 @@ impl FederationObserver {
         let mut clients = self.api_clients();
         // Under the cache lock, like `federation_api`.
         let peers = self.active_api_peers(federation_id, global);
-        self.lookup_api_in(&mut clients, peers, api_secret)
+        self.lookup_api_in(
+            &mut clients,
+            peers,
+            api_secret,
+            crate::guardian_api::ConnectionClass::Lookup,
+        )
     }
 
     /// Literal routes, the fallback when an announced route fails
@@ -858,6 +884,7 @@ impl FederationObserver {
             &mut self.api_clients(),
             canonical_api_peers(global),
             api_secret,
+            crate::guardian_api::ConnectionClass::LookupFallback,
         )
     }
 
@@ -866,6 +893,7 @@ impl FederationObserver {
         clients: &mut ApiClients,
         peers: ApiPeers,
         api_secret: Option<String>,
+        class: crate::guardian_api::ConnectionClass,
     ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
         if api_secret.is_none() {
             if let Some(api) = clients.observed.get(&peers) {
@@ -873,13 +901,20 @@ impl FederationObserver {
             }
         }
         let generation = clients.next_generation();
+        let connections = clients.connections.clone();
         Ok(cached_api(
             &mut clients.lookups,
             generation,
             (peers, api_secret),
             MAX_LOOKUP_API_CLIENTS,
             |(peers, api_secret)| {
-                crate::util::federation_api(&self.connectors, peers, api_secret.clone())
+                crate::util::federation_api(
+                    &self.connectors,
+                    &connections,
+                    peers,
+                    api_secret.clone(),
+                    class,
+                )
             },
         ))
     }

@@ -72,6 +72,22 @@ and `/metrics` bypass admission. Put public TLS termination, per-client rate
 limits, and access controls for `/metrics` and administrative paths at the
 reverse proxy.
 
+Guardian connection state is capped per process at 4,096 trusted endpoint and
+credential pairs, 512 announced public-lookup pairs, and 512 literal-fallback
+pairs. These entries are not evicted until restart: the pinned Iroh Next
+connector also retains successful connections, so non-evicting admission is
+what keeps live connections bounded across repeated route rotations. Existing
+endpoints keep working after a budget fills, but a previously unseen endpoint
+in that class is rejected. The separate public-lookup and literal budgets keep
+a failed announced invite route from consuming its fallback's capacity.
+
+Endpoint discovery performs at most 64 requests per round with four concurrent
+requests, and verifies at most 64 known members from each response before
+rotating that source's window. Each announcement has a 4 KiB post-decode
+admission limit. The pinned WebSocket and Iroh connectors receive and decode
+the response before Observer can apply that check; enforcing a per-RPC
+receive-side byte cap requires connector support.
+
 Lightning v2 gateway data comes from guardians and gateways and is bounded:
 256 gateway URLs per guardian per poll, 1,024 registered and 1,024 retired
 gateways per federation module instance, and probe history kept for

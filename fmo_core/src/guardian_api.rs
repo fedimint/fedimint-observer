@@ -1,4 +1,4 @@
-//! Guardian API clients that close their connections when dropped
+//! Bounded guardian connections shared by endpoint and credential
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,22 +24,135 @@ mod tests;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const MIN_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
+/// Successful Iroh Next connections are retained by the pinned connector.
+/// Never evict endpoint state, so connector-owned connections are bounded by
+/// these admission limits even when route-client caches turn over.
+const MAX_TRUSTED_CONNECTIONS: usize = 4096;
+const MAX_LOOKUP_CONNECTIONS: usize = 512;
+const MAX_LOOKUP_FALLBACK_CONNECTIONS: usize = 512;
 
-/// A client for `peers` whose connections end with its last clone
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectionClass {
+    /// Canonical or signature-verified routes of observed federations
+    Trusted,
+    /// Public invite/config lookups, whose endpoints are caller-controlled
+    Lookup,
+    /// Literal invite routes, isolated so an announced attempt cannot consume
+    /// the fallback's connection capacity
+    LookupFallback,
+}
+
+/// Connection and retry state shared by every guardian API in this process.
+#[derive(Debug, Clone)]
+pub(crate) struct GuardianConnectionRegistry {
+    inner: Arc<std::sync::Mutex<RegistryState>>,
+    trusted_limit: usize,
+    lookup_limit: usize,
+    lookup_fallback_limit: usize,
+}
+
+#[derive(Debug, Default)]
+struct RegistryState {
+    connections: BTreeMap<ConnectionKey, Arc<PeerConnection>>,
+    trusted: usize,
+    lookups: usize,
+    lookup_fallbacks: usize,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+struct ConnectionKey {
+    url: SafeUrl,
+    api_secret: Option<String>,
+}
+
+impl std::fmt::Debug for ConnectionKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConnectionKey")
+            .field("url", &self.url)
+            .field("has_api_secret", &self.api_secret.is_some())
+            .finish()
+    }
+}
+
+impl Default for GuardianConnectionRegistry {
+    fn default() -> Self {
+        Self::with_limits(
+            MAX_TRUSTED_CONNECTIONS,
+            MAX_LOOKUP_CONNECTIONS,
+            MAX_LOOKUP_FALLBACK_CONNECTIONS,
+        )
+    }
+}
+
+impl GuardianConnectionRegistry {
+    fn with_limits(
+        trusted_limit: usize,
+        lookup_limit: usize,
+        lookup_fallback_limit: usize,
+    ) -> Self {
+        Self {
+            inner: Arc::default(),
+            trusted_limit,
+            lookup_limit,
+            lookup_fallback_limit,
+        }
+    }
+
+    fn connection(
+        &self,
+        url: &SafeUrl,
+        api_secret: Option<&str>,
+        class: ConnectionClass,
+    ) -> ServerResult<Arc<PeerConnection>> {
+        let key = ConnectionKey {
+            url: url.clone(),
+            api_secret: api_secret.map(ToOwned::to_owned),
+        };
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("guardian connection registry lock poisoned");
+        if let Some(connection) = inner.connections.get(&key) {
+            return Ok(connection.clone());
+        }
+        let (used, limit) = match class {
+            ConnectionClass::Trusted => (inner.trusted, self.trusted_limit),
+            ConnectionClass::Lookup => (inner.lookups, self.lookup_limit),
+            ConnectionClass::LookupFallback => (inner.lookup_fallbacks, self.lookup_fallback_limit),
+        };
+        if used >= limit {
+            return Err(ServerError::Connection(anyhow!(
+                "Guardian connection budget exhausted"
+            )));
+        }
+        let connection = Arc::new(PeerConnection::default());
+        inner.connections.insert(key, connection.clone());
+        match class {
+            ConnectionClass::Trusted => inner.trusted += 1,
+            ConnectionClass::Lookup => inner.lookups += 1,
+            ConnectionClass::LookupFallback => inner.lookup_fallbacks += 1,
+        }
+        Ok(connection)
+    }
+}
+
+/// A client for `peers` using the process-wide bounded connection registry
 pub(crate) fn guardian_api(
     connectors: &ConnectorRegistry,
+    connections: &GuardianConnectionRegistry,
     peers: &BTreeMap<PeerId, SafeUrl>,
     api_secret: Option<String>,
+    class: ConnectionClass,
 ) -> DynGlobalApi {
     GlobalFederationApiWithCache::new(OwnedConnectionsApi {
         peers: Arc::new(Peers {
             connectors: connectors.clone(),
+            connections: connections.clone(),
             api_secret,
+            class,
             peer_ids: peers.keys().copied().collect(),
-            connections: peers
-                .iter()
-                .map(|(&peer_id, url)| (peer_id, PeerConnection::new(url.clone())))
-                .collect(),
+            peer_urls: peers.clone(),
         }),
         module_id: None,
     })
@@ -61,14 +174,15 @@ struct OwnedConnectionsApi {
 #[derive(Debug)]
 struct Peers {
     connectors: ConnectorRegistry,
+    connections: GuardianConnectionRegistry,
     api_secret: Option<String>,
+    class: ConnectionClass,
     peer_ids: BTreeSet<PeerId>,
-    connections: BTreeMap<PeerId, PeerConnection>,
+    peer_urls: BTreeMap<PeerId, SafeUrl>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct PeerConnection {
-    url: SafeUrl,
     /// Held while connecting, so concurrent requests share one attempt
     state: tokio::sync::Mutex<ConnectionState>,
 }
@@ -80,23 +194,34 @@ struct ConnectionState {
     retry_at: Option<Instant>,
 }
 
-impl PeerConnection {
-    fn new(url: SafeUrl) -> Self {
-        Self {
+impl OwnedConnectionsApi {
+    async fn connection(&self, peer_id: PeerId) -> ServerResult<DynGuaridianConnection> {
+        let url = self
+            .peers
+            .peer_urls
+            .get(&peer_id)
+            .ok_or(ServerError::InvalidPeerId { peer_id })?;
+        let peer = self.peers.connections.connection(
             url,
-            state: tokio::sync::Mutex::new(ConnectionState::default()),
-        }
+            self.peers.api_secret.as_deref(),
+            self.peers.class,
+        )?;
+        peer.connection(|| {
+            self.peers
+                .connectors
+                .connect_guardian(url, self.peers.api_secret.as_deref())
+        })
+        .await
     }
 }
 
-impl OwnedConnectionsApi {
-    async fn connection(&self, peer_id: PeerId) -> ServerResult<DynGuaridianConnection> {
-        let peer = self
-            .peers
-            .connections
-            .get(&peer_id)
-            .ok_or(ServerError::InvalidPeerId { peer_id })?;
-        let mut state = peer.state.lock().await;
+impl PeerConnection {
+    async fn connection<F, Fut>(&self, connect: F) -> ServerResult<DynGuaridianConnection>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ServerResult<DynGuaridianConnection>>,
+    {
+        let mut state = self.state.lock().await;
         if let Some(connection) = state.connection.as_ref().filter(|c| c.is_connected()) {
             return Ok(connection.clone());
         }
@@ -109,18 +234,17 @@ impl OwnedConnectionsApi {
                 "Waiting to reconnect after a failed attempt"
             )));
         }
-        let attempt = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            self.peers
-                .connectors
-                .connect_guardian(&peer.url, self.peers.api_secret.as_deref()),
-        )
-        .await
-        .unwrap_or_else(|_| {
-            Err(ServerError::Connection(anyhow!(
-                "Connection attempt timed out"
-            )))
-        });
+        // Record the attempt before awaiting it. If an outer request deadline
+        // cancels this future, the next poll still observes the retry delay.
+        state.failures = state.failures.saturating_add(1);
+        state.retry_at = Some(Instant::now() + retry_delay(state.failures));
+        let attempt = tokio::time::timeout(CONNECT_TIMEOUT, connect())
+            .await
+            .unwrap_or_else(|_| {
+                Err(ServerError::Connection(anyhow!(
+                    "Connection attempt timed out"
+                )))
+            });
         match attempt {
             Ok(connection) => {
                 *state = ConnectionState {
@@ -129,11 +253,7 @@ impl OwnedConnectionsApi {
                 };
                 Ok(connection)
             }
-            Err(error) => {
-                state.failures = state.failures.saturating_add(1);
-                state.retry_at = Some(Instant::now() + retry_delay(state.failures));
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 }
