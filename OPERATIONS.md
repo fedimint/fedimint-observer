@@ -73,16 +73,18 @@ limits, and access controls for `/metrics` and administrative paths at the
 reverse proxy.
 
 Fedimint's connection pool keeps each guardian connection, WebSocket or Iroh,
-until the remote end closes it, so Observer bounds which URLs may enter its
-pools. Admitted URLs are not evicted until restart, and each can hold about one
-connection: at most about 5,120 in total.
+until the remote end closes it, so Observer bounds which routes may enter its
+pools. Admitted routes are not evicted until restart.
 
-- Observed federations share one pool of up to 4,096 guardian URLs, canonical
-  and announced, across at most 4,096 federations. Each guardian may introduce
-  16 announced URLs. A guardian over its budget keeps its last selected route
-  and logs a warning once; its newest route is still stored, and a restart or a
+- Observed federations share one pool across at most 4,096 federations. Their
+  canonical endpoints come only from federations admins add.
+  Announcements have their own cap of 4,096 distinct URLs, so they cannot crowd
+  out canonical routes; each guardian may introduce 16 announced URLs. A
+  guardian over either announcement budget keeps its last selected route and
+  logs a warning once; its newest route is still stored, and a restart or a
   fresh replica adopts it. `fmo_guardian_routes_held` counts such guardians.
-- Invite lookups use separate pools, one per API secret, and up to 1,024
+- Invite lookups, including `/config/:invite/meta`, use separate pools, one
+  per API secret, and up to 1,024
   `(secret, URL)` pairs. Announced and literal routes can each introduce 512,
   so a failing announced route can't use up its fallback's capacity. When
   full, lookups of new servers fail until restart; rate-limit `/config` at the
@@ -160,7 +162,7 @@ the proxy.
 local worker ownership; it does not assert that every federation is
 synchronized. `/metrics` exposes HTTP request, error and rejection counters, a
 latency histogram, pool usage, local worker health, and guardian route
-admission (`fmo_guardian_endpoints_admitted`, `fmo_guardian_routes_held`). Responses carry an
+admission (`fmo_guardian_announced_urls_admitted`, `fmo_guardian_routes_held`). Responses carry an
 `x-request-id`.
 
 Monitor snapshot ages, queue backlog, and module lag alongside HTTP percentiles:

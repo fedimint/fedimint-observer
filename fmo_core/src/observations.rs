@@ -81,11 +81,12 @@ impl FederationObserver {
                         );
                         let result = async {
                             let _permit = services.external_io_permit().await?;
-                            if let Ok(Ok(meta)) = tokio::time::timeout(
-                                Duration::from_secs(20),
-                                ConsensusMetaCache::try_fetch_meta_inner(&config, &observer),
-                            )
-                            .await
+                            if let Ok(Ok(meta)) =
+                                tokio::time::timeout(Duration::from_secs(20), async {
+                                    let api = observer.federation_api(&config.global)?;
+                                    ConsensusMetaCache::try_fetch_meta_inner(&config, &api).await
+                                })
+                                .await
                             {
                                 services
                                     .save_observation(
