@@ -22,6 +22,24 @@ use crate::federation::observer::FederationObserver;
 use crate::util::{module_instance_id, query};
 
 impl FederationObserver {
+    /// Deletes health samples older than the retention, except each
+    /// guardian's newest, in bounded batches
+    pub(crate) async fn prune_health(self, days: u32) -> anyhow::Result<()> {
+        loop {
+            self.connection().await?.execute(
+                "DELETE FROM guardian_health WHERE (federation_id, guardian_id, time) IN (
+                    SELECT h.federation_id, h.guardian_id, h.time FROM guardian_health h
+                    WHERE h.time < (now() AT TIME ZONE 'UTC') - make_interval(days => $1)
+                      AND EXISTS (SELECT 1 FROM guardian_health newer
+                          WHERE newer.federation_id = h.federation_id AND newer.guardian_id = h.guardian_id
+                            AND newer.time > h.time)
+                    ORDER BY h.time LIMIT 5000
+                 )", &[&(days as i32)],
+            ).await?;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    }
+
     pub async fn monitor_health(
         &self,
         federation_id: FederationId,
