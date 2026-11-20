@@ -9,7 +9,9 @@ Run one collector instance and any number of API instances against the same
 PostgreSQL database. The default instance collects data and serves HTTP. Set
 `FO_API_ONLY=true` on additional API instances: they do not run migrations,
 collectors, projection, retention, or administrative writes. Route
-administrative requests to the collector.
+administrative requests to the collector. An API instance refuses to start
+until the collector has run exactly the core and Manifold migrations its binary
+knows.
 
 The collector holds a PostgreSQL advisory lock on a dedicated connection for its
 lifetime. A second collector exits rather than duplicate work, and losing that
@@ -126,6 +128,45 @@ them: probes should keep succeeding for public gateways, the observer should
 still reach its database and resolver, and the API should still answer through
 the proxy.
 
+## Manifold discovery
+
+The collector reads Manifold guardian and FLIP-provider advertisements from
+Nostr relays and checks guardians' PeerBadge trust credentials.
+
+| Variable | Meaning |
+| --- | --- |
+| `FO_MANIFOLD_RELAYS` | Comma-separated relays to read (default: Manifold's production relays). Empty turns the collector off |
+| `FO_MANIFOLD_TRUSTED_ISSUERS` | Comma-separated PeerBadge issuer keys (x-only hex) trusted as roots, replacing the default: Manifold's production issuers, copied from the `fedibtc/manifold` revision the Fedi app pins (`MANIFOLD_PRODUCTION_ISSUERS` and `MANIFOLD_ISSUERS_REVISION` in `fmo_core/src/manifold/collector.rs`, authorities in `fmo_core/src/manifold/fixtures/`). Empty trusts no issuer; an invalid key stops the server at startup |
+
+Anyone can publish a self-signed advertisement, so retention is the observer's
+own (`collector::Retention`), whatever expiry an advertisement claims:
+
+- Advertisements dated more than 5 minutes ahead are refused, and each goes 30
+  days after its creation.
+- At most 5000 anonymous advertisements are kept per kind, newest first, and
+  apart from them at most 1000 of protected guardians: those bound to a seat
+  of an observed federation, or holding a sound, unrevoked credential from a
+  trusted issuer. Each sync also fetches protected guardians by author, so a
+  flood of anonymous advertisements can't hide them. Each guardian keeps at
+  most 50 versions.
+- Presence history goes with a key's last advertisement unless the key holds a
+  seat.
+
+The collector derives each advertisement's listing and credential evidence
+once (Manifold migration 4), so `/manifold/*` requests neither parse payloads
+nor verify signatures. Credentials are verified with Fedi's PeerBadge SDK
+against the pinned authorities, as the Fedi app does
+(`fmo_core/src/manifold/peerbadge.rs`). Revocations are read every sync from
+the locations the authorities name, page by page until a page brings nothing
+new; a short relay answer, a lost message or the page bound fails the read. A
+credential shows as verified only while its issuer's revocations were read in
+full within the last 15 minutes (`fmo_manifold.revocation_checks`).
+
+The daily `manifold-issuers` workflow (`scripts/check-manifold-issuers.sh`)
+opens an issue when Fedi's pinned roster or authorities differ from these
+copies. The relays are outbound connections: allow them in the egress rules
+above.
+
 ## Monitoring
 
 `/live` (and legacy `/health`) is liveness. `/ready` checks the database and
@@ -192,6 +233,7 @@ empty, isolated database, rolls back its fixtures, and does not use
 | Variable | Command |
 | --- | --- |
 | `FMO_WORK_TEST_DATABASE` | `cargo test -p fmo_core postgres_ -- --ignored` |
+| `FMO_MANIFOLD_TEST_DATABASE` | `cargo test -p fmo_core manifold::collector::tests::postgres_ -- --ignored` |
 | `FMO_WALLETV2_TEST_DATABASE` | `cargo test -p fmo_module_walletv2 postgres_ -- --ignored` |
 | `FMO_LNV2_TEST_DATABASE` | `cargo test -p fmo_module_lnv2 postgres_ -- --ignored` |
 

@@ -1,0 +1,59 @@
+{
+ "source": "Captured from wss://relay.dev.fedibtc.com, wss://relay.primal.net and wss://relay.damus.io on 2026-11-11; public Nostr events, signed by their authors",
+ "events": [
+  {
+   "content": "{\"payload\":{\"version\":1,\"fman_id_pubkey\":\"901b52fb98942fb37d5c013fbd5f8effac5d2103ea32b333f5107f6db0f98f4f\",\"service_pubkey\":\"11a9cab5daef2b9c3e02153947f0eef976f9a0307949993f36d348765f7457e5\",\"issued_at\":1794401536,\"expires_at\":1794405136,\"api_endpoints\":[{\"transport\":\"iroh\",\"url\":\"iroh://584c52faaa04bde502596730eb380a855eeefbcbf7bc7f9f8e2fbe102e17325c\"}],\"availability\":{\"fedimintd_version\":\"0.12.0+fedi\",\"federation_sizes\":[7,8,9,10,11,12,13,14,15,16,17,18,19,20]},\"plans\":[{\"InfiniteBestEffort\":{\"price_msats\":3500032}}],\"holder_authorizations\":[{\"holder_authorization\":{\"version\":1,\"authorization\":{\"holder_id_pubkey\":\"5f94d824f843745e69f5967e0888334b139b67e6f53ffee0f0517f28857521e6\",\"subject_pubkey\":\"901b52fb98942fb37d5c013fbd5f8effac5d2103ea32b333f5107f6db0f98f4f\",\"credential_digest\":\"T9I-5fKD-S6cvXsDfWPbwMOkp_hBnOfN4iidVDqOIJo\",\"issued_at\":1793736775},\"proof\":{\"signature\":\"Q0rJEHiyblvc1hD4DORmStBCK4Q_QOB-PrqnKmv6Svcf0nN0SddZFOG8TVARyfG5yCb8CIKl-xQ7UgxaYoSeOw\"}},\"signed_credential\":{\"version\":1,\"credential\":{\"issuer_id_pubkey\":\"ef245cb47056133e595cd54d66de8bddbe71ba8583ac2c2eede78f951981e7f6\",\"info\":{\"schema\":\"fedi-trust-score-v1.0\",\"trust_level\":9},\"blind_msg\":\"5f94d824f843745e69f5967e0888334b139b67e6f53ffee0f0517f28857521e6\"},\"proof\":{\"signature\":\"ROvwzjjiHPaAGWt2jCwsWOz7WwRM9oP_yVXwMect2K3zhkrlwur4oxUYy8jfAaWrRbjV_FOlRzGd-bomucEsFR80K_KlAJ_ejCl49EzJr1fpYjrYTyyGGFEX12Gah-ETYaKg2lPkyLIfWsQo4Wygv06JYk_pER-JE0hZ9_rYq8pejiHTrQABuxwvGFj2NEy73-sy7vzyqn1Jgl-xjEPkZ4SUtWRrhGIrqDK9yK-fIEkEOA0pTza3JbVgyYAct2J6zzn9Y7s1L-1iG-x0eRiB_ifWSxWXdZfjUUvJiiuWH8zRc-fzsUdj0y9h2Pwxd8t0MpNcSSSkH2YPotLgRW1wFg\"}}}]},\"proof\":{\"signature\":\"8zQK7WnVOBKq4CXcQgiLO6zA26kO6TMc14M-QGPURWfjJcZSjFSLAq_B-yGTVYjSqvi4KyeOmz-m3KKw2cvV7A\"}}",
+   "created_at": 1794401536,
+   "id": "430c69a8c1a853807dd036ffbf912ade1526e0a8d7221a5feaacc2c182d5d62a",
+   "kind": 37701,
+   "pubkey": "901b52fb98942fb37d5c013fbd5f8effac5d2103ea32b333f5107f6db0f98f4f",
+   "sig": "a8d4ad8b79a80002eef26dfca4fc15c2fd1b4bceeafd391dcd4007138b80ca92afb5ccae024d9c21b4fe1f6c34d19ed652319763eecea999cc660ef9efebf0af",
+   "tags": [
+    [
+     "d",
+     "fman-ad"
+    ],
+    [
+     "t",
+     "fedi-fman"
+    ]
+   ]
+  },
+  {
+   "content": "{\"signer\":\"901b52fb98942fb37d5c013fbd5f8effac5d2103ea32b333f5107f6db0f98f4f\",\"payload\":\"{\\\"service_pubkey\\\":\\\"11a9cab5daef2b9c3e02153947f0eef976f9a0307949993f36d348765f7457e5\\\",\\\"issued_at\\\":1794401536,\\\"expires_at\\\":1794405136,\\\"api_endpoints\\\":[{\\\"transport\\\":\\\"iroh\\\",\\\"url\\\":\\\"iroh://584c52faaa04bde502596730eb380a855eeefbcbf7bc7f9f8e2fbe102e17325c\\\"}],\\\"availability\\\":{\\\"fedimintd_version\\\":\\\"0.12.0+fedi\\\",\\\"federation_sizes\\\":[7,8,9,10,11,12,13,14,15,16,17,18,19,20]},\\\"plans\\\":[{\\\"InfiniteBestEffort\\\":{\\\"price_msats\\\":3500032}}],\\\"holder_authorizations\\\":[{\\\"holder_authorization\\\":{\\\"version\\\":1,\\\"authorization\\\":{\\\"holder_id_pubkey\\\":\\\"5f94d824f843745e69f5967e0888334b139b67e6f53ffee0f0517f28857521e6\\\",\\\"subject_pubkey\\\":\\\"901b52fb98942fb37d5c013fbd5f8effac5d2103ea32b333f5107f6db0f98f4f\\\",\\\"credential_digest\\\":\\\"T9I-5fKD-S6cvXsDfWPbwMOkp_hBnOfN4iidVDqOIJo\\\",\\\"issued_at\\\":1793736775},\\\"proof\\\":{\\\"signature\\\":\\\"Q0rJEHiyblvc1hD4DORmStBCK4Q_QOB-PrqnKmv6Svcf0nN0SddZFOG8TVARyfG5yCb8CIKl-xQ7UgxaYoSeOw\\\"}},\\\"signed_credential\\\":{\\\"version\\\":1,\\\"credential\\\":{\\\"issuer_id_pubkey\\\":\\\"ef245cb47056133e595cd54d66de8bddbe71ba8583ac2c2eede78f951981e7f6\\\",\\\"info\\\":{\\\"schema\\\":\\\"fedi-trust-score-v1.0\\\",\\\"trust_level\\\":9},\\\"blind_msg\\\":\\\"5f94d824f843745e69f5967e0888334b139b67e6f53ffee0f0517f28857521e6\\\"},\\\"proof\\\":{\\\"signature\\\":\\\"ROvwzjjiHPaAGWt2jCwsWOz7WwRM9oP_yVXwMect2K3zhkrlwur4oxUYy8jfAaWrRbjV_FOlRzGd-bomucEsFR80K_KlAJ_ejCl49EzJr1fpYjrYTyyGGFEX12Gah-ETYaKg2lPkyLIfWsQo4Wygv06JYk_pER-JE0hZ9_rYq8pejiHTrQABuxwvGFj2NEy73-sy7vzyqn1Jgl-xjEPkZ4SUtWRrhGIrqDK9yK-fIEkEOA0pTza3JbVgyYAct2J6zzn9Y7s1L-1iG-x0eRiB_ifWSxWXdZfjUUvJiiuWH8zRc-fzsUdj0y9h2Pwxd8t0MpNcSSSkH2YPotLgRW1wFg\\\"}}}],\\\"uptime_permille\\\":{\\\"1d\\\":1000,\\\"7d\\\":983,\\\"30d\\\":961},\\\"version\\\":{\\\"mg_version\\\":\\\"0.1.12\\\",\\\"api_version\\\":1}}\",\"signature\":\"fc9d39f5a14dcf342216c259b942d3b14b74ece8851b32693e08d304efdf2fa880fdfe4e1be0d5e0a3f6fb764d73ab1e5dc6646ebeb982f216897f9c950367a8\"}",
+   "created_at": 1794401537,
+   "id": "1781d9ce5011134fa26edd6ca92140f1b946848b3890d519797f98a256ad6f64",
+   "kind": 37709,
+   "pubkey": "901b52fb98942fb37d5c013fbd5f8effac5d2103ea32b333f5107f6db0f98f4f",
+   "sig": "b11871d8108a3aeaee626d5f5bf954d642d74aa10ea1df04077974fa45a912156a87eb851c5d35191da184b1fc2c30d22095a84beb615d4303ef5b8ec92bd356",
+   "tags": [
+    [
+     "d",
+     "mg-ad"
+    ],
+    [
+     "t",
+     "fedi-mg"
+    ]
+   ]
+  },
+  {
+   "content": "{\"payload\":{\"api_endpoints\":[\"iroh://15b0b598ffc3cf5bc569ecc6e3d1b6b5375ed76b21c3b65a243939db3d1fde11?alpn=fedi%2Fflip%2Fpublic-liquidity%2F1\"],\"api_versions\":[1],\"display\":null,\"expires_at\":1794407807,\"holder_authorizations\":[{\"holder_authorization\":{\"authorization\":{\"credential_digest\":\"m76UfUPra3eWa6OqfyGUjsz5VRIPcm9YqcoDvLl1LFU\",\"holder_id_pubkey\":\"634a1e959a4c4d7b9b2d9864039047663bc19c449e89f2c3b45c5ec8167e57bd\",\"issued_at\":1790286877,\"subject_pubkey\":\"d23b09327c0fdad88c1a8a1b6e5fa7559a05094a59b800ac5e4c308af2fabbd0\"},\"proof\":{\"signature\":\"L-aDNcwbvgq5ASoEhqJPDf_0cIOAl2a65Fr9d1H0ApAszR_PaosWJRK1XGwSKM5jykZinsDmmHym6laxQcUEcw\"},\"version\":1},\"signed_credential\":{\"credential\":{\"blind_msg\":\"634a1e959a4c4d7b9b2d9864039047663bc19c449e89f2c3b45c5ec8167e57bd\",\"info\":{\"schema\":\"fedi-trust-score-v1.0\",\"trust_level\":9},\"issuer_id_pubkey\":\"ef245cb47056133e595cd54d66de8bddbe71ba8583ac2c2eede78f951981e7f6\"},\"proof\":{\"signature\":\"S4FI6tKwObR7VS7c9WhVC5XIi1sRPTGdWLHB2mR1U5Z08mmBlsOWQx2R99Gm_mk5usOWZ9A8mM0nHt599Aqx-8ct4t6m_n3VNU_mjlM3vbYjoYO7wt98fhfONakzi_Z3rml_k35dIQVgVIxwHuXQuL08jM-sXze9mxIhIB0JYwX7Wg5XkDrvM1xTPfyrXZ-vO7xK9zuUVvk8a1t1nO0qshz5g7-1Mncr5lLrxxTFBa9Cvca-K1ejgpQ80WEiV1MwAzHcsmkwHeJB7ivMV4cGtOHHzg5RUQYKGHyNVQx8Z-o9QiwDP9HBckYeBDR7ghEOOXeCJgB3f8OYz5O2oErTLg\"},\"version\":1}}],\"issued_at\":1794400607,\"policy\":{\"accepted_attester_policies\":[{\"attester_pubkey\":\"ac9647df59ada5c432ce7ff9a6afbac4507d29cdf6ed9e9dd26010e641ff9aeb\",\"verification_requirement\":\"all_trusted\"},{\"attester_pubkey\":\"db37f7c6399b2eba7a5ec0cf8258c556406bf881db35e8fd0fe1499755f4850b\",\"verification_requirement\":\"all_trusted\"},{\"attester_pubkey\":\"8cdf45bcfe110b128f5cff355b24cb85f549e79de879aa36915570fdf9b50b02\",\"verification_requirement\":\"all_trusted\"},{\"attester_pubkey\":\"f6c7bc122e74acef6101d2e343a7e68a0de3d9dc9f357c79276743b86ffdb283\",\"verification_requirement\":\"all_trusted\"},{\"attester_pubkey\":\"96eb3609d9cb7c07da825e43a7fa73e7e8020c999c5de00b3333476c58d840e4\",\"verification_requirement\":\"all_trusted\"},{\"attester_pubkey\":\"ef245cb47056133e595cd54d66de8bddbe71ba8583ac2c2eede78f951981e7f6\",\"verification_requirement\":\"all_trusted\"},{\"attester_pubkey\":\"c3cfb8370910591401f31937da09ffedc0ed4ff64e46772ba7c3e267784a4c1a\",\"verification_requirement\":\"all_trusted\"},{\"attester_pubkey\":\"5546e9caca6b8a474da9da8799f9f8f988888018b42429ebe00dd4b9cd2f6a31\",\"verification_requirement\":\"all_trusted\"}],\"supported_networks\":[\"bitcoin\"]},\"provider_pubkey\":\"d23b09327c0fdad88c1a8a1b6e5fa7559a05094a59b800ac5e4c308af2fabbd0\",\"relay_hints\":[\"wss://relay.dev.fedibtc.com\",\"wss://relay.primal.net\",\"wss://relay.damus.io/\"],\"supported_sources\":[\"gateway\"],\"version\":1},\"proof\":{\"signature\":[20,24,135,124,11,214,101,97,43,171,198,53,167,181,103,60,246,210,70,161,197,193,236,75,242,75,61,105,136,150,18,139,67,251,83,236,59,70,109,37,50,112,34,204,241,228,241,63,164,22,141,150,24,82,249,34,3,45,46,193,69,232,84,227]}}",
+   "created_at": 1794400607,
+   "id": "2f6ba0e3565cc5a003c9d340edd75fe35efa1955d1ea7e69467576f7488426dd",
+   "kind": 37702,
+   "pubkey": "d23b09327c0fdad88c1a8a1b6e5fa7559a05094a59b800ac5e4c308af2fabbd0",
+   "sig": "a7dfcde013bd96e1b6f3f4005b54818b1417dfa7b5b0e414ca6a1955960f6103c2ede47482e6c882cdbb11cb4b9a1e3924e918a17ef0d413ac548eaf45ff23df",
+   "tags": [
+    [
+     "d",
+     "flip-provider-ad"
+    ],
+    [
+     "t",
+     "fedi-flip"
+    ]
+   ]
+  }
+ ]
+}

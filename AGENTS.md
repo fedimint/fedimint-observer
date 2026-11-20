@@ -87,6 +87,13 @@ export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
   response shapes.
 - `/federations/*`: unstable monitoring API.
 - Admin endpoints need the `FO_ADMIN_AUTH` bearer token.
+- Lists the frontend shows are paged by the backend: `?limit=` (1-500,
+  default 100) and an opaque `?after=` cursor; responses carry `next_after`
+  (null on the last page) and `total`. Lists with a computed order (health,
+  uptime, freshness, price) page with `pagination::keyset_page`, whose cursor
+  is the last row's sort key, so rows changing between requests never shift a
+  page. Search, filters and order run on the backend. `GET /federations` and
+  `GET /nostr/federations` stay unpaged for existing clients.
 - Errors: `AppError` carries an HTTP status and a client-safe message;
   unexpected errors are logged and returned as a sanitized `500`. Errors the
   client caused or should see (unknown federation, bad parameters, unreachable
@@ -156,6 +163,11 @@ Key tables:
   `gateway_health_hourly`, `contract_activity`, `contract_resolutions`.
 - `fmo_walletv2`: `wallets` (balance and history position), `chain` (on-chain
   history), `deposit_jobs`.
+- `fmo_manifold` (core's Manifold discovery, migrated at startup apart from
+  core's versions): `advertisements` (with each one's derived listing and
+  credential evidence), `presence_daily`, `version_changes`, `revocations`,
+  `revocation_checks`, `sync_state`. Retention and trust are in
+  `OPERATIONS.md`, "Manifold discovery".
 
 Read models, updated as data is written so requests never aggregate the full
 history:

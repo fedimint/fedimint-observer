@@ -20,10 +20,11 @@ use fedimint_ln_common::federation_endpoint_constants::LIST_GATEWAYS_ENDPOINT;
 use fedimint_ln_common::LightningGatewayAnnouncement;
 use fmo_api_types::{
     GatewayActivityMetrics, GatewayInfo, GatewayOverview, GatewayOverviewSummary, GatewayStatus,
-    GatewayUptimeBucket, GatewayUptimeMetrics, GatewayUptimeTrendPoint,
+    GatewayUptimeBucket, GatewayUptimeMetrics, GatewayUptimeTrendPoint, ListPage,
 };
 use fmo_core::module::{
-    module_instance_id, query, ApiResult, ClientError, Services, INVITE_FETCH_TIMEOUT,
+    keyset_page, module_instance_id, query, ApiResult, ClientError, Page, Services,
+    INVITE_FETCH_TIMEOUT,
 };
 use futures::future::join_all;
 use serde::Deserialize;
@@ -319,6 +320,18 @@ pub(crate) struct GetFederationGatewaysParams {
     window: Option<String>,
     /// Comma-separated parts to return: `gateways`, `trend`. Both by default.
     include: Option<String>,
+    /// Gateways: matches the alias, gateway id, node key or endpoint
+    search: Option<String>,
+    /// Gateways: a status, or `all` (every gateway that isn't retired)
+    #[serde(default)]
+    status: crate::directory::GatewayFilter,
+    #[serde(default)]
+    sort: crate::directory::GatewaySort,
+    #[serde(default)]
+    dir: crate::directory::SortDirection,
+    /// Gateways: the page cursor and size
+    after: Option<String>,
+    limit: Option<u16>,
 }
 
 /// Registered gateways a federation's guardians currently announce. Each
@@ -773,6 +786,8 @@ impl Gateways<'_> {
             computed_at,
             summary: summarize(&gateways),
             gateways: Some(gateways),
+            // The cache keeps every gateway; requests page them
+            page: None,
             uptime_trend: Some(
                 self.federation_gateway_uptime_trend(federation_id, window_start)
                     .await?,
@@ -1157,6 +1172,11 @@ pub(crate) async fn get_federation_gateway_overview(
 ) -> ApiResult<Json<GatewayOverview>> {
     let window = GatewayMetricsWindow::parse(params.window.as_deref())?;
     let (include_gateways, include_trend) = parse_overview_include(params.include.as_deref())?;
+    let limit = Page::<String> {
+        after: None,
+        limit: params.limit,
+    }
+    .limit()?;
     services.ensure_observed(federation_id).await?;
     let overview = Gateways {
         services: &services,
@@ -1164,13 +1184,34 @@ pub(crate) async fn get_federation_gateway_overview(
     }
     .gateway_overview(federation_id, window)
     .await?;
-    // Only the requested parts are copied out of the shared cached overview
+    // Only the requested parts are copied out of the shared cached overview,
+    // and of the gateways only the requested page
+    let (gateways, page) = match overview.gateways.as_ref().filter(|_| include_gateways) {
+        Some(all) => {
+            let matching: Vec<GatewayInfo> = all
+                .iter()
+                .filter(|g| crate::directory::matches(g, params.status, params.search.as_deref()))
+                .cloned()
+                .collect();
+            let page = keyset_page(
+                matching,
+                |g| crate::directory::sort_key(g, params.sort, params.dir),
+                params.after.as_deref(),
+                limit,
+            )?;
+            let list_page = ListPage {
+                next_after: page.next_after,
+                total: page.total as u64,
+            };
+            (Some(page.items), Some(list_page))
+        }
+        None => (None, None),
+    };
     Ok(Json(GatewayOverview {
         window: overview.window.clone(),
         computed_at: overview.computed_at,
-        gateways: include_gateways
-            .then(|| overview.gateways.clone())
-            .flatten(),
+        gateways,
+        page,
         uptime_trend: include_trend
             .then(|| overview.uptime_trend.clone())
             .flatten(),
