@@ -502,9 +502,14 @@ impl Gateways<'_> {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            // Resolve for every bounded round so route rotation retires the
-            // previous guardian connector pool.
-            let api = self.services.federation_api(&config.global)?;
+            // Resolved per round for rotations; without a client, skip the round.
+            let api = match self.services.federation_api(&config.global) {
+                Ok(api) => api,
+                Err(err) => {
+                    warn!(%federation_id, %err, "No guardian API client for gateway poll round, no snapshot recorded");
+                    continue;
+                }
+            };
             // Nothing is recorded for a failed round, so it shows as "no polls"
             // (not observed) rather than as every gateway being offline
             if let Err(e) = self
