@@ -195,6 +195,11 @@ empty, isolated database, rolls back its fixtures, and does not use
 | `FMO_WALLETV2_TEST_DATABASE` | `cargo test -p fmo_module_walletv2 postgres_ -- --ignored` |
 | `FMO_LNV2_TEST_DATABASE` | `cargo test -p fmo_module_lnv2 postgres_ -- --ignored` |
 
+One exception: `postgres_gateway_nodes_read_one_snapshot` needs committed rows
+seen from two connections, so its role also needs `CREATEDB`. It creates a
+database with a name unique to the run on the same server, and drops only that
+one when it ends, failed assertions included.
+
 `fmo_core/tests/run-session-time-repair.sh` creates and drops its own database
 to check upgrades from v11; set `PGHOST`, `PGPORT`, and `PGUSER` to a disposable
 instance first. A read-only Iroh smoke test takes `FMO_LNV2_LIVE_FEDERATION` and

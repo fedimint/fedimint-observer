@@ -48,5 +48,7 @@ LEFT JOIN LATERAL (
       AND c.gateway_key=ANY(keys.attributed)
       AND st.estimated_session_timestamp>=$5 AT TIME ZONE 'UTC'
 ) activity ON true
-WHERE g.federation_id=$1 AND g.module_instance_id=$2 AND ($3::text IS NULL OR g.api_endpoint>$3)
+-- $8 limits the rows to registered endpoints before the laterals run for them
+WHERE g.federation_id=$1 AND g.module_instance_id=$2 AND (g.registered OR NOT $8::boolean)
+  AND ($3::text IS NULL OR g.api_endpoint>$3)
 ORDER BY g.api_endpoint LIMIT $4
