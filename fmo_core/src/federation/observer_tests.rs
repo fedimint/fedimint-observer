@@ -130,12 +130,22 @@ async fn full_lookup_cache_evicts_instead_of_refusing() -> anyhow::Result<()> {
     let key = |label: &str| (cached_api_peers(label), Some("secret".to_owned()));
     for index in 0..super::MAX_LOOKUP_API_CLIENTS {
         let (peers, secret) = key(&format!("lookup-{index}"));
-        observer.lookup_api_in(&mut observer.api_clients(), peers, secret)?;
+        observer.lookup_api_in(
+            &mut observer.api_clients(),
+            peers,
+            secret,
+            crate::guardian_api::ConnectionClass::Lookup,
+        )?;
     }
 
     // A literal fallback after a failed announced attempt still gets a client.
     let (peers, secret) = key("literal-fallback");
-    observer.lookup_api_in(&mut observer.api_clients(), peers, secret)?;
+    observer.lookup_api_in(
+        &mut observer.api_clients(),
+        peers,
+        secret,
+        crate::guardian_api::ConnectionClass::LookupFallback,
+    )?;
     let clients = observer.api_clients();
     assert_eq!(clients.lookups.len(), super::MAX_LOOKUP_API_CLIENTS);
     assert!(clients.lookups.contains_key(&key("literal-fallback")));
