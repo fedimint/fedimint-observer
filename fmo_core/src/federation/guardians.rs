@@ -144,12 +144,12 @@ impl FederationObserver {
         let mut announcement_cursors = AnnouncementCursors::default();
         loop {
             interval.tick().await;
-            let old_peers = self.active_api_peers(federation_id, &config.global);
-            let active_api = match self.federation_api(&config.global) {
-                Ok(api) => Some(api),
+            // The route this process dials, which may lag the stored one.
+            let (old_peers, active_api) = match self.selected_api(&config.global) {
+                Ok((peers, api)) => (peers, Some(api)),
                 Err(error) => {
                     tracing::warn!(%federation_id, %error, "Could not construct active guardian discovery client");
-                    None
+                    (self.latest_api_peers(federation_id, &config.global), None)
                 }
             };
             let canonical_api = match self.federation_api_without_announcements(&config.global) {

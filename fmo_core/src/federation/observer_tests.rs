@@ -11,12 +11,16 @@ use fedimint_core::task::TaskGroup;
 use fedimint_core::util::SafeUrl;
 use fedimint_core::PeerId;
 
-use super::{load_guardian_endpoint_inputs, uses_superseded_routes, FederationObserver};
+use super::{load_guardian_endpoint_inputs, FederationObserver};
+use crate::federation::api_clients::{ApiClients, ApiLimits};
 use crate::federation::endpoints::GUARDIAN_ENDPOINTS_OBSERVATION_KIND;
 
 async fn endpoint_test_observer(
     pool: deadpool_postgres::Pool,
 ) -> anyhow::Result<FederationObserver> {
+    let connectors = fedimint_connectors::ConnectorRegistry::build_from_testing_defaults()
+        .bind()
+        .await?;
     Ok(FederationObserver {
         connection_pool: pool.clone(),
         worker_pool: pool,
@@ -29,11 +33,12 @@ async fn endpoint_test_observer(
         admin_auth: String::new(),
         esplora: esplora_client::Builder::new("http://127.0.0.1:1").build_async()?,
         task_group: TaskGroup::default(),
-        connectors: fedimint_connectors::ConnectorRegistry::build_from_testing_defaults()
-            .bind()
-            .await?,
+        api_clients: std::sync::Arc::new(std::sync::Mutex::new(ApiClients::new(
+            &connectors,
+            ApiLimits::default(),
+        ))),
+        connectors,
         federation_config_cache: Default::default(),
-        api_clients: Default::default(),
         guardian_endpoints: Default::default(),
         guardian_endpoint_revision: Default::default(),
         modules: crate::module::ModuleRegistry::new(Vec::new())?,
@@ -46,7 +51,10 @@ async fn endpoint_test_observer(
 fn independent_endpoint_state(template: &FederationObserver) -> FederationObserver {
     FederationObserver {
         task_group: TaskGroup::default(),
-        api_clients: Default::default(),
+        api_clients: std::sync::Arc::new(std::sync::Mutex::new(ApiClients::new(
+            &template.connectors,
+            ApiLimits::default(),
+        ))),
         guardian_endpoints: Default::default(),
         guardian_endpoint_revision: Default::default(),
         spawned_federations: Default::default(),
@@ -82,106 +90,6 @@ fn endpoint_test_config() -> (FederationId, ClientConfig, PeerId, Keypair, Publi
         keypair,
         public_key,
     )
-}
-
-fn cached_api_peers(label: &str) -> super::ApiPeers {
-    BTreeMap::from([(
-        PeerId::from(0),
-        SafeUrl::from_str(&format!("wss://{label}.example.com")).unwrap(),
-    )])
-}
-
-#[tokio::test]
-async fn canonical_recovery_eviction_never_consumes_active_capacity() -> anyhow::Result<()> {
-    let pool = crate::runtime::pool("postgresql://localhost/unused", 1, false)?;
-    let observer = endpoint_test_observer(pool).await?;
-    observer.federation_api_for_peers(cached_api_peers("active-0"))?;
-
-    for index in 0..=super::MAX_RECOVERY_API_CLIENTS {
-        observer.recovery_api_for_peers(cached_api_peers(&format!("recovery-{index}")))?;
-    }
-    {
-        let clients = observer
-            .api_clients
-            .lock()
-            .expect("API client cache lock poisoned");
-        assert_eq!(clients.observed.len(), 1);
-        assert_eq!(clients.recovery.len(), super::MAX_RECOVERY_API_CLIENTS);
-    }
-
-    observer.federation_api_for_peers(cached_api_peers("active-1"))?;
-    let clients = observer
-        .api_clients
-        .lock()
-        .expect("API client cache lock poisoned");
-    assert_eq!(
-        clients.observed.len(),
-        2,
-        "evictable canonical clients must not deny a new active client"
-    );
-    assert_eq!(clients.recovery.len(), super::MAX_RECOVERY_API_CLIENTS);
-    Ok(())
-}
-
-#[tokio::test]
-async fn full_lookup_cache_evicts_instead_of_refusing() -> anyhow::Result<()> {
-    let pool = crate::runtime::pool("postgresql://localhost/unused", 1, false)?;
-    let observer = endpoint_test_observer(pool).await?;
-    let key = |label: &str| (cached_api_peers(label), Some("secret".to_owned()));
-    for index in 0..super::MAX_LOOKUP_API_CLIENTS {
-        let (peers, secret) = key(&format!("lookup-{index}"));
-        observer.lookup_api_in(
-            &mut observer.api_clients(),
-            peers,
-            secret,
-            crate::guardian_api::ConnectionClass::Lookup,
-        )?;
-    }
-
-    // A literal fallback after a failed announced attempt still gets a client.
-    let (peers, secret) = key("literal-fallback");
-    observer.lookup_api_in(
-        &mut observer.api_clients(),
-        peers,
-        secret,
-        crate::guardian_api::ConnectionClass::LookupFallback,
-    )?;
-    let clients = observer.api_clients();
-    assert_eq!(clients.lookups.len(), super::MAX_LOOKUP_API_CLIENTS);
-    assert!(clients.lookups.contains_key(&key("literal-fallback")));
-    assert!(
-        !clients.lookups.contains_key(&key("lookup-0")),
-        "least recent evicted"
-    );
-    Ok(())
-}
-
-#[test]
-fn rotation_retires_full_and_single_peer_clients_using_the_old_route() {
-    let peer0 = PeerId::from(0);
-    let peer1 = PeerId::from(1);
-    let old_url = SafeUrl::from_str("wss://old.example.com").unwrap();
-    let new_url = SafeUrl::from_str("wss://new.example.com").unwrap();
-    let stable_url = SafeUrl::from_str("wss://stable.example.com").unwrap();
-    let old = BTreeMap::from([(peer0, old_url.clone()), (peer1, stable_url.clone())]);
-    let new = BTreeMap::from([(peer0, new_url.clone()), (peer1, stable_url.clone())]);
-
-    assert!(uses_superseded_routes(&old, &old, &new));
-    assert!(uses_superseded_routes(
-        &BTreeMap::from([(peer0, old_url)]),
-        &old,
-        &new
-    ));
-    assert!(!uses_superseded_routes(
-        &BTreeMap::from([(peer0, new_url)]),
-        &old,
-        &new
-    ));
-    assert!(!uses_superseded_routes(
-        &BTreeMap::from([(peer1, stable_url)]),
-        &old,
-        &new
-    ));
 }
 
 #[tokio::test]
@@ -531,11 +439,15 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
 
     let first_lease = lease_session(&database, SCHEMA).await?;
     assert_eq!(super::claim_worker_epoch(&first_lease).await?, 1);
-    let worker = endpoint_test_observer(pool.clone()).await?;
+    let mut worker = endpoint_test_observer(pool.clone()).await?;
+    worker.api_clients = std::sync::Arc::new(std::sync::Mutex::new(ApiClients::new(
+        &worker.connectors,
+        ApiLimits::with_urls_per_guardian(1),
+    )));
     let replica = independent_endpoint_state(&worker);
 
     let first_url = SafeUrl::from_str("wss://first-rotation.example.com:8173")?;
-    let first_announcement = ApiAnnouncement::new(first_url, 1).sign(SECP256K1, &keypair);
+    let first_announcement = ApiAnnouncement::new(first_url.clone(), 1).sign(SECP256K1, &keypair);
     let first_routes = BTreeMap::from([(
         peer_id,
         crate::federation::endpoints::VerifiedRoute::verify(
@@ -547,6 +459,8 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
     worker
         .update_guardian_endpoints(federation_id, &first_routes)
         .await?;
+    let (selected, _) = worker.selected_api(&config.global)?;
+    assert_eq!(selected.get(&peer_id), Some(&first_url));
     replica.load_guardian_endpoint_batch().await?;
 
     let second_url = SafeUrl::from_str("wss://second-rotation.example.com:8173")?;
@@ -563,11 +477,24 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
 
     assert_eq!(
         replica
-            .active_api_peers(federation_id, &config.global)
+            .latest_api_peers(federation_id, &config.global)
             .get(&peer_id),
         Some(&second_url),
         "the independent replica must adopt the worker's second rotation"
     );
+    let (selected, _) = replica.selected_api(&config.global)?;
+    assert_eq!(selected.get(&peer_id), Some(&second_url));
+
+    // Budget spent: the route is stored, but the worker keeps the first.
+    assert_eq!(
+        worker
+            .latest_api_peers(federation_id, &config.global)
+            .get(&peer_id),
+        Some(&second_url)
+    );
+    let (selected, _) = worker.selected_api(&config.global)?;
+    assert_eq!(selected.get(&peer_id), Some(&first_url));
+    assert_eq!(worker.route_admission_status().1, 1);
 
     let revision_before_stale = stored_route_revision(&pool, federation_id).await?;
 
@@ -587,11 +514,13 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
 
     assert_eq!(
         fresh_replica
-            .active_api_peers(federation_id, &config.global)
+            .latest_api_peers(federation_id, &config.global)
             .get(&peer_id),
         Some(&second_url),
         "a fresh replica must see the newer durable nonce after a stale worker write"
     );
+    let (selected, _) = fresh_replica.selected_api(&config.global)?;
+    assert_eq!(selected.get(&peer_id), Some(&second_url));
 
     // Only the session holding the worker lock can claim an epoch.
     let unleased = pool.get().await?;

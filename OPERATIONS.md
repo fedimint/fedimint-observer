@@ -72,14 +72,21 @@ and `/metrics` bypass admission. Put public TLS termination, per-client rate
 limits, and access controls for `/metrics` and administrative paths at the
 reverse proxy.
 
-Guardian connection state is capped per process at 4,096 trusted endpoint and
-credential pairs, 512 announced public-lookup pairs, and 512 literal-fallback
-pairs. These entries are not evicted until restart: the pinned Iroh Next
-connector also retains successful connections, so non-evicting admission is
-what keeps live connections bounded across repeated route rotations. Existing
-endpoints keep working after a budget fills, but a previously unseen endpoint
-in that class is rejected. The separate public-lookup and literal budgets keep
-a failed announced invite route from consuming its fallback's capacity.
+Fedimint's connection pool keeps each guardian connection, WebSocket or Iroh,
+until the remote end closes it, so Observer bounds which URLs may enter its
+pools. Admitted URLs are not evicted until restart, and each can hold about one
+connection: at most about 5,120 in total.
+
+- Observed federations share one pool of up to 4,096 guardian URLs, canonical
+  and announced, across at most 4,096 federations. Each guardian may introduce
+  16 announced URLs. A guardian over its budget keeps its last selected route
+  and logs a warning once; its newest route is still stored, and a restart or a
+  fresh replica adopts it. `fmo_guardian_routes_held` counts such guardians.
+- Invite lookups use separate pools, one per API secret, and up to 1,024
+  `(secret, URL)` pairs. Announced and literal routes can each introduce 512,
+  so a failing announced route can't use up its fallback's capacity. When
+  full, lookups of new servers fail until restart; rate-limit `/config` at the
+  reverse proxy.
 
 Endpoint discovery performs at most 64 requests per round with four concurrent
 requests, and verifies at most 64 known members from each response before
@@ -152,7 +159,8 @@ the proxy.
 `/live` (and legacy `/health`) is liveness. `/ready` checks the database and
 local worker ownership; it does not assert that every federation is
 synchronized. `/metrics` exposes HTTP request, error and rejection counters, a
-latency histogram, pool usage, and local worker health. Responses carry an
+latency histogram, pool usage, local worker health, and guardian route
+admission (`fmo_guardian_endpoints_admitted`, `fmo_guardian_routes_held`). Responses carry an
 `x-request-id`.
 
 Monitor snapshot ages, queue backlog, and module lag alongside HTTP percentiles:

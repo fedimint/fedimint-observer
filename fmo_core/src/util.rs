@@ -1,6 +1,4 @@
 use deadpool_postgres::GenericClient;
-use fedimint_api_client::api::DynGlobalApi;
-use fedimint_connectors::ConnectorRegistry;
 use fedimint_core::config::{ClientConfig, ClientModuleConfig, JsonClientConfig, JsonWithKind};
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::encoding::DynRawFallback;
@@ -22,17 +20,6 @@ where
             map.remove(&key);
         }
     }
-}
-
-/// A new guardian API client; prefer the observer's shared clients
-pub(crate) fn federation_api(
-    connectors: &ConnectorRegistry,
-    connections: &crate::guardian_api::GuardianConnectionRegistry,
-    peers: &std::collections::BTreeMap<fedimint_core::PeerId, fedimint_core::util::SafeUrl>,
-    api_secret: Option<String>,
-    class: crate::guardian_api::ConnectionClass,
-) -> DynGlobalApi {
-    crate::guardian_api::guardian_api(connectors, connections, peers, api_secret, class)
 }
 
 /// The instance id of the federation's first module of `kind`

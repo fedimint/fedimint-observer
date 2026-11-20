@@ -129,9 +129,7 @@ export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
 - Handlers and tasks get a `Services` handle (database, connectors, mempool
   client, federation configs). Guardian API clients come from
   `Services::federation_api()` (observed federations) and
-  `Services::lookup_api()` (invite lookups): one shared client per guardian
-  set, never one per request, because each client keeps its guardian
-  connections open.
+  `Services::lookup_api()` (invite lookups); never build one directly.
 
 ### Database
 

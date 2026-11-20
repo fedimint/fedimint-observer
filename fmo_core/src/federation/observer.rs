@@ -68,19 +68,12 @@ const NO_ACTIVITY: FederationActivity = FederationActivity {
     amount_transferred: Amount::ZERO,
 };
 
-/// Distinct guardian endpoint sets [`FederationObserver::federation_api`]
-/// keeps clients for: observed federations
-const MAX_OBSERVED_API_CLIENTS: usize = 4096;
-/// Separate, evictable budget so recovery clients can't crowd out active ones
-const MAX_RECOVERY_API_CLIENTS: usize = 512;
-
-/// LRU budget for public lookups, which can name any servers
-const MAX_LOOKUP_API_CLIENTS: usize = 512;
 const GUARDIAN_ENDPOINT_REFRESH_BATCH_SIZE: i64 = 128;
 /// Startup restore budget; the periodic refresh continues from the cursor
 const MAX_GUARDIAN_ENDPOINT_STARTUP_BATCHES: usize = 32;
 
-type ApiPeers = std::collections::BTreeMap<PeerId, fedimint_core::util::SafeUrl>;
+use crate::federation::api_clients::{ApiClients, ApiLimits, LookupClass};
+use crate::guardian_api::ApiPeers;
 
 fn canonical_api_peers(global: &fedimint_core::config::GlobalClientConfig) -> ApiPeers {
     global
@@ -97,12 +90,6 @@ fn guardian_endpoint_announcements(
         .iter()
         .map(|(&peer_id, route)| (peer_id, route.announcement().clone()))
         .collect()
-}
-
-fn uses_superseded_routes(peers: &ApiPeers, old: &ApiPeers, new: &ApiPeers) -> bool {
-    old.iter().any(|(peer_id, old_url)| {
-        new.get(peer_id) != Some(old_url) && peers.get(peer_id) == Some(old_url)
-    })
 }
 
 /// Claims the next write epoch, only while `lease` holds the worker lock
@@ -151,67 +138,6 @@ async fn load_guardian_endpoint_inputs(
     )
     .await
     .context("Failed to load persisted guardian endpoint announcements")
-}
-
-/// An evictable route client. Endpoint connections live in a separate,
-/// non-evicting bounded registry because pinned Iroh Next retains them too.
-#[derive(Debug)]
-struct CachedApi {
-    api: fedimint_api_client::api::DynGlobalApi,
-    last_used: u64,
-}
-
-/// Shared guardian API clients, see [`FederationObserver::federation_api`]
-#[derive(Default, Debug)]
-struct ApiClients {
-    /// Observed federations, which only admins add
-    observed: HashMap<ApiPeers, fedimint_api_client::api::DynGlobalApi>,
-    /// Canonical routes, used only for recovery
-    recovery: HashMap<ApiPeers, CachedApi>,
-    /// Invite lookups, by endpoints and the invite's API secret
-    lookups: HashMap<(ApiPeers, Option<String>), CachedApi>,
-    /// Shared by URL and credential across every route client
-    connections: crate::guardian_api::GuardianConnectionRegistry,
-    generation: u64,
-}
-
-impl ApiClients {
-    fn next_generation(&mut self) -> u64 {
-        self.generation = self.generation.wrapping_add(1);
-        self.generation
-    }
-}
-
-/// Reuses `key`'s client or adds one, evicting the least recently used at `max`
-fn cached_api<K: Clone + Eq + std::hash::Hash>(
-    map: &mut HashMap<K, CachedApi>,
-    generation: u64,
-    key: K,
-    max: usize,
-    build: impl FnOnce(&K) -> fedimint_api_client::api::DynGlobalApi,
-) -> fedimint_api_client::api::DynGlobalApi {
-    if let Some(entry) = map.get_mut(&key) {
-        entry.last_used = generation;
-        return entry.api.clone();
-    }
-    if map.len() >= max {
-        if let Some(oldest) = map
-            .iter()
-            .min_by_key(|(_, entry)| entry.last_used)
-            .map(|(key, _)| key.clone())
-        {
-            map.remove(&oldest);
-        }
-    }
-    let api = build(&key);
-    map.insert(
-        key,
-        CachedApi {
-            api: api.clone(),
-            last_used: generation,
-        },
-    );
-    api
 }
 
 #[derive(Debug, Clone)]
@@ -296,9 +222,12 @@ impl FederationObserver {
             admin_auth: admin_auth.to_owned(),
             esplora,
             task_group,
+            api_clients: Arc::new(std::sync::Mutex::new(ApiClients::new(
+                &connectors,
+                ApiLimits::default(),
+            ))),
             connectors,
             federation_config_cache: Default::default(),
-            api_clients: Default::default(),
             guardian_endpoints: Default::default(),
             guardian_endpoint_revision: Default::default(),
             modules,
@@ -412,8 +341,8 @@ impl FederationObserver {
             .cloned()
     }
 
-    /// Config endpoints with announced routes applied
-    pub fn active_api_peers(
+    /// Config endpoints with the newest stored routes applied
+    pub fn latest_api_peers(
         &self,
         federation_id: FederationId,
         global: &fedimint_core::config::GlobalClientConfig,
@@ -422,7 +351,7 @@ impl FederationObserver {
             .guardian_endpoints
             .read()
             .expect("guardian endpoints lock poisoned");
-        crate::federation::endpoints::active_api_peers(global, guard.get(&federation_id))
+        crate::federation::endpoints::latest_api_peers(global, guard.get(&federation_id))
     }
 
     async fn claim_guardian_endpoint_worker_epoch(&self) -> anyhow::Result<i64> {
@@ -440,27 +369,13 @@ impl FederationObserver {
         endpoints: &crate::federation::endpoints::GuardianEndpointsMap,
     ) -> anyhow::Result<()> {
         let _refresh_guard = self.guardian_endpoint_revision.lock().await;
-        let previous = self
-            .guardian_endpoints
-            .read()
-            .expect("guardian endpoints lock poisoned")
-            .get(&federation_id)
-            .cloned()
-            .unwrap_or_default();
-        let (config, committed) = self
+        let committed = self
             .commit_guardian_endpoints(federation_id, endpoints)
             .await?;
-
         self.guardian_endpoints
             .write()
             .expect("guardian endpoints write lock poisoned")
-            .insert(federation_id, committed.clone());
-        let old_peers =
-            crate::federation::endpoints::active_api_peers(&config.global, Some(&previous));
-        let new_peers =
-            crate::federation::endpoints::active_api_peers(&config.global, Some(&committed));
-        self.retire_superseded_api_clients(&old_peers, &new_peers);
-
+            .insert(federation_id, committed);
         Ok(())
     }
 
@@ -468,10 +383,7 @@ impl FederationObserver {
         &self,
         federation_id: FederationId,
         proposed: &crate::federation::endpoints::GuardianEndpointsMap,
-    ) -> anyhow::Result<(
-        fedimint_core::config::ClientConfig,
-        crate::federation::endpoints::GuardianEndpointsMap,
-    )> {
+    ) -> anyhow::Result<crate::federation::endpoints::GuardianEndpointsMap> {
         let worker_epoch = self
             .worker_epoch
             .context("API-only processes cannot commit guardian endpoints")?;
@@ -594,7 +506,7 @@ impl FederationObserver {
                 .await?;
         }
         transaction.commit().await?;
-        Ok((config, committed))
+        Ok(committed)
     }
 
     async fn restore_guardian_endpoints_at_startup(&self) -> anyhow::Result<()> {
@@ -709,7 +621,7 @@ impl FederationObserver {
                 &raw_announcements,
             );
             if changed {
-                changes.push((federation_id, config, existing, verified));
+                changes.push((federation_id, verified));
             }
         }
 
@@ -718,17 +630,12 @@ impl FederationObserver {
                 .guardian_endpoints
                 .write()
                 .expect("guardian endpoints write lock poisoned");
-            for (federation_id, _, _, verified) in &changes {
+            for (federation_id, verified) in &changes {
                 cache.insert(*federation_id, verified.clone());
             }
         }
         *admitted_revision = max_revision;
-        for (federation_id, config, previous, verified) in changes {
-            let old_peers =
-                crate::federation::endpoints::active_api_peers(&config.global, Some(&previous));
-            let new_peers =
-                crate::federation::endpoints::active_api_peers(&config.global, Some(&verified));
-            self.retire_superseded_api_clients(&old_peers, &new_peers);
+        for (federation_id, verified) in changes {
             info!(
                 %federation_id,
                 num_endpoints = verified.len(),
@@ -739,31 +646,23 @@ impl FederationObserver {
         Ok(batch_was_full)
     }
 
-    /// Drops route clients on superseded routes. The bounded connection
-    /// registry retains endpoint state for safe reuse and Iroh ownership.
-    pub(crate) fn retire_superseded_api_clients(&self, old: &ApiPeers, new: &ApiPeers) {
-        let mut clients = self.api_clients();
-        clients
-            .observed
-            .retain(|peers, _| !uses_superseded_routes(peers, old, new));
-        clients
-            .lookups
-            .retain(|(peers, _), _| !uses_superseded_routes(peers, old, new));
-    }
-
-    /// The shared client for the API of the guardians of an observed
-    /// federation: one per set of routes, so requests reuse connections. For
-    /// federations that aren't observed, use [`Self::lookup_api`].
+    /// An observed federation's client; see [`Self::lookup_api`] for others
     pub fn federation_api(
         &self,
         global: &fedimint_core::config::GlobalClientConfig,
     ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
+        Ok(self.selected_api(global)?.1)
+    }
+
+    /// The route this process dials, and its client
+    pub(crate) fn selected_api(
+        &self,
+        global: &fedimint_core::config::GlobalClientConfig,
+    ) -> anyhow::Result<(ApiPeers, fedimint_api_client::api::DynGlobalApi)> {
         let federation_id = global.calculate_federation_id();
         let mut clients = self.api_clients();
-        // Under the cache lock, so a concurrent rotation can't leave a
-        // retired route cached.
-        let peers = self.active_api_peers(federation_id, global);
-        self.observed_api(&mut clients, peers)
+        let latest = self.latest_api_peers(federation_id, global);
+        clients.selected(federation_id, &canonical_api_peers(global), &latest)
     }
 
     fn api_clients(&self) -> std::sync::MutexGuard<'_, ApiClients> {
@@ -772,82 +671,22 @@ impl FederationObserver {
             .expect("API client cache lock poisoned")
     }
 
+    /// Trusted URLs admitted, and guardians held on an older route
+    pub(crate) fn route_admission_status(&self) -> (usize, usize) {
+        self.api_clients().admission_status()
+    }
+
     pub(crate) fn federation_api_without_announcements(
         &self,
         global: &fedimint_core::config::GlobalClientConfig,
     ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
-        self.recovery_api_for_peers(canonical_api_peers(global))
+        self.api_clients().canonical(
+            global.calculate_federation_id(),
+            &canonical_api_peers(global),
+        )
     }
 
-    #[cfg(test)]
-    fn federation_api_for_peers(
-        &self,
-        peers: ApiPeers,
-    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
-        self.observed_api(&mut self.api_clients(), peers)
-    }
-
-    fn observed_api(
-        &self,
-        clients: &mut ApiClients,
-        peers: ApiPeers,
-    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
-        if let Some(api) = clients.observed.get(&peers) {
-            return Ok(api.clone());
-        }
-        if clients.observed.len() >= MAX_OBSERVED_API_CLIENTS {
-            return Err(crate::error::ClientError::unavailable(
-                "Too many federations observed; try again after the observer restarts",
-            )
-            .into());
-        }
-        let api = clients.recovery.remove(&peers).map_or_else(
-            || {
-                crate::util::federation_api(
-                    &self.connectors,
-                    &clients.connections,
-                    &peers,
-                    None,
-                    crate::guardian_api::ConnectionClass::Trusted,
-                )
-            },
-            |entry| entry.api,
-        );
-        clients.observed.insert(peers, api.clone());
-        Ok(api)
-    }
-
-    fn recovery_api_for_peers(
-        &self,
-        peers: ApiPeers,
-    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
-        let mut clients = self.api_clients();
-        if let Some(api) = clients.observed.get(&peers) {
-            return Ok(api.clone());
-        }
-        let generation = clients.next_generation();
-        let connections = clients.connections.clone();
-        Ok(cached_api(
-            &mut clients.recovery,
-            generation,
-            peers,
-            MAX_RECOVERY_API_CLIENTS,
-            |peers| {
-                crate::util::federation_api(
-                    &self.connectors,
-                    &connections,
-                    peers,
-                    None,
-                    crate::guardian_api::ConnectionClass::Trusted,
-                )
-            },
-        ))
-    }
-
-    /// The shared client for guardians named by an invite code, of a
-    /// federation that may not be observed. Like [`Self::federation_api`], but
-    /// with the invite's API secret and a separate, smaller budget, since
-    /// anyone can ask to look up any servers.
+    /// A client for an invite's guardians, with its secret and own budget
     pub fn lookup_api(
         &self,
         global: &fedimint_core::config::GlobalClientConfig,
@@ -864,59 +703,23 @@ impl FederationObserver {
         api_secret: Option<String>,
     ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
         let mut clients = self.api_clients();
-        // Under the cache lock, like `federation_api`.
-        let peers = self.active_api_peers(federation_id, global);
-        self.lookup_api_in(
-            &mut clients,
-            peers,
-            api_secret,
-            crate::guardian_api::ConnectionClass::Lookup,
-        )
+        let peers = self.latest_api_peers(federation_id, global);
+        clients.lookup(LookupClass::Announced, federation_id, peers, api_secret)
     }
 
     /// Literal routes, the fallback when an announced route fails
     pub(crate) fn lookup_api_without_announcements(
         &self,
+        federation_id: FederationId,
         global: &fedimint_core::config::GlobalClientConfig,
         api_secret: Option<String>,
     ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
-        self.lookup_api_in(
-            &mut self.api_clients(),
+        self.api_clients().lookup(
+            LookupClass::Literal,
+            federation_id,
             canonical_api_peers(global),
             api_secret,
-            crate::guardian_api::ConnectionClass::LookupFallback,
         )
-    }
-
-    fn lookup_api_in(
-        &self,
-        clients: &mut ApiClients,
-        peers: ApiPeers,
-        api_secret: Option<String>,
-        class: crate::guardian_api::ConnectionClass,
-    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
-        if api_secret.is_none() {
-            if let Some(api) = clients.observed.get(&peers) {
-                return Ok(api.clone());
-            }
-        }
-        let generation = clients.next_generation();
-        let connections = clients.connections.clone();
-        Ok(cached_api(
-            &mut clients.lookups,
-            generation,
-            (peers, api_secret),
-            MAX_LOOKUP_API_CLIENTS,
-            |(peers, api_secret)| {
-                crate::util::federation_api(
-                    &self.connectors,
-                    &connections,
-                    peers,
-                    api_secret.clone(),
-                    class,
-                )
-            },
-        ))
     }
 
     pub fn modules(&self) -> &ModuleRegistry {
