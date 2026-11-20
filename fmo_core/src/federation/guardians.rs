@@ -45,9 +45,8 @@ impl FederationObserver {
 
         loop {
             let poll_started = tokio::time::Instant::now();
-            // Resolve once per bounded health round so a route rotation retires
-            // the old connector pool before the next sample.
-            let api = match self.federation_api(&config.global) {
+            // Resolved per round so rotated routes take effect.
+            let mut api = match self.federation_api(&config.global) {
                 Ok(api) => api,
                 Err(err) => {
                     // Our failure, not the guardians': record no sample.
@@ -67,6 +66,13 @@ impl FederationObserver {
                     .any(|(_, status, ..)| status.is_some())
             {
                 tokio::time::sleep(BACKED_OFF_RETRY_DELAY).await;
+                // Discovery may have replaced the route during the wait.
+                match self.federation_api(&config.global) {
+                    Ok(current) => api = current,
+                    Err(err) => {
+                        tracing::warn!(%federation_id, %err, "No current guardian API client for health retry; reusing this round's client");
+                    }
+                }
                 peer_status_responses = poll_guardians(&api, &peer_ids, block_source).await;
             }
             let any_answered = peer_status_responses

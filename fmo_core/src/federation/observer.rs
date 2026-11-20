@@ -702,8 +702,8 @@ impl FederationObserver {
         Ok(batch_was_full)
     }
 
-    /// Retires every cached client using a superseded route set. Once bounded
-    /// in-flight calls release their clones, the connector pools are dropped.
+    /// Drops cached clients on superseded routes; Fedimint keeps their open
+    /// sockets until the remote end closes them
     pub(crate) fn retire_superseded_api_clients(&self, old: &ApiPeers, new: &ApiPeers) {
         let mut clients = self
             .api_clients
