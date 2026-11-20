@@ -522,13 +522,13 @@ impl FederationObserver {
         // Stored routes already cover this process's cache.
         let (durable, _) = crate::federation::endpoints::verify_and_merge_announcements(
             federation_id,
-            config.global.broadcast_public_keys.as_ref(),
+            &config.global,
             &BTreeMap::new(),
             &stored_announcements,
         );
         let (committed, _) = crate::federation::endpoints::verify_and_merge_announcements(
             federation_id,
-            config.global.broadcast_public_keys.as_ref(),
+            &config.global,
             &durable,
             &guardian_endpoint_announcements(proposed),
         );
@@ -667,7 +667,7 @@ impl FederationObserver {
                 .unwrap_or_default();
             let (verified, changed) = crate::federation::endpoints::verify_and_merge_announcements(
                 federation_id,
-                config.global.broadcast_public_keys.as_ref(),
+                &config.global,
                 &existing,
                 &raw_announcements,
             );

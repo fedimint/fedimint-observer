@@ -86,8 +86,10 @@ Guardian routes can change through signed announcements, gateway endpoints
 come from guardians, and gateway Iroh addresses come from discovery records the
 gateway operator publishes. A valid signature authenticates who announced a
 destination; it does not establish that the destination is safe. HTTPS gateway
-probes are pinned to public addresses in code, but guardian WebSocket/Iroh and
-gateway Iroh connections are not, so authenticated input can still direct
+probes are pinned to public addresses in code. A guardian whose configured
+endpoint is public cannot announce a non-public IP address or `localhost`, but
+announced hostnames are not resolved, and guardian WebSocket/Iroh and gateway
+Iroh connections are not pinned, so authenticated input can still direct
 traffic to private addresses. The public config inspector also connects to
 guardian URLs from user-supplied invite codes. Enforce this at the network
 layer: run the observer as a dedicated user, container or network namespace and
