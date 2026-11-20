@@ -19,13 +19,11 @@ test('normalizeSearchInput cleans whitespace and protocol schemes', () => {
 });
 
 test('isInviteCodeQuery recognizes Fedimint invite codes and ignores other queries', () => {
-  // Bech32 ('fed1...')
   assert.equal(isInviteCodeQuery('fed11qgqpyyrhwwaz7tes9cczuvpwxqyhnqvps'), true);
   assert.equal(isInviteCodeQuery('FED11QGQPYYRH...'), true);
   assert.equal(isInviteCodeQuery('fedimint://fed11qgqpy...'), true);
   assert.equal(isInviteCodeQuery('  fed11qgqpy...  '), true);
 
-  // Legacy Base32 ('fedimint...')
   assert.equal(isInviteCodeQuery('fedimint1qgqpyyrhwwaz'), true);
   assert.equal(isInviteCodeQuery('FEDIMINT1...'), true);
   assert.equal(isInviteCodeQuery('fedimint://fedimint...'), true);
@@ -56,11 +54,9 @@ test('groupFederations matches by name, hex ID, canonical invite, and resolved i
 
   const federations = [fedA, fedB, fedC];
 
-  // 1. Empty search returns all
   const all = groupFederations(federations, '', 'name', 'asc', null);
   assert.equal(all.active.length, 3);
 
-  // 2. Name search (case-insensitive & partial)
   const byName = groupFederations(federations, 'mutiny', 'name', 'asc', null);
   assert.equal(byName.active.length, 1);
   assert.equal(byName.active[0].id, fedA.id);
@@ -69,7 +65,6 @@ test('groupFederations matches by name, hex ID, canonical invite, and resolved i
   assert.equal(byNameUpper.active.length, 1);
   assert.equal(byNameUpper.active[0].id, fedB.id);
 
-  // 3. Hex Federation ID search (full & prefix)
   const byHexPrefix = groupFederations(federations, '245806c0fa', 'name', 'asc', null);
   assert.equal(byHexPrefix.active.length, 1);
   assert.equal(byHexPrefix.active[0].id, fedA.id);
@@ -78,44 +73,33 @@ test('groupFederations matches by name, hex ID, canonical invite, and resolved i
   assert.equal(byHexCase.active.length, 1);
   assert.equal(byHexCase.active[0].id, fedB.id);
 
-  // 4. Canonical invite search
   const byCanonicalInvite = groupFederations(federations, 'mutiny_peer0', 'name', 'asc', null);
   assert.equal(byCanonicalInvite.active.length, 1);
   assert.equal(byCanonicalInvite.active[0].id, fedA.id);
 
-  // 5. Non-canonical invite matched via resolvedFederationId
-  // The query is an invite code for peer 1 with different parameters, but resolves to fedB.id
   const nonCanonicalQuery = 'fed11qgqpyyrhwwaz_peer1_different_invite_code';
   const byResolvedInvite = groupFederations(federations, nonCanonicalQuery, 'name', 'asc', null, fedB.id);
   assert.equal(byResolvedInvite.active.length, 1);
   assert.equal(byResolvedInvite.active[0].id, fedB.id);
 
-  // 6. Single-character search does not match arbitrary hex characters in IDs
-  // fedA has 'c' in id ('245806c0...'), fedB has 'c' in name ('Chama') and id ('a1b2c3d4...'), fedC has 'c' in id ('f9e8d7c6...')
-  // Searching 'chama' matches only fedB
   const bySingleChar = groupFederations(federations, 'chama', 'name', 'asc', null);
   assert.equal(bySingleChar.active.length, 1);
   assert.equal(bySingleChar.active[0].id, fedB.id);
 
-  // Short non-prefix substring ('06c0', length 4) does not match fedA via ID
   const byShortNonPrefix = groupFederations(federations, '06c0', 'name', 'asc', null);
   assert.equal(byShortNonPrefix.active.length, 0);
 
-  // Long suffix search (>= 6 characters, e.g. 'df440e8') matches fedA via ID
   const byLongSuffix = groupFederations(federations, 'df440e8', 'name', 'asc', null);
   assert.equal(byLongSuffix.active.length, 1);
   assert.equal(byLongSuffix.active[0].id, fedA.id);
 
-  // Scheme-only query does not match everything via empty substring
   const bySchemeOnly = groupFederations(federations, 'fedimint:', 'name', 'asc', null);
   assert.equal(bySchemeOnly.active.length, 0);
 
-  // 7. Null name handling does not throw
   const anonymousMatch = groupFederations(federations, 'f9e8d7', 'name', 'asc', null);
   assert.equal(anonymousMatch.active.length, 1);
   assert.equal(anonymousMatch.active[0].id, fedC.id);
 
-  // 8. No match
   const none = groupFederations(federations, 'nonexistent query', 'name', 'asc', null);
   assert.equal(none.active.length, 0);
 });
@@ -130,20 +114,16 @@ test('lookupForInput returns a lookup only for the query that started it', () =>
 
   assert.equal(lookupForInput(null, queryA), null);
 
-  // A's result arrives after the input changed to B: ignored, and B matches nothing
   assert.equal(lookupForInput(doneA, queryB), null);
   assert.equal(groupFederations(federations, queryB, 'name', 'asc', null, null).active.length, 0);
 
-  // Cleared input ignores it too
   assert.equal(lookupForInput(doneA, ''), null);
 
-  // Same query with a scheme, other case or padding still matches
   assert.equal(lookupForInput(doneA, queryA), doneA);
   assert.equal(lookupForInput(doneA, `  fedimint://${queryA.toUpperCase()} `), doneA);
   const groups = groupFederations(federations, queryA, 'name', 'asc', null, doneA.federationId);
   assert.deepEqual(groups.active.map((f) => f.id), [fedA.id]);
 
-  // Loading and error states are keyed the same way
   const loadingA = { query: searchKey(queryA), status: 'loading' };
   const errorA = { query: searchKey(queryA), status: 'error', message: 'not found' };
   assert.equal(lookupForInput(loadingA, queryB), null);

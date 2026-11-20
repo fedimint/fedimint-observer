@@ -7,10 +7,7 @@ interface InFlightLookup {
   controller: AbortController;
 }
 
-/**
- * Search query state plus explicit lookup of an invite code's federation ID.
- * Lookup state is keyed by query, so it never applies to a different input.
- */
+/** Search query plus explicit invite lookup, keyed by query */
 export function useFederationSearch() {
   const [searchQuery, setSearchQuery] = useState('');
   const [lookup, setLookup] = useState<InviteLookup | null>(null);
@@ -26,16 +23,13 @@ export function useFederationSearch() {
     inFlightRef.current = null;
   }, []);
 
-  // Abort on unmount so a late response never sets state
   useEffect(() => abortInFlight, [abortInFlight]);
 
-  // Every edit, including the clear button, goes through here
   const changeSearchQuery = useCallback(
     (value: string) => {
       setSearchQuery(value);
       if (inFlightRef.current && inFlightRef.current.query !== searchKey(value)) {
         abortInFlight();
-        // Drop the aborted lookup's loading state, keep finished results
         setLookup((prev) => (prev?.status === 'loading' ? null : prev));
       }
     },

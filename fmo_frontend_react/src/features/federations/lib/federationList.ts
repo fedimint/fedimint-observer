@@ -7,29 +7,26 @@ interface FederationGroups {
   shutDown: FederationSummary[];
 }
 
-/** Cleans input by trimming and stripping URL schemes (fedimint://, web+fedimint:) */
+/** Trims and strips a fedimint: URL scheme */
 export function normalizeSearchInput(input: string): string {
   return input.trim().replace(/^(fedimint|web\+fedimint):\/\//i, '').replace(/^(fedimint|web\+fedimint):/i, '');
 }
 
-/** Checks if the sanitized input conforms to a Fedimint invite prefix (Bech32 'fed1' or legacy Base32 'fedimint') */
+/** Bech32 fed1 or Base32 fedimint invite */
 export function isInviteCodeQuery(input: string): boolean {
   const normalized = normalizeSearchInput(input).toLowerCase();
   return normalized.startsWith('fed1') || normalized.startsWith('fedimint');
 }
 
-/** The key a lookup is stored under: equal keys mean the same query */
 export function searchKey(input: string): string {
   return normalizeSearchInput(input).toLowerCase();
 }
 
-/** State of an invite lookup, tagged with the query key that started it */
 export type InviteLookup =
   | { query: string; status: 'loading' }
   | { query: string; status: 'done'; federationId: string }
   | { query: string; status: 'error'; message: string };
 
-/** The lookup if it belongs to the current input, otherwise null */
 export function lookupForInput(lookup: InviteLookup | null, input: string): InviteLookup | null {
   return lookup && lookup.query === searchKey(input) ? lookup : null;
 }

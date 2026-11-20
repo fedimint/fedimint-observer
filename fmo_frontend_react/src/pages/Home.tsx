@@ -38,7 +38,7 @@ export function Home() {
 
   const hasLocalMatches = groups.active.length > 0 || groups.offline.length > 0 || groups.shutDown.length > 0;
 
-  // Derive unobserved status strictly from a successfully loaded list snapshot
+  // Only a loaded list proves a federation is unobserved
   const unobservedFederationId = useMemo(() => {
     if (!resolvedFederationId || loading || failed) return null;
     const exists = federations.some(
