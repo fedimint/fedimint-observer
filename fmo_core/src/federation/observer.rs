@@ -288,7 +288,8 @@ impl FederationObserver {
             .cloned()
     }
 
-    /// Resolves the active API peers for a federation by overlaying announced endpoints onto config.
+    /// Resolves the active API peers for a federation by overlaying announced
+    /// endpoints onto config.
     pub fn active_api_peers(
         &self,
         federation_id: FederationId,
@@ -301,7 +302,8 @@ impl FederationObserver {
         crate::federation::endpoints::active_api_peers(global, guard.get(&federation_id))
     }
 
-    /// Persists accepted guardian endpoint announcements and updates the in-memory cache.
+    /// Persists accepted guardian endpoint announcements and updates the
+    /// in-memory cache.
     pub async fn update_guardian_endpoints(
         &self,
         federation_id: FederationId,
@@ -327,7 +329,8 @@ impl FederationObserver {
         Ok(())
     }
 
-    /// Loads and cryptographically verifies all persisted guardian endpoint observations from the database into memory.
+    /// Loads and cryptographically verifies all persisted guardian endpoint
+    /// observations from the database into memory.
     pub async fn load_guardian_endpoints(&self) -> anyhow::Result<()> {
         let conn = self.connection().await?;
         let rows = match conn
@@ -376,9 +379,9 @@ impl FederationObserver {
                     };
 
                     // Distinguish between raw wire input and verified routes:
-                    // Deserialization extracts signed announcements; cryptographically re-verifying
-                    // against the canonical broadcast public keys is strictly required before
-                    // admitting into the active routing cache.
+                    // Deserialization extracts signed announcements;
+                    // re-verifying against canonical broadcast keys is
+                    // required before admitting into active cache.
                     let raw_announcements: BTreeMap<
                         fedimint_core::PeerId,
                         fedimint_core::net::api_announcement::SignedApiAnnouncement,
@@ -449,7 +452,8 @@ impl FederationObserver {
         }
     }
 
-    /// Removes a stale client from the observed client cache so new connections use updated endpoints.
+    /// Removes a stale client from the observed client cache so new
+    /// connections use updated endpoints.
     pub fn invalidate_observed_client(&self, peers: &ApiPeers) {
         let mut clients = self
             .api_clients
@@ -1235,7 +1239,8 @@ impl FederationObserver {
                         background_backoff(),
                         || async {
                             gate.wait_turn(session_index).await;
-                            // Dynamically resolve the active API client across retries so rotated routes are dialed
+                            // Dynamically resolve active API client across
+                            // retries so rotated routes are dialed.
                             let api = match observer.federation_api(&global) {
                                 Ok(api) => api,
                                 Err(e) => {
@@ -1243,8 +1248,8 @@ impl FederationObserver {
                                     return Err(e);
                                 }
                             };
-                            // Bounded fetch attempt so an in-flight websocket to an old or unreachable route
-                            // does not hang indefinitely on route rotation.
+                            // Bounded fetch attempt: in-flight websocket
+                            // to unreachable route won't hang rotation.
                             let result = tokio::time::timeout(
                                 Duration::from_secs(60),
                                 api.await_block(session_index, &decoders_single),

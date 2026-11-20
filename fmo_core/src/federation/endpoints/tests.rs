@@ -50,7 +50,7 @@ fn sample_global_config(
 #[test]
 fn test_accept_valid_announcement_and_rotation() {
     let (p0, _, k0, pk0) = generate_test_guardian(0);
-    let (p1, _, k1, pk1) = generate_test_guardian(1);
+    let (p1, _, _k1, pk1) = generate_test_guardian(1);
 
     let url0_initial = SafeUrl::from_str("ws://guardian0.example.com:8173").unwrap();
     let url1_initial = SafeUrl::from_str("ws://guardian1.example.com:8173").unwrap();
@@ -85,7 +85,8 @@ fn test_accept_valid_announcement_and_rotation() {
     assert_eq!(updated.get(&p0).unwrap().url, url0_migrated);
     assert_eq!(updated.get(&p0).unwrap().nonce, 10);
 
-    // Active peers should reflect updated endpoint for p0 and fallback to config for p1
+    // Active peers should reflect updated endpoint for p0 and fallback to
+    // config for p1
     let active = active_api_peers(&config, Some(&updated));
     assert_eq!(active.get(&p0), Some(&url0_migrated));
     assert_eq!(active.get(&p1), Some(&url1_initial));
@@ -339,7 +340,7 @@ fn test_federation_id_stability_across_rotations() {
     let active_peers = active_api_peers(&config, Some(&announced));
     assert_eq!(active_peers.get(&p0), Some(&url0_rotated));
 
-    // Invariant: The canonical config is untouched and the FederationId remains identical
+    // Invariant: Canonical config is untouched; FederationId is identical
     assert_eq!(config.calculate_federation_id(), baseline_fed_id);
     assert_eq!(config.api_endpoints.get(&p0).unwrap().url, url0_initial);
 }
@@ -390,7 +391,7 @@ fn test_concurrent_multi_peer_announcement_merge_keeps_highest_nonce() {
         for (target_peer, announcement) in announcements {
             merged_incoming
                 .entry(target_peer)
-                .and_modify(|existing| {
+                .and_modify(|existing: &mut SignedApiAnnouncement| {
                     if announcement.api_announcement.nonce > existing.api_announcement.nonce {
                         *existing = announcement.clone();
                     }

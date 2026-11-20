@@ -68,7 +68,8 @@ impl FederationObserver {
                 .iter()
                 .any(|(_, status, ..)| status.is_none());
 
-            // 1. Publish the health sample immediately: discovery must never block or delay health sampling
+            // 1. Publish the health sample immediately: discovery must never
+            // block or delay health sampling
             let timestamp = chrono::Utc::now().naive_utc();
             offline_since = if any_answered {
                 None
@@ -117,13 +118,15 @@ impl FederationObserver {
             dbtx.commit().await?;
             drop(conn);
 
-            // 2. Off-path discovery: poll signed announcements with bounded concurrency & work
+            // 2. Off-path discovery: poll signed announcements with bounded
+            // concurrency & work
             if any_answered
                 && (any_offline || last_announcement_check.elapsed() >= Duration::from_secs(300))
             {
+                let discovery_api = api.clone();
                 let mut query_stream = futures::stream::iter(answering_peers)
-                    .map(|answering_peer| {
-                        let api = api.clone();
+                    .map(move |answering_peer| {
+                        let api = discovery_api.clone();
                         async move {
                             let res = tokio::time::timeout(
                                 DISCOVERY_TIMEOUT_PER_PEER,

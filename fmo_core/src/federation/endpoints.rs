@@ -11,16 +11,19 @@ use tracing::{debug, info, warn};
 #[cfg(test)]
 mod tests;
 
-/// Observation kind string used when persisting guardian endpoints to `federation_observations`.
+/// Observation kind string used when persisting guardian endpoints to
+/// `federation_observations`.
 pub const GUARDIAN_ENDPOINTS_OBSERVATION_KIND: &str = "guardian_endpoints";
 
 /// Supported guardian endpoint URL schemes.
 ///
-/// Guardian RPC connections only communicate over WebSocket (`ws`, `wss`) or `iroh`.
-/// Standard HTTP/HTTPS schemes are supported for external gateways, not for guardian RPC.
+/// Guardian RPC connections only communicate over WebSocket (`ws`, `wss`)
+/// or `iroh`. Standard HTTP/HTTPS schemes are supported for external gateways,
+/// not for guardian RPC.
 const ALLOWED_URL_SCHEMES: &[&str] = &["ws", "wss", "iroh"];
 
-/// Validates whether the given URL uses a supported communication scheme for Fedimint guardians.
+/// Validates whether the given URL uses a supported communication scheme
+/// for Fedimint guardians.
 pub fn is_valid_endpoint_scheme(url: &SafeUrl) -> bool {
     let scheme = url.scheme();
     ALLOWED_URL_SCHEMES.contains(&scheme)
@@ -28,20 +31,23 @@ pub fn is_valid_endpoint_scheme(url: &SafeUrl) -> bool {
 
 /// # Egress Controls and Destination Security
 ///
-/// Cryptographic verification ensures that an announcement was signed by a guardian possessing
-/// the federation's broadcast public key and that the announcement nonce is strictly increasing.
+/// Cryptographic verification ensures that an announcement was signed by a
+/// guardian possessing the federation's broadcast public key and that the
+/// announcement nonce is strictly increasing.
 ///
 /// **Important Security Notice**:
-/// A valid Schnorr signature authenticates the *announcer*, NOT the safety or reachability of the network destination.
-/// Deployment egress firewalls and network routing policies on workers and API replicas must constrain
-/// outbound connections to prevent SSRF and block access to sensitive internal networks or metadata endpoints
-/// (e.g. `127.0.0.0/8`, `169.254.169.254`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
+/// A valid Schnorr signature authenticates the *announcer*, NOT the safety or
+/// reachability of the network destination. Deployment egress firewalls and
+/// network routing policies on workers and API replicas must constrain
+/// outbound connections to prevent SSRF and block access to sensitive internal
+/// networks or metadata endpoints (e.g. `127.0.0.0/8`, `169.254.169.254`,
+/// `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`).
 ///
 /// A cryptographically verified guardian API route.
 ///
-/// Invariant: instances of `VerifiedRoute` represent routes whose Schnorr signatures have
-/// been successfully verified against the guardian's broadcast public key and whose
-/// URL scheme is permitted for Fedimint communications.
+/// Invariant: instances of `VerifiedRoute` represent routes whose Schnorr
+/// signatures have been successfully verified against the guardian's broadcast
+/// public key and whose URL scheme is permitted for Fedimint communications.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifiedRoute {
     pub url: SafeUrl,
@@ -50,8 +56,8 @@ pub struct VerifiedRoute {
 }
 
 impl VerifiedRoute {
-    /// Attempts to verify a `SignedApiAnnouncement` against the guardian's broadcast public key
-    /// and checks the URL scheme.
+    /// Attempts to verify a `SignedApiAnnouncement` against the guardian's
+    /// broadcast public key and checks the URL scheme.
     pub fn verify(
         announcement: SignedApiAnnouncement,
         guardian_pub_key: &secp256k1::PublicKey,
@@ -76,10 +82,11 @@ impl VerifiedRoute {
 pub type VerifiedRoutesMap = BTreeMap<PeerId, VerifiedRoute>;
 pub type GuardianEndpointsMap = VerifiedRoutesMap;
 
-/// Resolves the active API peers for a federation by overlaying verified announced endpoints
-/// onto the static config endpoints.
+/// Resolves the active API peers for a federation by overlaying verified
+/// announced endpoints onto the static config endpoints.
 ///
-/// Falls back to the config endpoint for any guardian without an accepted announcement.
+/// Falls back to the config endpoint for any guardian without an accepted
+/// announcement.
 pub fn active_api_peers(
     global: &GlobalClientConfig,
     announced: Option<&VerifiedRoutesMap>,
@@ -97,10 +104,12 @@ pub fn active_api_peers(
         .collect()
 }
 
-/// Verifies incoming signed endpoint announcements against guardian broadcast public keys
-/// and merges valid ones whose nonce is strictly higher than existing records.
+/// Verifies incoming signed endpoint announcements against guardian
+/// broadcast public keys and merges valid ones whose nonce is strictly
+/// higher than existing records.
 ///
-/// Returns the updated map and a boolean flag indicating if any endpoints changed.
+/// Returns the updated map and a boolean flag indicating if any endpoints
+/// changed.
 pub fn verify_and_merge_announcements(
     federation_id: FederationId,
     broadcast_public_keys: Option<&BTreeMap<PeerId, secp256k1::PublicKey>>,
@@ -129,7 +138,8 @@ pub fn verify_and_merge_announcements(
             continue;
         };
 
-        // 2. Cryptographically verify signature and URL scheme into a VerifiedRoute
+        // 2. Cryptographically verify signature and URL scheme into a
+        // VerifiedRoute
         let verified_route = match VerifiedRoute::verify(announcement.clone(), guardian_pub_key) {
             Ok(route) => route,
             Err(reason) => {
@@ -143,7 +153,8 @@ pub fn verify_and_merge_announcements(
             }
         };
 
-        // 3. Accept announcement only if nonce is strictly higher than currently accepted
+        // 3. Accept announcement only if nonce is strictly higher than
+        // currently accepted
         let new_nonce = verified_route.nonce;
         if let Some(current) = updated.get(&peer_id).filter(|c| new_nonce <= c.nonce) {
             debug!(
@@ -202,7 +213,8 @@ pub fn verify_restored_announcements(
     verified
 }
 
-/// Re-verifies restored routes against the federation's canonical broadcast public keys.
+/// Re-verifies restored routes against the federation's canonical broadcast
+/// public keys.
 pub fn verify_restored_routes(
     federation_id: FederationId,
     broadcast_public_keys: Option<&BTreeMap<PeerId, secp256k1::PublicKey>>,

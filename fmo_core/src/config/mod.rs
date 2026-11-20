@@ -298,8 +298,9 @@ async fn try_download_client_config(
                     *url = route.url.clone();
                 }
             }
-            // Try downloading with dynamic announced endpoints first; if unavailable,
-            // preserve fallback to literal invite peers to avoid failing when an announced override is down.
+            // Try downloading with dynamic announced endpoints first; if
+            // unavailable, preserve fallback to literal invite peers to avoid
+            // failing when an announced override is down.
             match download_endpoints_from_api(
                 observer,
                 dynamic_peers,
