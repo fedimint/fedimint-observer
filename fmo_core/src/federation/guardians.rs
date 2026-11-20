@@ -47,7 +47,15 @@ impl FederationObserver {
             let poll_started = tokio::time::Instant::now();
             // Resolve once per bounded health round so a route rotation retires
             // the old connector pool before the next sample.
-            let api = self.federation_api(&config.global)?;
+            let api = match self.federation_api(&config.global) {
+                Ok(api) => api,
+                Err(err) => {
+                    // Our failure, not the guardians': record no sample.
+                    tracing::warn!(%federation_id, %err, "No guardian API client for health poll; skipping sample");
+                    tokio::time::sleep_until(poll_started + poll_interval).await;
+                    continue;
+                }
+            };
 
             let mut peer_status_responses = poll_guardians(&api, &peer_ids, block_source).await;
             // While backed off, a miss can be a connection that is still being
