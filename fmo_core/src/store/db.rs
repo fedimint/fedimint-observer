@@ -52,7 +52,7 @@ impl SessionOutcome {
 
         let session_index = row.try_get::<_, i32>("session_index")?;
 
-        Ok(crate::federation::db::SessionOutcome {
+        Ok(crate::store::db::SessionOutcome {
             session_index,
             data,
         })

@@ -61,6 +61,13 @@ export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
 `https://mempool.space/api`). Limits and other `FO_*` variables are in
 `OPERATIONS.md`.
 
+Data sources that push observations over HTTP are optional (`OPERATIONS.md`,
+"Data sources"): `FO_SOURCES_FILE` is the path of the JSON document declaring
+the push sources and their kinds (`fmo_core/src/source/config.rs`), and
+`FO_SOURCE_TOKEN_<ID>` is each declared source's bearer token, its id in upper
+case, 32 to 512 bytes. Startup fails without it. API replicas need the same
+sources file and tokens as the worker.
+
 ## Architecture
 
 ### Workspace
@@ -135,7 +142,7 @@ export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
 
 ### Database
 
-PostgreSQL. Core migrations are `fmo_core/schema/v0.sql` to `v12.sql`; some
+PostgreSQL. Core migrations are `fmo_core/schema/v0.sql` to `v13.sql`; some
 modules also keep SQL in `fmo_modules/<module>/schema/`. A populated database
 upgrades only from v11 or newer (`MIN_UPGRADE_VERSION`); older ones need the
 previous release's backfills. Old migrations stay for fresh setups.

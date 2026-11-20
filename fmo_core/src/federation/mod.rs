@@ -1,10 +1,22 @@
-pub mod db;
+//! Observed federations. Files by layer:
+//!
+//! - collection: `ingest.rs` (sessions, block times, backfill), `guardians.rs`
+//!   (health polling and retention), `metadata.rs`
+//! - processing: `projector.rs` (module tables, read-model rebuilds)
+//! - presentation: this file's routes, and the read queries of `summary.rs`,
+//!   `session.rs`, `transaction.rs`, `meta.rs` and `guardians.rs`
+//! - wiring: `observer.rs`, which owns the clients, pools and tasks
+//!
+//! See `ARCHITECTURE.md` at the repository root.
+
 mod guardians;
+mod ingest;
 mod meta;
-pub(crate) mod nostr;
+mod metadata;
 pub mod observer;
 mod projector;
 mod session;
+mod summary;
 mod transaction;
 
 use axum::extract::{Path, State};
@@ -30,11 +42,11 @@ use crate::{federation, AppState};
 
 pub fn get_federations_routes() -> Router<AppState> {
     Router::new()
+        .merge(crate::recommend::federations_routes())
+        .merge(crate::source::federations_routes())
         .route("/", get(list_observed_federations))
         .route("/", put(add_observed_federation))
         .route("/totals", get(get_federation_totals))
-        // TODO: move to nostr module
-        .route("/nostr/rating", put(publish_rating_event))
         .route("/:federation_id", get(get_federation_overview))
         .route(
             "/:federation_id/config",
@@ -131,13 +143,6 @@ async fn get_federation_totals(
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<FedimintTotals>> {
     Ok(state.federation_observer.totals().await?.into())
-}
-
-async fn publish_rating_event(
-    State(state): State<AppState>,
-    Json(event): Json<nostr_sdk::Event>,
-) -> crate::error::Result<()> {
-    Ok(state.federation_observer.submit_rating(event).await?)
 }
 
 #[derive(Deserialize, Debug)]
