@@ -123,6 +123,29 @@ async fn canonical_recovery_eviction_never_consumes_active_capacity() -> anyhow:
     Ok(())
 }
 
+#[tokio::test]
+async fn full_lookup_cache_evicts_instead_of_refusing() -> anyhow::Result<()> {
+    let pool = crate::runtime::pool("postgresql://localhost/unused", 1, false)?;
+    let observer = endpoint_test_observer(pool).await?;
+    let key = |label: &str| (cached_api_peers(label), Some("secret".to_owned()));
+    for index in 0..super::MAX_LOOKUP_API_CLIENTS {
+        let (peers, secret) = key(&format!("lookup-{index}"));
+        observer.lookup_api_in(&mut observer.api_clients(), peers, secret)?;
+    }
+
+    // A literal fallback after a failed announced attempt still gets a client.
+    let (peers, secret) = key("literal-fallback");
+    observer.lookup_api_in(&mut observer.api_clients(), peers, secret)?;
+    let clients = observer.api_clients();
+    assert_eq!(clients.lookups.len(), super::MAX_LOOKUP_API_CLIENTS);
+    assert!(clients.lookups.contains_key(&key("literal-fallback")));
+    assert!(
+        !clients.lookups.contains_key(&key("lookup-0")),
+        "least recent evicted"
+    );
+    Ok(())
+}
+
 #[test]
 fn rotation_retires_full_and_single_peer_clients_using_the_old_route() {
     let peer0 = PeerId::from(0);
@@ -434,6 +457,25 @@ async fn postgres_guardian_route_migration_fences_revisions() -> anyhow::Result<
     Ok(())
 }
 
+/// A session holding the worker lock, like the worker's lease
+async fn lease_session(database: &str, schema: &str) -> anyhow::Result<tokio_postgres::Client> {
+    let (client, connection) = tokio_postgres::connect(database, tokio_postgres::NoTls).await?;
+    tokio::spawn(async move {
+        if let Err(error) = connection.await {
+            tracing::debug!(%error, "Test lease session ended");
+        }
+    });
+    client
+        .batch_execute(&format!("SET search_path TO {schema}"))
+        .await?;
+    let (class_id, object_id) = crate::runtime::WORKER_LOCK;
+    // Waits for any other holder, such as a parallel database test.
+    client
+        .execute("SELECT pg_advisory_lock($1, $2)", &[&class_id, &object_id])
+        .await?;
+    Ok(client)
+}
+
 async fn stored_route_revision(
     pool: &deadpool_postgres::Pool,
     federation_id: FederationId,
@@ -468,12 +510,6 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
         .await?;
     connection
         .execute(
-            "UPDATE guardian_endpoint_write_state SET worker_epoch = 1",
-            &[],
-        )
-        .await?;
-    connection
-        .execute(
             "INSERT INTO federations(federation_id, config) VALUES ($1, $2)",
             &[
                 &federation_id.consensus_encode_to_vec(),
@@ -483,6 +519,8 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
         .await?;
     drop(connection);
 
+    let first_lease = lease_session(&database, SCHEMA).await?;
+    assert_eq!(super::claim_worker_epoch(&first_lease).await?, 1);
     let worker = endpoint_test_observer(pool.clone()).await?;
     let replica = independent_endpoint_state(&worker);
 
@@ -545,13 +583,13 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
         "a fresh replica must see the newer durable nonce after a stale worker write"
     );
 
-    pool.get()
-        .await?
-        .execute(
-            "UPDATE guardian_endpoint_write_state SET worker_epoch = 2",
-            &[],
-        )
-        .await?;
+    // Only the session holding the worker lock can claim an epoch.
+    let unleased = pool.get().await?;
+    assert!(super::claim_worker_epoch(&unleased).await.is_err());
+    drop(unleased);
+    drop(first_lease);
+    let second_lease = lease_session(&database, SCHEMA).await?;
+    assert_eq!(super::claim_worker_epoch(&second_lease).await?, 2);
     let third_announcement = ApiAnnouncement::new(
         SafeUrl::from_str("wss://third-rotation.example.com:8173")?,
         3,

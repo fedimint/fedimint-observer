@@ -141,7 +141,7 @@ impl FederationObserver {
         let mut interval = tokio::time::interval(ANNOUNCEMENT_REFRESH_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut next_target = 0;
-        let mut next_announcement = 0;
+        let mut announcement_cursors = AnnouncementCursors::default();
         loop {
             interval.tick().await;
             let old_peers = self.active_api_peers(federation_id, &config.global);
@@ -236,12 +236,8 @@ impl FederationObserver {
                 if admitted.rejected > 0 {
                     tracing::warn!(%federation_id, %answering_peer, rejected = admitted.rejected, limit = MAX_ANNOUNCEMENT_BYTES, "Skipping oversized or malformed guardian endpoint announcements");
                 }
-                let announcement_window = bounded_announcement_window(
-                    admitted.announcements,
-                    next_announcement,
-                    MAX_ANNOUNCEMENTS_VERIFIED_PER_RESPONSE,
-                );
-                next_announcement = announcement_window.next_start;
+                let announcement_window =
+                    announcement_cursors.window(target, admitted.announcements);
                 if announcement_window.total_known > MAX_ANNOUNCEMENTS_VERIFIED_PER_RESPONSE {
                     tracing::debug!(
                         %federation_id,
@@ -667,6 +663,27 @@ struct AnnouncementWindow {
     total_known: usize,
 }
 
+/// Per-source positions, so one short reply can't reset another's progress
+#[derive(Default)]
+struct AnnouncementCursors(std::collections::HashMap<DiscoveryTarget, usize>);
+
+impl AnnouncementCursors {
+    fn window(
+        &mut self,
+        source: DiscoveryTarget,
+        announcements: BTreeMap<PeerId, SignedApiAnnouncement>,
+    ) -> AnnouncementWindow {
+        let start = self.0.get(&source).copied().unwrap_or(0);
+        let window = bounded_announcement_window(
+            announcements,
+            start,
+            MAX_ANNOUNCEMENTS_VERIFIED_PER_RESPONSE,
+        );
+        self.0.insert(source, window.next_start);
+        window
+    }
+}
+
 /// Up to `limit` announcements, starting at a rotating offset
 fn bounded_announcement_window(
     announcements: BTreeMap<PeerId, SignedApiAnnouncement>,
@@ -693,13 +710,13 @@ fn bounded_announcement_window(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum DiscoveryRoute {
     Active,
     Canonical,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct DiscoveryTarget {
     peer_id: PeerId,
     route: DiscoveryRoute,

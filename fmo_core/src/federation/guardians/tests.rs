@@ -323,3 +323,33 @@ fn test_migrated_guardian_endpoint_resolution() {
     assert!(!changed_forge);
     assert_eq!(updated_after_forge.get(&peer1).unwrap().url(), &new_url);
 }
+
+#[test]
+fn short_replies_cannot_reset_another_sources_progress() {
+    let full = (0..70)
+        .map(|index| {
+            let peer_id = PeerId::from(index);
+            (peer_id, discovery_announcement(peer_id))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let short = full.iter().take(3).map(|(&k, v)| (k, v.clone())).collect();
+    let source = |peer| DiscoveryTarget {
+        peer_id: PeerId::from(peer),
+        route: DiscoveryRoute::Canonical,
+    };
+
+    let mut cursors = AnnouncementCursors::default();
+    let first = cursors.window(source(0), full.clone());
+    cursors.window(source(1), short);
+    let second = cursors.window(source(0), full);
+    let covered = first
+        .announcements
+        .keys()
+        .chain(second.announcements.keys())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        covered.len(),
+        70,
+        "the full source must reach peers past its first window"
+    );
+}

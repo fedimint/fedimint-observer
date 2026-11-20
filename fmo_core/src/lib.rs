@@ -35,6 +35,7 @@ mod config;
 /// HTTP error responses with sanitized internal errors.
 mod error;
 mod federation;
+mod guardian_api;
 mod http;
 mod meta;
 pub mod module;

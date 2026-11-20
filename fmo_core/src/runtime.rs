@@ -102,6 +102,9 @@ fn lose_worker_lease(tasks: &fedimint_core::task::TaskGroup) {
 
 /// This dedicated connection is never returned to a pool. If it is lost,
 /// cancel workers immediately rather than continue without ownership.
+/// Advisory lock keys of the worker lease
+pub(crate) const WORKER_LOCK: (i32, i32) = (1_718_447_973, 1);
+
 pub(crate) async fn worker_lease(
     database: &str,
     tasks: fedimint_core::task::TaskGroup,
@@ -140,7 +143,10 @@ pub(crate) async fn worker_lease(
     .context("Worker notification subscription timed out")??;
     let row = tokio::time::timeout(
         Duration::from_secs(10),
-        client.query_one("SELECT pg_try_advisory_lock(1718447973, 1)", &[]),
+        client.query_one(
+            "SELECT pg_try_advisory_lock($1, $2)",
+            &[&WORKER_LOCK.0, &WORKER_LOCK.1],
+        ),
     )
     .await
     .context("Worker lock acquisition timed out")??;

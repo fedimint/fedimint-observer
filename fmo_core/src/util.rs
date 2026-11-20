@@ -24,16 +24,13 @@ where
     }
 }
 
-/// A new client for the API of a federation's guardians. Use the observer's
-/// shared clients instead
-/// ([`crate::federation::observer::FederationObserver::federation_api`]): every
-/// client keeps its guardian connections open for the life of the process.
+/// A new guardian API client; prefer the observer's shared clients
 pub(crate) fn federation_api(
     connectors: &ConnectorRegistry,
     peers: &std::collections::BTreeMap<fedimint_core::PeerId, fedimint_core::util::SafeUrl>,
     api_secret: Option<String>,
-) -> anyhow::Result<DynGlobalApi> {
-    DynGlobalApi::new(connectors.clone(), peers.clone(), api_secret.as_deref())
+) -> DynGlobalApi {
+    crate::guardian_api::guardian_api(connectors, peers, api_secret)
 }
 
 /// The instance id of the federation's first module of `kind`
