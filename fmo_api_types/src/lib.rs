@@ -512,3 +512,50 @@ pub struct GatewayV2Activity {
     pub outgoing_refunded: u64,
     pub outgoing_cancelled: u64,
 }
+
+/// A federation's current Lightning v1 and v2 gateway registrations, across
+/// all module instances, grouped by the Lightning node they name
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayNodes {
+    /// Ordered by `node_pub_key`
+    pub nodes: Vec<GatewayNode>,
+    /// Registrations without a valid node key, such as a Lightning v2
+    /// endpoint that hasn't reported routing info yet
+    pub unlinked: Vec<GatewayRegistration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayNode {
+    /// Compressed public key, lowercase hex
+    pub node_pub_key: String,
+    /// Lightning v1 registrations first, then Lightning v2
+    pub registrations: Vec<GatewayRegistration>,
+}
+
+/// A Lightning v1 gateway that isn't retired, or a registered Lightning v2
+/// endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "protocol", rename_all = "snake_case")]
+pub enum GatewayRegistration {
+    Lnv1 {
+        gateway_id: String,
+        api_endpoint: String,
+        first_seen: DateTime<Utc>,
+        last_seen: DateTime<Utc>,
+    },
+    Lnv2 {
+        module_instance_id: u16,
+        api_endpoint: String,
+        first_seen: DateTime<Utc>,
+        last_seen: DateTime<Utc>,
+        /// As `GatewayV2Info::status`
+        status: String,
+        /// Whether a Lightning v1 registration of the same node announces this
+        /// exact endpoint. The endpoint reports its node key itself, so
+        /// `false` means its link to the node is unverified.
+        url_matches_lnv1: bool,
+    },
+}
+
+#[cfg(test)]
+mod tests;
