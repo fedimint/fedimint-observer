@@ -20,6 +20,10 @@ impl Services {
         kind: &str,
         data: &Value,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            kind != crate::federation::endpoints::GUARDIAN_ENDPOINTS_OBSERVATION_KIND,
+            "Guardian endpoints are written only through the fenced route commit"
+        );
         self.connection().await?.execute(
             "INSERT INTO federation_observations(federation_id, kind, data) VALUES ($1, $2, $3)
              ON CONFLICT (federation_id, kind) DO UPDATE SET data = EXCLUDED.data, observed_at = now()",

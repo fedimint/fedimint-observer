@@ -1,5 +1,168 @@
 use super::*;
 
+fn discovery_keypair() -> fedimint_core::secp256k1::Keypair {
+    use fedimint_core::secp256k1::{Keypair, SecretKey, SECP256K1};
+
+    let secret = SecretKey::from_slice(&[1; 32]).expect("valid test key");
+    Keypair::from_secret_key(SECP256K1, &secret)
+}
+
+fn discovery_config(num_peers: u16) -> fedimint_core::config::GlobalClientConfig {
+    use fedimint_core::config::PeerUrl;
+    use fedimint_core::module::CoreConsensusVersion;
+    use fedimint_core::secp256k1::PublicKey;
+
+    let public_key = PublicKey::from_keypair(&discovery_keypair());
+
+    fedimint_core::config::GlobalClientConfig {
+        api_endpoints: (0..num_peers)
+            .map(|index| {
+                let peer_id = PeerId::from(index);
+                let url = SafeUrl::parse(&format!("wss://guardian-{index}.example.com"))
+                    .expect("test URL is valid");
+                (
+                    peer_id,
+                    PeerUrl {
+                        url,
+                        name: format!("guardian-{index}"),
+                    },
+                )
+            })
+            .collect(),
+        broadcast_public_keys: Some(
+            (0..num_peers)
+                .map(|index| (PeerId::from(index), public_key))
+                .collect(),
+        ),
+        consensus_version: CoreConsensusVersion::new(0, 0),
+        meta: BTreeMap::new(),
+    }
+}
+
+fn discovery_announcement(peer_id: PeerId) -> SignedApiAnnouncement {
+    use fedimint_core::net::api_announcement::ApiAnnouncement;
+    use fedimint_core::secp256k1::SECP256K1;
+
+    ApiAnnouncement::new(
+        SafeUrl::parse(&format!("wss://announced-{peer_id}.example.com")).unwrap(),
+        1,
+    )
+    .sign(SECP256K1, &discovery_keypair())
+}
+
+#[test]
+fn rotated_guardian_discovery_keeps_canonical_recovery_route() {
+    let config = discovery_config(2);
+    let peer_ids = config.api_endpoints.keys().copied().collect::<Vec<_>>();
+    let mut active = config
+        .api_endpoints
+        .iter()
+        .map(|(&peer_id, endpoint)| (peer_id, endpoint.url.clone()))
+        .collect::<BTreeMap<_, _>>();
+    active.insert(
+        PeerId::from(0),
+        SafeUrl::parse("wss://rotated.example.com").unwrap(),
+    );
+
+    let window = discovery_targets(&peer_ids, &active, &config, 0, 64);
+    assert!(window.targets.contains(&DiscoveryTarget {
+        peer_id: PeerId::from(0),
+        route: DiscoveryRoute::Active,
+    }));
+    assert!(window.targets.contains(&DiscoveryTarget {
+        peer_id: PeerId::from(0),
+        route: DiscoveryRoute::Canonical,
+    }));
+    assert_eq!(
+        window
+            .targets
+            .iter()
+            .filter(|target| target.peer_id == PeerId::from(1))
+            .count(),
+        1,
+        "an unchanged route must not be queried twice"
+    );
+}
+
+#[test]
+fn discovery_budget_rotates_instead_of_disabling_large_target_sets() {
+    let config = discovery_config(40);
+    let peer_ids = config.api_endpoints.keys().copied().collect::<Vec<_>>();
+    let active = peer_ids
+        .iter()
+        .map(|&peer_id| {
+            (
+                peer_id,
+                SafeUrl::parse(&format!("wss://rotated-{peer_id}.example.com")).unwrap(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let first = discovery_targets(&peer_ids, &active, &config, 0, 64);
+    // Only four finished, so the next round starts after them.
+    let second = discovery_targets(&peer_ids, &active, &config, first.next_start(4), 64);
+    let late_target = DiscoveryTarget {
+        peer_id: PeerId::from(33),
+        route: DiscoveryRoute::Active,
+    };
+    assert!(!first.targets.contains(&late_target));
+    assert!(
+        second.targets.contains(&late_target),
+        "the next round must reach targets beyond the first round budget"
+    );
+}
+
+#[test]
+fn announcement_admission_size_is_checked_without_a_copy() {
+    assert!(json_fits_admission_limit(
+        &serde_json::json!({"route": "ok"}),
+        32
+    ));
+    assert!(!json_fits_admission_limit(
+        &serde_json::json!({"padding": "x".repeat(128)}),
+        64
+    ));
+}
+
+#[test]
+fn unknown_announcements_cannot_suppress_a_known_rotation() {
+    let config = discovery_config(1);
+    let known_peer = PeerId::from(0);
+    let mut announcements = BTreeMap::from([(known_peer, discovery_announcement(known_peer))]);
+    for index in 1..=80 {
+        let peer_id = PeerId::from(index);
+        announcements.insert(peer_id, discovery_announcement(peer_id));
+    }
+
+    let window = bounded_announcement_window(announcements, &config, 0, 64);
+    assert_eq!(window.total_known, 1);
+    assert_eq!(window.announcements.len(), 1);
+    assert!(window.announcements.contains_key(&known_peer));
+}
+
+#[test]
+fn large_federation_rotates_bounded_announcement_windows() {
+    let config = discovery_config(70);
+    let announcements = (0..70)
+        .map(|index| {
+            let peer_id = PeerId::from(index);
+            (peer_id, discovery_announcement(peer_id))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let first = bounded_announcement_window(announcements.clone(), &config, 0, 64);
+    let second = bounded_announcement_window(announcements, &config, first.next_start, 64);
+    assert_eq!(first.announcements.len(), 64);
+    assert_eq!(second.announcements.len(), 64);
+    let covered = first
+        .announcements
+        .keys()
+        .chain(second.announcements.keys())
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(covered.len(), 70, "both windows must cover every member");
+}
+
 #[test]
 fn health_polls_back_off_only_while_offline() {
     let minutes = |interval: Duration| interval.as_secs() / 60;
@@ -47,16 +210,18 @@ fn reported_session_counts_are_clamped() {
 
 #[test]
 fn test_migrated_guardian_endpoint_resolution() {
-    use crate::federation::endpoints::{
-        active_api_peers, verify_and_merge_announcements, GuardianEndpointsMap,
-    };
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+
     use fedimint_core::config::{GlobalClientConfig, PeerUrl};
     use fedimint_core::net::api_announcement::ApiAnnouncement;
     use fedimint_core::secp256k1::{Keypair, PublicKey, SecretKey, SECP256K1};
     use fedimint_core::util::SafeUrl;
     use fedimint_core::PeerId;
-    use std::collections::BTreeMap;
-    use std::str::FromStr;
+
+    use crate::federation::endpoints::{
+        active_api_peers, verify_and_merge_announcements, GuardianEndpointsMap,
+    };
 
     let peer1 = PeerId::from(1);
     let mut key_bytes = [0u8; 32];
@@ -120,13 +285,7 @@ fn test_migrated_guardian_endpoint_resolution() {
         &incoming_stale,
     );
     assert!(!changed_stale);
-    assert_eq!(
-        updated_after_stale
-            .get(&peer1)
-            .unwrap()
-            .url,
-        new_url
-    );
+    assert_eq!(updated_after_stale.get(&peer1).unwrap().url(), &new_url);
 
     // 5. Forged signature is rejected
     let mut fake_key_bytes = [0u8; 32];
@@ -143,11 +302,5 @@ fn test_migrated_guardian_endpoint_resolution() {
         &incoming_forged,
     );
     assert!(!changed_forge);
-    assert_eq!(
-        updated_after_forge
-            .get(&peer1)
-            .unwrap()
-            .url,
-        new_url
-    );
+    assert_eq!(updated_after_forge.get(&peer1).unwrap().url(), &new_url);
 }
