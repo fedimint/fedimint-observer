@@ -15,7 +15,7 @@ use fedimint_core::config::{
 use fedimint_core::endpoint_constants::CLIENT_CONFIG_ENDPOINT;
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::{ApiRequestErased, CoreConsensusVersion};
-use fedimint_core::util::backoff_util::custom_backoff;
+use fedimint_core::util::{backoff_util::custom_backoff, SafeUrl};
 use fedimint_core::PeerId;
 use tracing::{debug, warn};
 
@@ -240,18 +240,15 @@ fn download_outcome<T>(result: Option<anyhow::Result<T>>) -> anyhow::Result<T> {
     }
 }
 
-/// One attempt, the way `fedimint_api_client::try_download_client_config`
-/// does it: the invite's guardians name all guardians, a threshold of which
-/// must then agree on the config
-async fn try_download_client_config(
-    invite: &InviteCode,
+async fn download_endpoints_from_api(
     observer: &FederationObserver,
-) -> anyhow::Result<ClientConfig> {
-    let federation_id = invite.federation_id();
+    peers: std::collections::BTreeMap<PeerId, SafeUrl>,
+    api_secret: Option<String>,
+    federation_id: FederationId,
+) -> anyhow::Result<std::collections::BTreeMap<PeerId, PeerUrl>> {
     let invite_api = observer.lookup_api(
         &endpoints_config(
-            invite
-                .peers()
+            peers
                 .into_iter()
                 .map(|(peer_id, url)| {
                     (
@@ -264,9 +261,9 @@ async fn try_download_client_config(
                 })
                 .collect(),
         ),
-        invite.api_secret(),
+        api_secret,
     )?;
-    let api_endpoints = invite_api
+    invite_api
         .request_with_strategy(
             FilterMap::new(move |config: ClientConfig| {
                 if config.global.calculate_federation_id() != federation_id {
@@ -279,7 +276,61 @@ async fn try_download_client_config(
             CLIENT_CONFIG_ENDPOINT.to_owned(),
             ApiRequestErased::default(),
         )
-        .await?;
+        .await
+}
+
+/// One attempt, the way `fedimint_api_client::try_download_client_config`
+/// does it: the invite's guardians name all guardians, a threshold of which
+/// must then agree on the config
+async fn try_download_client_config(
+    invite: &InviteCode,
+    observer: &FederationObserver,
+) -> anyhow::Result<ClientConfig> {
+    let federation_id = invite.federation_id();
+    let literal_peers = invite.peers();
+    let announced = observer.get_guardian_endpoints(federation_id);
+
+    let api_endpoints = match announced {
+        Some(ref announced_routes) => {
+            let mut dynamic_peers = literal_peers.clone();
+            for (peer_id, url) in &mut dynamic_peers {
+                if let Some(route) = announced_routes.get(peer_id) {
+                    *url = route.url.clone();
+                }
+            }
+            // Try downloading with dynamic announced endpoints first; if
+            // unavailable, preserve fallback to literal invite peers to avoid
+            // failing when an announced override is down.
+            match download_endpoints_from_api(
+                observer,
+                dynamic_peers,
+                invite.api_secret(),
+                federation_id,
+            )
+            .await
+            {
+                Ok(endpoints) => endpoints,
+                Err(e) => {
+                    tracing::debug!(
+                        %federation_id,
+                        err = %e,
+                        "Failed downloading config using announced endpoints; falling back to literal invite peers"
+                    );
+                    download_endpoints_from_api(
+                        observer,
+                        literal_peers,
+                        invite.api_secret(),
+                        federation_id,
+                    )
+                    .await?
+                }
+            }
+        }
+        None => {
+            download_endpoints_from_api(observer, literal_peers, invite.api_secret(), federation_id)
+                .await?
+        }
+    };
 
     let config = observer
         .lookup_api(&endpoints_config(api_endpoints), invite.api_secret())?

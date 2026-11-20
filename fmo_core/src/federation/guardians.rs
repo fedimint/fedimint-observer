@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use axum::extract::{Path, State};
 use axum::Json;
 use chrono::{NaiveDateTime, TimeDelta};
-use fedimint_api_client::api::{FederationApiExt, StatusResponse};
+use fedimint_api_client::api::{DynGlobalApi, FederationApiExt, StatusResponse};
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::encoding::Encodable;
@@ -14,12 +14,17 @@ use fedimint_core::module::ApiRequestErased;
 use fedimint_core::{NumPeers, PeerId};
 use fedimint_wallet_common::endpoint_constants::BLOCK_COUNT_LOCAL_ENDPOINT;
 use fmo_api_types::{FederationHealth, GuardianHealth, GuardianHealthLatest};
-use futures::future::join_all;
+use futures::{future::join_all, stream::StreamExt};
 use postgres_from_row::FromRow;
 use tracing::info;
 
+use crate::federation::endpoints::verify_and_merge_announcements;
 use crate::federation::observer::FederationObserver;
 use crate::util::{module_instance_id, query};
+
+const MAX_CONCURRENT_DISCOVERY_QUERIES: usize = 4;
+const DISCOVERY_TIMEOUT_PER_PEER: Duration = Duration::from_secs(5);
+const MAX_DISCOVERY_PEERS_PER_ROUND: usize = 8;
 
 impl FederationObserver {
     pub async fn monitor_health(
@@ -27,75 +32,9 @@ impl FederationObserver {
         federation_id: FederationId,
         config: ClientConfig,
     ) -> anyhow::Result<()> {
-        let api = self.federation_api(&config.global)?;
+        let mut api = self.federation_api(&config.global)?;
         let block_source = BlockHeightSource::of(&config);
-
-        let poll_guardians = async || {
-            join_all(config.global.api_endpoints.keys().map(|&peer_id| {
-                let api = api.clone();
-                async move {
-                    // We don't time the first request, there might be a reconnect happening in
-                    // the background
-                    let status = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        api.request_single_peer(
-                            STATUS_ENDPOINT.to_owned(),
-                            ApiRequestErased::default(),
-                            peer_id,
-                        ),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .and_then(|json| serde_json::from_value::<StatusResponse>(json).ok());
-
-                    // Second request is used to determine ping
-                    // TODO: how much time does bitcoind take to answer if at all (caching?)?
-                    let start_time = Instant::now();
-                    let timed_status = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        api.request_single_peer::<StatusResponse>(
-                            STATUS_ENDPOINT.to_owned(),
-                            ApiRequestErased::default(),
-                            peer_id,
-                        ),
-                    )
-                    .await;
-                    let api_latency = match timed_status {
-                        Ok(Ok(_)) => Some(start_time.elapsed().as_millis() as i32),
-                        _ => None,
-                    };
-                    let block_height = match block_source {
-                        Some(source) => tokio::time::timeout(
-                            Duration::from_secs(10),
-                            api.with_module(source.instance()).request_single_peer(
-                                source.endpoint().to_owned(),
-                                ApiRequestErased::default(),
-                                peer_id,
-                            ),
-                        )
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .and_then(|json| source.block_height(json)),
-                        None => None,
-                    };
-
-                    let software_version = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        api.fedimintd_version(peer_id),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .map(|version| version.trim().to_owned())
-                    .filter(|version| !version.is_empty());
-
-                    (peer_id, status, software_version, block_height, api_latency)
-                }
-            }))
-            .await
-        };
+        let peer_ids: Vec<PeerId> = config.global.api_endpoints.keys().copied().collect();
 
         // Since when no guardian has answered, None while any does
         let mut offline_since = self.health_offline_since(federation_id).await?;
@@ -105,10 +44,12 @@ impl FederationObserver {
             log_poll_interval(poll_interval, offline_since);
         }
 
+        let mut last_announcement_check = Instant::now() - Duration::from_secs(3600);
+
         loop {
             let poll_started = tokio::time::Instant::now();
 
-            let mut peer_status_responses = poll_guardians().await;
+            let mut peer_status_responses = poll_guardians(&api, &peer_ids, block_source).await;
             // While backed off, a miss can be a connection that is still being
             // re-established after the long pause: try once more before
             // waiting again, and store only that answer
@@ -118,12 +59,17 @@ impl FederationObserver {
                     .any(|(_, status, ..)| status.is_some())
             {
                 tokio::time::sleep(BACKED_OFF_RETRY_DELAY).await;
-                peer_status_responses = poll_guardians().await;
+                peer_status_responses = poll_guardians(&api, &peer_ids, block_source).await;
             }
-            let any_answered = peer_status_responses
+            let mut any_answered = peer_status_responses
                 .iter()
                 .any(|(_, status, ..)| status.is_some());
+            let any_offline = peer_status_responses
+                .iter()
+                .any(|(_, status, ..)| status.is_none());
 
+            // 1. Publish the health sample immediately: discovery must never
+            // block or delay health sampling
             let timestamp = chrono::Utc::now().naive_utc();
             offline_since = if any_answered {
                 None
@@ -131,6 +77,12 @@ impl FederationObserver {
                 offline_since.or(Some(timestamp))
             };
             let next_interval = health_poll_interval(offline_since.map(|since| timestamp - since));
+
+            let answering_peers: Vec<PeerId> = peer_status_responses
+                .iter()
+                .filter_map(|(id, status, ..)| status.as_ref().map(|_| *id))
+                .take(MAX_DISCOVERY_PEERS_PER_ROUND)
+                .collect();
 
             let mut conn = self.connection().await?;
             let dbtx = conn.transaction().await?;
@@ -164,9 +116,103 @@ impl FederationObserver {
                 .await?;
             }
             dbtx.commit().await?;
-            // The next poll can be a minute or more away. Return the connection
-            // before sleeping so other federations can record their health.
             drop(conn);
+
+            // 2. Off-path discovery: poll signed announcements with bounded
+            // concurrency & work
+            if any_answered
+                && (any_offline || last_announcement_check.elapsed() >= Duration::from_secs(300))
+            {
+                let discovery_api = api.clone();
+                let mut query_stream = futures::stream::iter(answering_peers)
+                    .map(move |answering_peer| {
+                        let api = discovery_api.clone();
+                        async move {
+                            let res = tokio::time::timeout(
+                                DISCOVERY_TIMEOUT_PER_PEER,
+                                api.api_announcements(answering_peer),
+                            )
+                            .await;
+                            (answering_peer, res)
+                        }
+                    })
+                    .buffer_unordered(MAX_CONCURRENT_DISCOVERY_QUERIES);
+
+                let mut merged_incoming = BTreeMap::new();
+                let mut any_discovery_succeeded = false;
+
+                while let Some((answering_peer, res)) = query_stream.next().await {
+                    match res {
+                        Ok(Ok(announcements)) => {
+                            any_discovery_succeeded = true;
+                            for (target_peer, announcement) in announcements {
+                                merged_incoming
+                                    .entry(target_peer)
+                                    .and_modify(|existing: &mut fedimint_core::net::api_announcement::SignedApiAnnouncement| {
+                                        if announcement.api_announcement.nonce
+                                            > existing.api_announcement.nonce
+                                        {
+                                            *existing = announcement.clone();
+                                        }
+                                    })
+                                    .or_insert(announcement);
+                            }
+                        }
+                        Ok(Err(err)) => {
+                            tracing::debug!(
+                                %federation_id,
+                                %answering_peer,
+                                err = %err,
+                                "Failed to fetch API announcements from peer"
+                            );
+                        }
+                        Err(_) => {
+                            tracing::debug!(
+                                %federation_id,
+                                %answering_peer,
+                                "Timed out fetching API announcements from peer"
+                            );
+                        }
+                    }
+                }
+
+                if any_discovery_succeeded {
+                    last_announcement_check = Instant::now();
+                }
+
+                if !merged_incoming.is_empty() {
+                    let existing = self
+                        .get_guardian_endpoints(federation_id)
+                        .unwrap_or_default();
+                    let (updated, changed) = verify_and_merge_announcements(
+                        federation_id,
+                        config.global.broadcast_public_keys.as_ref(),
+                        &existing,
+                        &merged_incoming,
+                    );
+
+                    if changed {
+                        let old_peers = self.active_api_peers(federation_id, &config.global);
+                        if let Err(e) = self
+                            .update_guardian_endpoints(federation_id, &updated)
+                            .await
+                        {
+                            tracing::error!(%federation_id, err = %e, "Failed to persist updated guardian endpoints");
+                        } else {
+                            self.invalidate_observed_client(&old_peers);
+                            match self.federation_api(&config.global) {
+                                Ok(new_api) => {
+                                    api = new_api;
+                                    // The refreshed routes will be used naturally on the next poll cycle
+                                }
+                                Err(e) => {
+                                    tracing::error!(%federation_id, err = %e, "Failed to rebuild API client with updated endpoints");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             if next_interval != poll_interval {
                 log_poll_interval(next_interval, offline_since);
@@ -519,6 +565,81 @@ fn log_poll_interval(interval: Duration, offline_since: Option<NaiveDateTime>) {
         ),
         _ => info!("A guardian answered again, polling health every minute"),
     }
+}
+
+async fn poll_guardians(
+    api: &DynGlobalApi,
+    peer_ids: &[PeerId],
+    block_source: Option<BlockHeightSource>,
+) -> Vec<(
+    PeerId,
+    Option<StatusResponse>,
+    Option<String>,
+    Option<u32>,
+    Option<i32>,
+)> {
+    join_all(peer_ids.iter().map(|&peer_id| {
+        let api = api.clone();
+        async move {
+            // We don't time the first request, there might be a reconnect happening in
+            // the background
+            let status = tokio::time::timeout(
+                Duration::from_secs(10),
+                api.request_single_peer(
+                    STATUS_ENDPOINT.to_owned(),
+                    ApiRequestErased::default(),
+                    peer_id,
+                ),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|json| serde_json::from_value::<StatusResponse>(json).ok());
+
+            // Second request is used to determine ping
+            // TODO: how much time does bitcoind take to answer if at all (caching?)?
+            let start_time = Instant::now();
+            let timed_status = tokio::time::timeout(
+                Duration::from_secs(10),
+                api.request_single_peer::<StatusResponse>(
+                    STATUS_ENDPOINT.to_owned(),
+                    ApiRequestErased::default(),
+                    peer_id,
+                ),
+            )
+            .await;
+            let api_latency = match timed_status {
+                Ok(Ok(_)) => Some(start_time.elapsed().as_millis() as i32),
+                _ => None,
+            };
+            let block_height = match block_source {
+                Some(source) => tokio::time::timeout(
+                    Duration::from_secs(10),
+                    api.with_module(source.instance()).request_single_peer(
+                        source.endpoint().to_owned(),
+                        ApiRequestErased::default(),
+                        peer_id,
+                    ),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .and_then(|json| source.block_height(json)),
+                None => None,
+            };
+
+            let software_version =
+                tokio::time::timeout(Duration::from_secs(10), api.fedimintd_version(peer_id))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .map(|version| version.trim().to_owned())
+                    .filter(|version| !version.is_empty());
+
+            (peer_id, status, software_version, block_height, api_latency)
+        }
+    }))
+    .await
 }
 
 #[derive(FromRow)]
