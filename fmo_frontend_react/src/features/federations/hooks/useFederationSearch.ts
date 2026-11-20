@@ -1,80 +1,73 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../../services/api';
-import { isInviteCodeQuery, normalizeSearchInput } from '../lib/federationList';
+import { isInviteCodeQuery, lookupForInput, searchKey, type InviteLookup } from '../lib/federationList';
 
-interface QueryResolution {
+interface InFlightLookup {
   query: string;
-  federationId: string;
+  controller: AbortController;
 }
 
 /**
- * Manages search query state and explicit on-demand resolution of Fedimint invite codes
- * to federation IDs. Keying results by query prevents stale race conditions.
+ * Search query state plus explicit lookup of an invite code's federation ID.
+ * Lookup state is keyed by query, so it never applies to a different input.
  */
 export function useFederationSearch() {
   const [searchQuery, setSearchQuery] = useState('');
-  const [resolution, setResolution] = useState<QueryResolution | null>(null);
-  const [isResolvingInvite, setIsResolvingInvite] = useState(false);
-  const [lookupError, setLookupError] = useState<string | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const [lookup, setLookup] = useState<InviteLookup | null>(null);
+  const inFlightRef = useRef<InFlightLookup | null>(null);
 
-  const cleanQuery = normalizeSearchInput(searchQuery).toLowerCase();
-  const isInvite = isInviteCodeQuery(searchQuery);
+  const current = lookupForInput(lookup, searchQuery);
+  const resolvedFederationId = current?.status === 'done' ? current.federationId : null;
+  const isResolvingInvite = current?.status === 'loading';
+  const lookupError = current?.status === 'error' ? current.message : null;
 
-  // A result belongs strictly to the normalized query that produced it.
-  // Consumed only if the key still matches the current input.
-  const resolvedFederationId =
-    resolution && resolution.query === cleanQuery ? resolution.federationId : null;
+  const abortInFlight = useCallback(() => {
+    inFlightRef.current?.controller.abort();
+    inFlightRef.current = null;
+  }, []);
+
+  // Abort on unmount so a late response never sets state
+  useEffect(() => abortInFlight, [abortInFlight]);
+
+  // Every edit, including the clear button, goes through here
+  const changeSearchQuery = useCallback(
+    (value: string) => {
+      setSearchQuery(value);
+      if (inFlightRef.current && inFlightRef.current.query !== searchKey(value)) {
+        abortInFlight();
+        // Drop the aborted lookup's loading state, keep finished results
+        setLookup((prev) => (prev?.status === 'loading' ? null : prev));
+      }
+    },
+    [abortInFlight],
+  );
 
   const resolveInvite = useCallback(async () => {
-    const targetQuery = normalizeSearchInput(searchQuery).toLowerCase();
-    if (!isInviteCodeQuery(targetQuery)) {
-      return;
-    }
+    const query = searchKey(searchQuery);
+    if (!isInviteCodeQuery(query)) return;
 
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-
+    abortInFlight();
     const controller = new AbortController();
-    abortControllerRef.current = controller;
-    setIsResolvingInvite(true);
-    setLookupError(null);
+    inFlightRef.current = { query, controller };
+    setLookup({ query, status: 'loading' });
 
     try {
-      const fedId = await api.getFederationIdByInvite(targetQuery, controller.signal);
-      if (!controller.signal.aborted) {
-        setResolution({ query: targetQuery, federationId: fedId });
-      }
+      const federationId = await api.getFederationIdByInvite(query, controller.signal);
+      if (!controller.signal.aborted) setLookup({ query, status: 'done', federationId });
     } catch (err: unknown) {
       if (!controller.signal.aborted) {
-        setResolution(null);
-        setLookupError(
-          err instanceof Error ? err.message : 'Could not resolve federation ID for this invite code',
-        );
+        const message = err instanceof Error ? err.message : 'Could not resolve federation ID for this invite code';
+        setLookup({ query, status: 'error', message });
       }
     } finally {
-      if (!controller.signal.aborted) {
-        setIsResolvingInvite(false);
-      }
+      if (inFlightRef.current?.controller === controller) inFlightRef.current = null;
     }
-  }, [searchQuery]);
-
-  const clearSearch = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    setSearchQuery('');
-    setResolution(null);
-    setLookupError(null);
-    setIsResolvingInvite(false);
-  }, []);
+  }, [searchQuery, abortInFlight]);
 
   return {
     searchQuery,
-    setSearchQuery,
-    clearSearch,
-    isInvite,
+    setSearchQuery: changeSearchQuery,
+    isInvite: isInviteCodeQuery(searchQuery),
     resolveInvite,
     resolvedFederationId,
     isResolvingInvite,

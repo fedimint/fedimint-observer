@@ -18,6 +18,22 @@ export function isInviteCodeQuery(input: string): boolean {
   return normalized.startsWith('fed1') || normalized.startsWith('fedimint');
 }
 
+/** The key a lookup is stored under: equal keys mean the same query */
+export function searchKey(input: string): string {
+  return normalizeSearchInput(input).toLowerCase();
+}
+
+/** State of an invite lookup, tagged with the query key that started it */
+export type InviteLookup =
+  | { query: string; status: 'loading' }
+  | { query: string; status: 'done'; federationId: string }
+  | { query: string; status: 'error'; message: string };
+
+/** The lookup if it belongs to the current input, otherwise null */
+export function lookupForInput(lookup: InviteLookup | null, input: string): InviteLookup | null {
+  return lookup && lookup.query === searchKey(input) ? lookup : null;
+}
+
 /**
  * Search, then order, then split: a federation is shut down once the expiry its
  * guardians published has passed (as of `asOf`, when the list last loaded),

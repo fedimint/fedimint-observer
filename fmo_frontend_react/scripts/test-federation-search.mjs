@@ -3,7 +3,9 @@ import { test } from 'node:test';
 import {
   groupFederations,
   isInviteCodeQuery,
+  lookupForInput,
   normalizeSearchInput,
+  searchKey,
 } from '../src/features/federations/lib/federationList.ts';
 
 test('normalizeSearchInput cleans whitespace and protocol schemes', () => {
@@ -118,44 +120,33 @@ test('groupFederations matches by name, hex ID, canonical invite, and resolved i
   assert.equal(none.active.length, 0);
 });
 
-test('async query keying: completed lookup is consumed only if current query matches the key', () => {
+test('lookupForInput returns a lookup only for the query that started it', () => {
   const fedA = mockFederation('245806c0fa1a9412e8477ee3a4a7536d5b00c3c52a921d7b3da27d2c3df440e8', 'Mutiny Federation', 'fed11_mutiny');
   const fedB = mockFederation('a1b2c3d4e5f60000000000000000000000000000000000000000000000000000', 'Chama Mint', 'fed11_chama');
   const federations = [fedA, fedB];
-
-  // Simulated query resolution keyed by query
-  let resolution = null;
-  const getResolvedId = (currentInput) => {
-    const clean = normalizeSearchInput(currentInput).toLowerCase();
-    return resolution && resolution.query === clean ? resolution.federationId : null;
-  };
-
   const queryA = 'fed11_query_for_fed_a';
   const queryB = 'fed11_query_for_fed_b';
+  const doneA = { query: searchKey(queryA), status: 'done', federationId: fedA.id };
 
-  // 1. User enters Query A
-  let currentInput = queryA;
-  assert.equal(getResolvedId(currentInput), null);
+  assert.equal(lookupForInput(null, queryA), null);
 
-  // 2. Lookup completes for Query A, but user has already changed input to Query B
-  currentInput = queryB;
-  resolution = { query: normalizeSearchInput(queryA).toLowerCase(), federationId: fedA.id };
+  // A's result arrives after the input changed to B: ignored, and B matches nothing
+  assert.equal(lookupForInput(doneA, queryB), null);
+  assert.equal(groupFederations(federations, queryB, 'name', 'asc', null, null).active.length, 0);
 
-  // Key mismatch: resolution for Query A must be ignored when input is Query B
-  const resolvedForB = getResolvedId(currentInput);
-  assert.equal(resolvedForB, null);
-  const groupsDuringB = groupFederations(federations, currentInput, 'name', 'asc', null, resolvedForB);
-  assert.equal(groupsDuringB.active.length, 0);
+  // Cleared input ignores it too
+  assert.equal(lookupForInput(doneA, ''), null);
 
-  // 3. User clears the search box
-  currentInput = '';
-  assert.equal(getResolvedId(currentInput), null);
+  // Same query with a scheme, other case or padding still matches
+  assert.equal(lookupForInput(doneA, queryA), doneA);
+  assert.equal(lookupForInput(doneA, `  fedimint://${queryA.toUpperCase()} `), doneA);
+  const groups = groupFederations(federations, queryA, 'name', 'asc', null, doneA.federationId);
+  assert.deepEqual(groups.active.map((f) => f.id), [fedA.id]);
 
-  // 4. User navigates back to Query A: resolution matches and applies
-  currentInput = queryA;
-  const resolvedForA = getResolvedId(currentInput);
-  assert.equal(resolvedForA, fedA.id);
-  const groupsDuringA = groupFederations(federations, currentInput, 'name', 'asc', null, resolvedForA);
-  assert.equal(groupsDuringA.active.length, 1);
-  assert.equal(groupsDuringA.active[0].id, fedA.id);
+  // Loading and error states are keyed the same way
+  const loadingA = { query: searchKey(queryA), status: 'loading' };
+  const errorA = { query: searchKey(queryA), status: 'error', message: 'not found' };
+  assert.equal(lookupForInput(loadingA, queryB), null);
+  assert.equal(lookupForInput(errorA, queryB), null);
+  assert.equal(lookupForInput(errorA, queryA), errorA);
 });
