@@ -18,6 +18,7 @@ use fmo_api_types::{GatewayV2Info as Gateway, GatewayV2Registry as Registry, Gat
 use fmo_core::module::{ApiError, ApiResult, ClientError, DbTransaction, Services};
 use futures::{stream, StreamExt};
 use serde::Deserialize;
+use tracing::warn;
 
 #[derive(Deserialize, Default)]
 struct Params {

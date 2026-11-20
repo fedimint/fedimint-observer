@@ -14,19 +14,17 @@ use fedimint_core::module::ApiRequestErased;
 use fedimint_core::{NumPeers, PeerId};
 use fedimint_wallet_common::endpoint_constants::BLOCK_COUNT_LOCAL_ENDPOINT;
 use fmo_api_types::{FederationHealth, GuardianHealth, GuardianHealthLatest};
-use futures::future::join_all;
-use futures::stream::StreamExt;
+use futures::{future::join_all, stream::StreamExt};
 use postgres_from_row::FromRow;
 use tracing::info;
 
 use crate::federation::endpoints::verify_and_merge_announcements;
+use crate::federation::observer::FederationObserver;
+use crate::util::{module_instance_id, query};
 
 const MAX_CONCURRENT_DISCOVERY_QUERIES: usize = 4;
 const DISCOVERY_TIMEOUT_PER_PEER: Duration = Duration::from_secs(5);
 const MAX_DISCOVERY_PEERS_PER_ROUND: usize = 8;
-
-use crate::federation::observer::FederationObserver;
-use crate::util::{module_instance_id, query};
 
 impl FederationObserver {
     pub async fn monitor_health(
@@ -79,10 +77,16 @@ impl FederationObserver {
             };
             let next_interval = health_poll_interval(offline_since.map(|since| timestamp - since));
 
+            let answering_peers: Vec<PeerId> = peer_status_responses
+                .iter()
+                .filter_map(|(id, status, ..)| status.as_ref().map(|_| *id))
+                .take(MAX_DISCOVERY_PEERS_PER_ROUND)
+                .collect();
+
             let mut conn = self.connection().await?;
             let dbtx = conn.transaction().await?;
             for (peer_id, status, software_version, block_height, api_latency) in
-                &peer_status_responses
+                peer_status_responses
             {
                 dbtx.execute(
                     "INSERT INTO guardian_health (
@@ -99,13 +103,11 @@ impl FederationObserver {
                         &federation_id.consensus_encode_to_vec(),
                         &timestamp,
                         &(peer_id.to_usize() as i32),
-                        &status
-                            .as_ref()
-                            .map(|s| serde_json::to_value(s).expect("Can be serialized")),
+                        &status.map(|s| serde_json::to_value(s).expect("Can be serialized")),
                         // Heights beyond the column's range are nonsense, not wrapped
                         &block_height.and_then(|height| i32::try_from(height).ok()),
-                        api_latency,
-                        software_version,
+                        &api_latency,
+                        &software_version,
                         // The sample stands for the time until the next poll
                         &(next_interval.as_secs() as i32),
                     ],
@@ -119,21 +121,16 @@ impl FederationObserver {
             if any_answered
                 && (any_offline || last_announcement_check.elapsed() >= Duration::from_secs(300))
             {
-                let answering_peers: Vec<PeerId> = peer_status_responses
-                    .iter()
-                    .filter_map(|(id, status, ..)| status.as_ref().map(|_| *id))
-                    .take(MAX_DISCOVERY_PEERS_PER_ROUND)
-                    .collect();
-
                 let mut query_stream = futures::stream::iter(answering_peers)
                     .map(|answering_peer| {
                         let api = api.clone();
                         async move {
-                            tokio::time::timeout(
+                            let res = tokio::time::timeout(
                                 DISCOVERY_TIMEOUT_PER_PEER,
                                 api.api_announcements(answering_peer),
                             )
-                            .await
+                            .await;
+                            (answering_peer, res)
                         }
                     })
                     .buffer_unordered(MAX_CONCURRENT_DISCOVERY_QUERIES);
@@ -141,7 +138,7 @@ impl FederationObserver {
                 let mut merged_incoming = BTreeMap::new();
                 let mut any_discovery_succeeded = false;
 
-                while let Some(res) = query_stream.next().await {
+                while let Some((answering_peer, res)) = query_stream.next().await {
                     match res {
                         Ok(Ok(announcements)) => {
                             any_discovery_succeeded = true;
@@ -161,7 +158,7 @@ impl FederationObserver {
                         Ok(Err(err)) => {
                             tracing::debug!(
                                 %federation_id,
-                                %answering_peer = "?",
+                                %answering_peer,
                                 err = %err,
                                 "Failed to fetch API announcements from peer"
                             );
@@ -169,6 +166,7 @@ impl FederationObserver {
                         Err(_) => {
                             tracing::debug!(
                                 %federation_id,
+                                %answering_peer,
                                 "Timed out fetching API announcements from peer"
                             );
                         }

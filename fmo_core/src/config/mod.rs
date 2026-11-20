@@ -15,7 +15,7 @@ use fedimint_core::config::{
 use fedimint_core::endpoint_constants::CLIENT_CONFIG_ENDPOINT;
 use fedimint_core::invite_code::InviteCode;
 use fedimint_core::module::{ApiRequestErased, CoreConsensusVersion};
-use fedimint_core::util::backoff_util::custom_backoff;
+use fedimint_core::util::{backoff_util::custom_backoff, SafeUrl};
 use fedimint_core::PeerId;
 use tracing::{debug, warn};
 
