@@ -1,10 +1,34 @@
 import type { FederationSummary } from '../../../types/api';
-import { sortFederations, type SortDirection, type SortKey } from '../../../utils/sortFederations';
+import { sortFederations, type SortDirection, type SortKey } from '../../../utils/sortFederations.ts';
 
 interface FederationGroups {
   active: FederationSummary[];
   offline: FederationSummary[];
   shutDown: FederationSummary[];
+}
+
+/** Trims and strips a fedimint: URL scheme */
+export function normalizeSearchInput(input: string): string {
+  return input.trim().replace(/^(fedimint|web\+fedimint):\/\//i, '').replace(/^(fedimint|web\+fedimint):/i, '');
+}
+
+/** Bech32 fed1 or Base32 fedimint invite */
+export function isInviteCodeQuery(input: string): boolean {
+  const normalized = normalizeSearchInput(input).toLowerCase();
+  return normalized.startsWith('fed1') || normalized.startsWith('fedimint');
+}
+
+export function searchKey(input: string): string {
+  return normalizeSearchInput(input).toLowerCase();
+}
+
+export type InviteLookup =
+  | { query: string; status: 'loading' }
+  | { query: string; status: 'done'; federationId: string }
+  | { query: string; status: 'error'; message: string };
+
+export function lookupForInput(lookup: InviteLookup | null, input: string): InviteLookup | null {
+  return lookup && lookup.query === searchKey(input) ? lookup : null;
 }
 
 /**
@@ -18,10 +42,24 @@ export function groupFederations(
   sortKey: SortKey,
   sortDirection: SortDirection,
   asOf: number | null,
+  resolvedFederationId?: string | null,
 ): FederationGroups {
   const query = search.trim().toLowerCase();
+  const normalized = normalizeSearchInput(query).toLowerCase();
   const matching = query
-    ? federations.filter((fed) => (fed.name?.toLowerCase() ?? '').includes(query) || (fed.invite?.toLowerCase() ?? '').includes(query))
+    ? federations.filter((fed) => {
+        if (resolvedFederationId && fed.id.toLowerCase() === resolvedFederationId.toLowerCase()) return true;
+        if (
+          normalized &&
+          (fed.id.toLowerCase().startsWith(normalized) ||
+            (normalized.length >= 6 && fed.id.toLowerCase().includes(normalized)))
+        ) {
+          return true;
+        }
+        if ((fed.name?.toLowerCase() ?? '').includes(query)) return true;
+        if (normalized && (fed.invite?.toLowerCase() ?? '').includes(normalized)) return true;
+        return false;
+      })
     : federations;
   const groups: FederationGroups = { active: [], offline: [], shutDown: [] };
   for (const fed of sortFederations(matching, sortKey, sortDirection)) {
