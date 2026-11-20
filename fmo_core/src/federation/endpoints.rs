@@ -74,7 +74,7 @@ impl VerifiedRoute {
 pub type GuardianEndpointsMap = BTreeMap<PeerId, VerifiedRoute>;
 
 /// Config endpoints with each accepted announcement applied
-pub fn active_api_peers(
+pub fn latest_api_peers(
     global: &GlobalClientConfig,
     announced: Option<&GuardianEndpointsMap>,
 ) -> BTreeMap<PeerId, SafeUrl> {

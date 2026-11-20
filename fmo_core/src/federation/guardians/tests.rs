@@ -252,7 +252,7 @@ fn test_migrated_guardian_endpoint_resolution() {
     use fedimint_core::PeerId;
 
     use crate::federation::endpoints::{
-        active_api_peers, verify_and_merge_announcements, GuardianEndpointsMap,
+        latest_api_peers, verify_and_merge_announcements, GuardianEndpointsMap,
     };
 
     let peer1 = PeerId::from(1);
@@ -285,7 +285,7 @@ fn test_migrated_guardian_endpoint_resolution() {
     let fed_id = global.calculate_federation_id();
 
     // 1. Initial health check uses config URL
-    let peers_initial = active_api_peers(&global, None);
+    let peers_initial = latest_api_peers(&global, None);
     assert_eq!(peers_initial.get(&peer1).unwrap(), &old_url);
 
     // 2. Peer 1 announces ws://api.fmo.org with nonce 1
@@ -298,7 +298,7 @@ fn test_migrated_guardian_endpoint_resolution() {
     assert!(changed);
 
     // 3. Health check now resolves to new URL
-    let peers_after_migration = active_api_peers(&global, Some(&updated));
+    let peers_after_migration = latest_api_peers(&global, Some(&updated));
     assert_eq!(peers_after_migration.get(&peer1).unwrap(), &new_url);
 
     // 4. Stale nonce 1 is rejected

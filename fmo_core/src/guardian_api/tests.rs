@@ -1,163 +1,84 @@
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use fedimint_api_client::api::FederationApiExt;
-use fedimint_connectors::{IConnection, IGuardianConnection};
-use fedimint_core::endpoint_constants::STATUS_ENDPOINT;
-
 use super::*;
 
-#[test]
-fn reconnect_delay_doubles_up_to_its_cap() {
-    let delays = (1..=8).map(retry_delay).collect::<Vec<_>>();
-    assert_eq!(delays[0], MIN_RETRY_DELAY);
-    assert_eq!(delays[1], MIN_RETRY_DELAY * 2);
-    assert!(delays.windows(2).all(|pair| pair[0] <= pair[1]));
-    assert_eq!(delays[7], MAX_RETRY_DELAY);
-}
-
-#[tokio::test]
-async fn failed_connection_backs_off_instead_of_redialing() -> anyhow::Result<()> {
-    let connectors = ConnectorRegistry::build_from_testing_defaults()
-        .bind()
-        .await?;
-    // Nothing listens on port 1.
-    let peers = BTreeMap::from([(PeerId::from(0), SafeUrl::from_str("ws://127.0.0.1:1/")?)]);
-    let api = guardian_api(
-        &connectors,
-        &GuardianConnectionRegistry::default(),
-        &peers,
-        None,
-        ConnectionClass::Trusted,
-    );
-    let request = || {
-        api.request_single_peer::<Value>(
-            STATUS_ENDPOINT.to_owned(),
-            ApiRequestErased::default(),
-            PeerId::from(0),
-        )
-    };
-
-    let first = request().await.expect_err("nothing accepts the connection");
-    assert!(!format!("{first}").contains("Waiting to reconnect"));
-    let started = Instant::now();
-    let second = request().await.expect_err("the peer is backing off");
-    assert!(format!("{second}").contains("Waiting to reconnect"));
-    assert!(started.elapsed() < Duration::from_millis(100), "no redial");
-
-    let unknown = api
-        .request_single_peer::<Value>(
-            STATUS_ENDPOINT.to_owned(),
-            ApiRequestErased::default(),
-            PeerId::from(9),
-        )
-        .await
-        .expect_err("peer 9 is not in the client");
-    assert!(format!("{unknown}").contains("Invalid peer id"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn canceled_dial_still_starts_the_retry_delay() {
-    let peer = PeerConnection::default();
-    tokio::time::timeout(
-        Duration::from_millis(10),
-        peer.connection(futures::future::pending::<ServerResult<DynGuaridianConnection>>),
-    )
-    .await
-    .expect_err("the caller deadline cancels the dial");
-
-    let error = peer
-        .connection(|| async { panic!("backoff must prevent a second dial") })
-        .await
-        .expect_err("the canceled attempt is backing off");
-    assert!(format!("{error}").contains("Waiting to reconnect"));
-}
-
-#[test]
-fn duplicate_peer_urls_share_state_only_with_matching_credentials() -> anyhow::Result<()> {
-    let registry = GuardianConnectionRegistry::with_limits(3, 0, 0);
-    let url = SafeUrl::from_str("wss://guardian.example/")?;
-    let first = registry.connection(&url, Some("secret"), ConnectionClass::Trusted)?;
-    let duplicate = registry.connection(&url, Some("secret"), ConnectionClass::Trusted)?;
-    let other_credentials = registry.connection(&url, Some("other"), ConnectionClass::Trusted)?;
-
-    assert!(Arc::ptr_eq(&first, &duplicate));
-    assert!(!Arc::ptr_eq(&first, &other_credentials));
-    Ok(())
-}
-
-#[test]
-fn announced_lookup_exhaustion_preserves_literal_fallback_capacity() -> anyhow::Result<()> {
-    let registry = GuardianConnectionRegistry::with_limits(0, 1, 1);
-    let announced = SafeUrl::from_str("wss://announced.example/")?;
-    registry.connection(&announced, None, ConnectionClass::Lookup)?;
-
-    let another_announced = SafeUrl::from_str("wss://another-announced.example/")?;
-    assert!(registry
-        .connection(&another_announced, None, ConnectionClass::Lookup)
-        .is_err());
-    let literal = SafeUrl::from_str("wss://literal.example/")?;
-    registry.connection(&literal, None, ConnectionClass::LookupFallback)?;
-    Ok(())
-}
-
 #[derive(Debug)]
-struct CountingConnection(Arc<AtomicUsize>);
-
-impl Drop for CountingConnection {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
-}
+struct FakeConnection;
 
 #[async_trait::async_trait]
-impl IConnection for CountingConnection {
+impl fedimint_connectors::IConnection for FakeConnection {
     fn is_connected(&self) -> bool {
         true
     }
 
     async fn await_disconnection(&self) {
-        futures::future::pending().await
+        futures::future::pending::<()>().await;
     }
 }
 
 #[async_trait::async_trait]
-impl IGuardianConnection for CountingConnection {
-    async fn request(
-        &self,
-        _method: fedimint_core::module::ApiMethod,
-        _request: ApiRequestErased,
-    ) -> ServerResult<Value> {
+impl IGuardianConnection for FakeConnection {
+    async fn request(&self, _: ApiMethod, _: ApiRequestErased) -> ServerResult<Value> {
         Ok(Value::Null)
     }
 }
 
-#[tokio::test]
-async fn successful_rotations_stop_at_the_connection_budget() -> anyhow::Result<()> {
-    let registry = GuardianConnectionRegistry::with_limits(2, 0, 0);
-    let live = Arc::new(AtomicUsize::new(0));
+fn peers(urls: &[&str]) -> ApiPeers {
+    urls.iter()
+        .enumerate()
+        .map(|(peer, url)| {
+            (
+                PeerId::from(peer as u16),
+                SafeUrl::from_str(url).expect("valid test URL"),
+            )
+        })
+        .collect()
+}
 
-    for port in [1001, 1002] {
-        let url = SafeUrl::from_str(&format!("ws://127.0.0.1:{port}/"))?;
-        let peer = registry.connection(&url, None, ConnectionClass::Trusted)?;
-        let live_for_dial = live.clone();
-        let connection = peer
-            .connection(|| async move {
-                live_for_dial.fetch_add(1, Ordering::SeqCst);
-                Ok(CountingConnection(live_for_dial).into_dyn())
+#[tokio::test]
+async fn unchanged_guardians_share_one_pool_entry() -> anyhow::Result<()> {
+    let connectors = ConnectorRegistry::build_from_testing_defaults()
+        .bind()
+        .await?;
+    let scope = ScopedPool::new(&connectors, None);
+    let before = peers(&["ws://g0-old/", "ws://g1/", "ws://g2/", "ws://g3/"]);
+    let after = peers(&["ws://g0-new/", "ws://g1/", "ws://g2/", "ws://g3/"]);
+    let dials = Arc::new(AtomicUsize::new(0));
+
+    for route_set in [&before, &after] {
+        for url in route_set.values() {
+            let dials = dials.clone();
+            connection_with(&scope, url, move |_, _, _| {
+                let dials = dials.clone();
+                async move {
+                    dials.fetch_add(1, Ordering::SeqCst);
+                    Ok(Arc::new(FakeConnection) as DynGuaridianConnection)
+                }
             })
             .await?;
-        drop(connection);
-        drop(peer); // Simulate retiring the route client after a rotation.
+        }
     }
 
-    assert_eq!(live.load(Ordering::SeqCst), 2);
-    let next = SafeUrl::from_str("ws://127.0.0.1:1003/")?;
-    let error = registry
-        .connection(&next, None, ConnectionClass::Trusted)
-        .expect_err("a third successful endpoint could outlive its retired client");
-    assert!(format!("{error}").contains("connection budget exhausted"));
-    assert_eq!(live.load(Ordering::SeqCst), 2);
+    assert_eq!(dials.load(Ordering::SeqCst), before.len() + 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn scoped_pool_debug_redacts_secret() -> anyhow::Result<()> {
+    let connectors = ConnectorRegistry::build_from_testing_defaults()
+        .bind()
+        .await?;
+    let scope = ScopedPool::new(&connectors, Some("hunter2".to_owned()));
+    let api = PooledApi {
+        scope: scope.clone(),
+        peers: Arc::new(peers(&["ws://g0/"])),
+        peer_ids: Arc::new(BTreeSet::from([PeerId::from(0)])),
+        module_id: None,
+    };
+    for debug in [format!("{scope:?}"), format!("{api:?}")] {
+        assert!(!debug.contains("hunter2"), "{debug}");
+        assert!(debug.contains("<redacted>"), "{debug}");
+    }
     Ok(())
 }

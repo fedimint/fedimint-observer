@@ -301,7 +301,8 @@ async fn fetch_invite_endpoints_with_fallback(
             Ok(async move { request_invite_endpoints(&api, federation_id).await })
         },
         move || {
-            let api = observer.lookup_api_without_announcements(global, api_secret)?;
+            let api =
+                observer.lookup_api_without_announcements(federation_id, global, api_secret)?;
             Ok(async move { request_invite_endpoints(&api, federation_id).await })
         },
     )
@@ -344,7 +345,8 @@ async fn fetch_consensus_config_with_fallback(
             Ok(async move { request_consensus_config(&api, federation_id).await })
         },
         move || {
-            let api = observer.lookup_api_without_announcements(global, api_secret)?;
+            let api =
+                observer.lookup_api_without_announcements(federation_id, global, api_secret)?;
             Ok(async move { request_consensus_config(&api, federation_id).await })
         },
     )
@@ -396,8 +398,7 @@ async fn request_consensus_config(
     Ok(config)
 }
 
-/// A config naming only guardian endpoints, which is all
-/// [`FederationObserver::federation_api`] looks at
+/// A config with only guardian endpoints, all that lookups read
 fn endpoints_config(api_endpoints: BTreeMap<PeerId, PeerUrl>) -> GlobalClientConfig {
     GlobalClientConfig {
         api_endpoints,

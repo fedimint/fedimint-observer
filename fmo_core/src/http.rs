@@ -164,6 +164,8 @@ pub(crate) async fn metrics(State(state): State<AppState>) -> Response {
         "fmo_workers_healthy {}\n",
         u8::from(state.federation_observer.healthy())
     ));
+    let (admitted, held) = state.federation_observer.route_admission_status();
+    body.push_str(&format!("# HELP fmo_guardian_endpoints_admitted Trusted guardian URLs this process may dial\n# TYPE fmo_guardian_endpoints_admitted gauge\nfmo_guardian_endpoints_admitted {admitted}\n# HELP fmo_guardian_routes_held Guardians whose newest route exceeds the admission budget\n# TYPE fmo_guardian_routes_held gauge\nfmo_guardian_routes_held {held}\n"));
     (
         [
             (header::CONTENT_TYPE, "text/plain; version=0.0.4"),

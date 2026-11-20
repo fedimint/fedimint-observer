@@ -69,7 +69,7 @@ fn signed_rotation_overrides_only_the_target_guardian() {
         verify_and_merge_announcements(fed_id, &config, &BTreeMap::new(), &incoming);
 
     assert!(changed, "the valid signed rotation must be accepted");
-    let active = active_api_peers(&config, Some(&updated));
+    let active = latest_api_peers(&config, Some(&updated));
     assert_eq!(
         active.get(&p0),
         Some(&url0_migrated),
@@ -275,7 +275,7 @@ fn unsupported_transport_is_never_added_to_active_routes() {
 
     assert!(!changed, "an unsupported transport must be rejected");
     assert_eq!(
-        active_api_peers(&config, Some(&updated)).get(&p0),
+        latest_api_peers(&config, Some(&updated)).get(&p0),
         Some(&canonical_url),
         "rejecting the announcement must leave the canonical route active"
     );
@@ -302,7 +302,7 @@ fn gateway_only_http_transport_is_rejected_for_guardian_routes() {
         "the HTTP connector serves gateways but cannot connect to guardians"
     );
     assert_eq!(
-        active_api_peers(&config, Some(&updated)).get(&peer),
+        latest_api_peers(&config, Some(&updated)).get(&peer),
         Some(&canonical_url),
         "rejecting a gateway-only transport must preserve the working guardian route"
     );
@@ -343,7 +343,7 @@ fn federation_without_broadcast_keys_keeps_canonical_routes() {
         "an announcement cannot be trusted without canonical broadcast keys"
     );
     assert_eq!(
-        active_api_peers(&global, Some(&updated)).get(&p0),
+        latest_api_peers(&global, Some(&updated)).get(&p0),
         Some(&url0),
         "the canonical route must remain active when verification is impossible"
     );
@@ -427,7 +427,7 @@ fn route_rotation_does_not_change_the_canonical_federation_id() {
     assert!(changed, "the signed rotation must affect active dialing");
 
     // Dialing peers uses the rotated URL
-    let active_peers = active_api_peers(&config, Some(&announced));
+    let active_peers = latest_api_peers(&config, Some(&announced));
     assert_eq!(
         active_peers.get(&p0),
         Some(&url0_rotated),
