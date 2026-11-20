@@ -40,6 +40,7 @@ mod meta;
 pub mod module;
 mod observations;
 mod pagination;
+pub mod public_address;
 mod runtime;
 mod task;
 mod util;

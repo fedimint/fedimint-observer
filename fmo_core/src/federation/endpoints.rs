@@ -22,6 +22,20 @@ fn is_valid_endpoint_scheme(url: &SafeUrl) -> bool {
     ALLOWED_URL_SCHEMES.contains(&scheme)
 }
 
+/// Whether `url` names a non-public IP or `localhost`; hostnames aren't
+/// resolved
+fn non_public_host(url: &SafeUrl) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).trim_end_matches('.');
+    host.eq_ignore_ascii_case("localhost")
+        || host.to_ascii_lowercase().ends_with(".localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| !crate::public_address::public_ip(ip))
+}
+
 /// A guardian route whose signature and scheme have been verified
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedRoute {
@@ -80,11 +94,11 @@ pub fn active_api_peers(
 /// Adds verified announcements with a higher nonce; returns whether any did
 pub fn verify_and_merge_announcements(
     federation_id: FederationId,
-    broadcast_public_keys: Option<&BTreeMap<PeerId, secp256k1::PublicKey>>,
+    global: &GlobalClientConfig,
     existing: &GuardianEndpointsMap,
     incoming: &BTreeMap<PeerId, SignedApiAnnouncement>,
 ) -> (GuardianEndpointsMap, bool) {
-    let Some(keys) = broadcast_public_keys else {
+    let Some(keys) = global.broadcast_public_keys.as_ref() else {
         warn!(
             %federation_id,
             "Federation has no broadcast public keys in config; rejecting all dynamic endpoint announcements"
@@ -119,6 +133,21 @@ pub fn verify_and_merge_announcements(
                 continue;
             }
         };
+
+        // A public guardian can't redirect the observer into private networks.
+        if non_public_host(verified_route.url())
+            && !global
+                .api_endpoints
+                .get(&peer_id)
+                .is_some_and(|endpoint| non_public_host(&endpoint.url))
+        {
+            warn!(
+                %federation_id,
+                %peer_id,
+                "Rejecting announcement that moves a public guardian to a non-public address"
+            );
+            continue;
+        }
 
         // Only a strictly higher nonce
         let new_nonce = verified_route.nonce();

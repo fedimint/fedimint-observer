@@ -134,15 +134,47 @@ fn unknown_announcements_cannot_suppress_a_known_rotation() {
         announcements.insert(peer_id, discovery_announcement(peer_id));
     }
 
-    let window = bounded_announcement_window(announcements, &config, 0, 64);
-    assert_eq!(window.total_known, 1);
-    assert_eq!(window.announcements.len(), 1);
-    assert!(window.announcements.contains_key(&known_peer));
+    let admitted =
+        admit_announcements(serde_json::to_value(announcements).unwrap(), &config).unwrap();
+    assert_eq!(
+        admitted.rejected, 0,
+        "unknown peers are ignored, not counted"
+    );
+    assert_eq!(
+        admitted.announcements.keys().copied().collect::<Vec<_>>(),
+        vec![known_peer]
+    );
+}
+
+#[test]
+fn one_oversized_announcement_cannot_block_other_routes() {
+    use fedimint_core::net::api_announcement::ApiAnnouncement;
+    use fedimint_core::secp256k1::SECP256K1;
+
+    let config = discovery_config(3);
+    let oversized = ApiAnnouncement::new(
+        SafeUrl::parse(&format!("wss://g1.example.com/{}", "a".repeat(8 * 1024))).unwrap(),
+        2,
+    )
+    .sign(SECP256K1, &discovery_keypair());
+    let reply = serde_json::json!({
+        "0": discovery_announcement(PeerId::from(0)),
+        "1": oversized,
+        "2": {"not": "an announcement"},
+    });
+
+    let admitted = admit_announcements(reply, &config).unwrap();
+    assert_eq!(admitted.rejected, 2);
+    assert_eq!(
+        admitted.announcements.keys().copied().collect::<Vec<_>>(),
+        vec![PeerId::from(0)],
+        "the valid member's rotation must still be admitted"
+    );
+    assert!(admit_announcements(serde_json::json!([1, 2]), &config).is_none());
 }
 
 #[test]
 fn large_federation_rotates_bounded_announcement_windows() {
-    let config = discovery_config(70);
     let announcements = (0..70)
         .map(|index| {
             let peer_id = PeerId::from(index);
@@ -150,8 +182,8 @@ fn large_federation_rotates_bounded_announcement_windows() {
         })
         .collect::<BTreeMap<_, _>>();
 
-    let first = bounded_announcement_window(announcements.clone(), &config, 0, 64);
-    let second = bounded_announcement_window(announcements, &config, first.next_start, 64);
+    let first = bounded_announcement_window(announcements.clone(), 0, 64);
+    let second = bounded_announcement_window(announcements, first.next_start, 64);
     assert_eq!(first.announcements.len(), 64);
     assert_eq!(second.announcements.len(), 64);
     let covered = first
@@ -262,12 +294,7 @@ fn test_migrated_guardian_endpoint_resolution() {
     incoming.insert(peer1, announcement);
 
     let existing = GuardianEndpointsMap::new();
-    let (updated, changed) = verify_and_merge_announcements(
-        fed_id,
-        global.broadcast_public_keys.as_ref(),
-        &existing,
-        &incoming,
-    );
+    let (updated, changed) = verify_and_merge_announcements(fed_id, &global, &existing, &incoming);
     assert!(changed);
 
     // 3. Health check now resolves to new URL
@@ -278,12 +305,8 @@ fn test_migrated_guardian_endpoint_resolution() {
     let stale_announcement = ApiAnnouncement::new(old_url.clone(), 1).sign(SECP256K1, &keypair);
     let mut incoming_stale = BTreeMap::new();
     incoming_stale.insert(peer1, stale_announcement);
-    let (updated_after_stale, changed_stale) = verify_and_merge_announcements(
-        fed_id,
-        global.broadcast_public_keys.as_ref(),
-        &updated,
-        &incoming_stale,
-    );
+    let (updated_after_stale, changed_stale) =
+        verify_and_merge_announcements(fed_id, &global, &updated, &incoming_stale);
     assert!(!changed_stale);
     assert_eq!(updated_after_stale.get(&peer1).unwrap().url(), &new_url);
 
@@ -295,12 +318,8 @@ fn test_migrated_guardian_endpoint_resolution() {
     let forged_announcement = ApiAnnouncement::new(old_url, 2).sign(SECP256K1, &fake_keypair);
     let mut incoming_forged = BTreeMap::new();
     incoming_forged.insert(peer1, forged_announcement);
-    let (updated_after_forge, changed_forge) = verify_and_merge_announcements(
-        fed_id,
-        global.broadcast_public_keys.as_ref(),
-        &updated,
-        &incoming_forged,
-    );
+    let (updated_after_forge, changed_forge) =
+        verify_and_merge_announcements(fed_id, &global, &updated, &incoming_forged);
     assert!(!changed_forge);
     assert_eq!(updated_after_forge.get(&peer1).unwrap().url(), &new_url);
 }

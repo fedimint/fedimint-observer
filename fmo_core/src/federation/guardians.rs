@@ -229,19 +229,15 @@ impl FederationObserver {
                         continue;
                     }
                 };
-                if !json_fits_admission_limit(&value, MAX_ACCEPTED_ANNOUNCEMENT_BYTES) {
-                    tracing::warn!(%federation_id, %answering_peer, limit = MAX_ACCEPTED_ANNOUNCEMENT_BYTES, "Ignoring guardian endpoint announcement response above the admission limit");
-                    continue;
-                }
-                let Ok(announcements) =
-                    serde_json::from_value::<BTreeMap<PeerId, SignedApiAnnouncement>>(value)
-                else {
+                let Some(admitted) = admit_announcements(value, &config.global) else {
                     tracing::warn!(%federation_id, %answering_peer, "Ignoring malformed guardian endpoint announcement response");
                     continue;
                 };
+                if admitted.rejected > 0 {
+                    tracing::warn!(%federation_id, %answering_peer, rejected = admitted.rejected, limit = MAX_ANNOUNCEMENT_BYTES, "Skipping oversized or malformed guardian endpoint announcements");
+                }
                 let announcement_window = bounded_announcement_window(
-                    announcements,
-                    &config.global,
+                    admitted.announcements,
                     next_announcement,
                     MAX_ANNOUNCEMENTS_VERIFIED_PER_RESPONSE,
                 );
@@ -257,7 +253,7 @@ impl FederationObserver {
                 }
                 let (next, response_changed) = verify_and_merge_announcements(
                     federation_id,
-                    config.global.broadcast_public_keys.as_ref(),
+                    &config.global,
                     &updated,
                     &announcement_window.announcements,
                 );
@@ -599,8 +595,9 @@ const ANNOUNCEMENT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_ANNOUNCEMENT_QUERIES: usize = 4;
 const MAX_ANNOUNCEMENT_REQUESTS_PER_ROUND: usize = 64;
 const MAX_ANNOUNCEMENTS_VERIFIED_PER_RESPONSE: usize = 64;
-// Checked after decoding: the pinned connector has no per-RPC receive cap.
-const MAX_ACCEPTED_ANNOUNCEMENT_BYTES: usize = 64 * 1024;
+// Per announcement, so one guardian can't block the others' routes. Checked
+// after decoding: the pinned connector has no per-RPC receive cap.
+const MAX_ANNOUNCEMENT_BYTES: usize = 4 * 1024;
 
 struct LimitedWriter {
     remaining: usize,
@@ -624,32 +621,59 @@ fn json_fits_admission_limit(value: &serde_json::Value, limit: usize) -> bool {
     serde_json::to_writer(LimitedWriter { remaining: limit }, value).is_ok()
 }
 
+struct AdmittedAnnouncements {
+    announcements: BTreeMap<PeerId, SignedApiAnnouncement>,
+    /// Members' announcements skipped as oversized or malformed
+    rejected: usize,
+}
+
+/// Members' announcements within the size limit; `None` if not a JSON map
+fn admit_announcements(
+    value: serde_json::Value,
+    global: &fedimint_core::config::GlobalClientConfig,
+) -> Option<AdmittedAnnouncements> {
+    let serde_json::Value::Object(entries) = value else {
+        return None;
+    };
+    let keys = global.broadcast_public_keys.as_ref();
+    let mut admitted = AdmittedAnnouncements {
+        announcements: BTreeMap::new(),
+        rejected: 0,
+    };
+    for (key, entry) in entries {
+        let Some(peer_id) = key.parse::<u16>().ok().map(PeerId::from).filter(|peer_id| {
+            global.api_endpoints.contains_key(peer_id)
+                && keys.is_some_and(|keys| keys.contains_key(peer_id))
+        }) else {
+            continue;
+        };
+        if !json_fits_admission_limit(&entry, MAX_ANNOUNCEMENT_BYTES) {
+            admitted.rejected += 1;
+            continue;
+        }
+        match serde_json::from_value::<SignedApiAnnouncement>(entry) {
+            Ok(announcement) => {
+                admitted.announcements.insert(peer_id, announcement);
+            }
+            Err(_) => admitted.rejected += 1,
+        }
+    }
+    Some(admitted)
+}
+
 struct AnnouncementWindow {
     announcements: BTreeMap<PeerId, SignedApiAnnouncement>,
     next_start: usize,
     total_known: usize,
 }
 
-/// Known members only, starting at a rotating offset in large federations
+/// Up to `limit` announcements, starting at a rotating offset
 fn bounded_announcement_window(
     announcements: BTreeMap<PeerId, SignedApiAnnouncement>,
-    global: &fedimint_core::config::GlobalClientConfig,
     start: usize,
     limit: usize,
 ) -> AnnouncementWindow {
-    let Some(keys) = global.broadcast_public_keys.as_ref() else {
-        return AnnouncementWindow {
-            announcements: BTreeMap::new(),
-            next_start: 0,
-            total_known: 0,
-        };
-    };
-    let mut known = announcements
-        .into_iter()
-        .filter(|(peer_id, _)| {
-            global.api_endpoints.contains_key(peer_id) && keys.contains_key(peer_id)
-        })
-        .collect::<Vec<_>>();
+    let mut known = announcements.into_iter().collect::<Vec<_>>();
     let total_known = known.len();
     if total_known == 0 {
         return AnnouncementWindow {

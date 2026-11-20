@@ -65,12 +65,8 @@ fn signed_rotation_overrides_only_the_target_guardian() {
     let mut incoming = BTreeMap::new();
     incoming.insert(p0, signed0);
 
-    let (updated, changed) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &BTreeMap::new(),
-        &incoming,
-    );
+    let (updated, changed) =
+        verify_and_merge_announcements(fed_id, &config, &BTreeMap::new(), &incoming);
 
     assert!(changed, "the valid signed rotation must be accepted");
     let active = active_api_peers(&config, Some(&updated));
@@ -96,7 +92,7 @@ fn higher_nonce_replaces_the_previously_accepted_route() {
     let first = ApiAnnouncement::new(first_url, 10).sign(SECP256K1, &keypair);
     let (current, first_changed) = verify_and_merge_announcements(
         federation_id,
-        config.broadcast_public_keys.as_ref(),
+        &config,
         &BTreeMap::new(),
         &[(peer, first)].into_iter().collect(),
     );
@@ -105,7 +101,7 @@ fn higher_nonce_replaces_the_previously_accepted_route() {
     let newest = ApiAnnouncement::new(newest_url.clone(), 20).sign(SECP256K1, &keypair);
     let (updated, changed) = verify_and_merge_announcements(
         federation_id,
-        config.broadcast_public_keys.as_ref(),
+        &config,
         &current,
         &[(peer, newest)].into_iter().collect(),
     );
@@ -132,7 +128,7 @@ fn canonical_recovery_accepts_second_rotation_without_stale_downgrade() {
     let first = ApiAnnouncement::new(first_url, 1).sign(SECP256K1, &keypair);
     let (first_routes, changed) = verify_and_merge_announcements(
         federation_id,
-        config.broadcast_public_keys.as_ref(),
+        &config,
         &BTreeMap::new(),
         &[(peer, first.clone())].into_iter().collect(),
     );
@@ -143,13 +139,13 @@ fn canonical_recovery_accepts_second_rotation_without_stale_downgrade() {
     let second = ApiAnnouncement::new(second_url.clone(), 2).sign(SECP256K1, &keypair);
     let (after_stale, stale_changed) = verify_and_merge_announcements(
         federation_id,
-        config.broadcast_public_keys.as_ref(),
+        &config,
         &first_routes,
         &[(peer, first)].into_iter().collect(),
     );
     let (recovered, recovered_changed) = verify_and_merge_announcements(
         federation_id,
-        config.broadcast_public_keys.as_ref(),
+        &config,
         &after_stale,
         &[(peer, second)].into_iter().collect(),
     );
@@ -189,12 +185,7 @@ fn announcement_signed_by_another_guardian_is_ignored() {
     incoming.insert(p0, forged);
 
     let existing = BTreeMap::new();
-    let (updated, changed) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &existing,
-        &incoming,
-    );
+    let (updated, changed) = verify_and_merge_announcements(fed_id, &config, &existing, &incoming);
 
     assert!(!changed, "a signature from the wrong guardian must fail");
     assert!(
@@ -218,12 +209,8 @@ fn equal_or_lower_nonce_cannot_roll_back_an_accepted_route() {
     let mut incoming = BTreeMap::new();
     incoming.insert(p0, signed_v10);
 
-    let (existing, _) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &BTreeMap::new(),
-        &incoming,
-    );
+    let (existing, _) =
+        verify_and_merge_announcements(fed_id, &config, &BTreeMap::new(), &incoming);
 
     // 1. Equal nonce (10) rejected
     let signed_equal = ApiAnnouncement::new(
@@ -234,12 +221,8 @@ fn equal_or_lower_nonce_cannot_roll_back_an_accepted_route() {
     let mut incoming_equal = BTreeMap::new();
     incoming_equal.insert(p0, signed_equal);
 
-    let (updated_equal, changed_equal) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &existing,
-        &incoming_equal,
-    );
+    let (updated_equal, changed_equal) =
+        verify_and_merge_announcements(fed_id, &config, &existing, &incoming_equal);
     assert!(
         !changed_equal,
         "an equal nonce must not replace the accepted route"
@@ -261,12 +244,8 @@ fn equal_or_lower_nonce_cannot_roll_back_an_accepted_route() {
     let mut incoming_lower = BTreeMap::new();
     incoming_lower.insert(p0, signed_lower);
 
-    let (updated_lower, changed_lower) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &existing,
-        &incoming_lower,
-    );
+    let (updated_lower, changed_lower) =
+        verify_and_merge_announcements(fed_id, &config, &existing, &incoming_lower);
     assert!(!changed_lower, "a lower nonce must not roll the route back");
     assert_eq!(
         updated_lower
@@ -291,12 +270,8 @@ fn unsupported_transport_is_never_added_to_active_routes() {
     let mut incoming = BTreeMap::new();
     incoming.insert(p0, signed);
 
-    let (updated, changed) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &BTreeMap::new(),
-        &incoming,
-    );
+    let (updated, changed) =
+        verify_and_merge_announcements(fed_id, &config, &BTreeMap::new(), &incoming);
 
     assert!(!changed, "an unsupported transport must be rejected");
     assert_eq!(
@@ -317,7 +292,7 @@ fn gateway_only_http_transport_is_rejected_for_guardian_routes() {
     let signed = ApiAnnouncement::new(http_url, 10).sign(SECP256K1, &keypair);
     let (updated, changed) = verify_and_merge_announcements(
         federation_id,
-        config.broadcast_public_keys.as_ref(),
+        &config,
         &BTreeMap::new(),
         &[(peer, signed)].into_iter().collect(),
     );
@@ -360,12 +335,8 @@ fn federation_without_broadcast_keys_keeps_canonical_routes() {
     let mut incoming = BTreeMap::new();
     incoming.insert(p0, signed);
 
-    let (updated, changed) = verify_and_merge_announcements(
-        fed_id,
-        global.broadcast_public_keys.as_ref(),
-        &BTreeMap::new(),
-        &incoming,
-    );
+    let (updated, changed) =
+        verify_and_merge_announcements(fed_id, &global, &BTreeMap::new(), &incoming);
 
     assert!(
         !changed,
@@ -401,12 +372,8 @@ fn replica_restore_reverifies_signatures_and_preserves_newest_nonce() {
     stored.insert(p0, valid_signed);
     stored.insert(p1, forged_signed);
 
-    let (verified, changed) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &BTreeMap::new(),
-        &stored,
-    );
+    let (verified, changed) =
+        verify_and_merge_announcements(fed_id, &config, &BTreeMap::new(), &stored);
 
     assert!(changed, "the valid persisted route must be restored");
     assert_eq!(
@@ -420,7 +387,7 @@ fn replica_restore_reverifies_signatures_and_preserves_newest_nonce() {
         .sign(SECP256K1, &k0);
     let (restored, changed) = verify_and_merge_announcements(
         fed_id,
-        config.broadcast_public_keys.as_ref(),
+        &config,
         &verified,
         &[(p0, stale)].into_iter().collect(),
     );
@@ -455,12 +422,8 @@ fn route_rotation_does_not_change_the_canonical_federation_id() {
     let mut incoming = BTreeMap::new();
     incoming.insert(p0, signed_rotated);
 
-    let (announced, changed) = verify_and_merge_announcements(
-        fed_id,
-        config.broadcast_public_keys.as_ref(),
-        &BTreeMap::new(),
-        &incoming,
-    );
+    let (announced, changed) =
+        verify_and_merge_announcements(fed_id, &config, &BTreeMap::new(), &incoming);
     assert!(changed, "the signed rotation must affect active dialing");
 
     // Dialing peers uses the rotated URL
@@ -526,12 +489,8 @@ fn valid_rotation_from_another_peer_survives_a_forged_high_nonce() {
     let mut updated = GuardianEndpointsMap::new();
     let mut changed = false;
     for response in [peer_a_response, peer_b_response] {
-        let (next, response_changed) = verify_and_merge_announcements(
-            fed_id,
-            config.broadcast_public_keys.as_ref(),
-            &updated,
-            &response,
-        );
+        let (next, response_changed) =
+            verify_and_merge_announcements(fed_id, &config, &updated, &response);
         updated = next;
         changed |= response_changed;
     }
@@ -550,4 +509,63 @@ fn valid_rotation_from_another_peer_survives_a_forged_high_nonce() {
         .expect("peer one's valid rotation must be retained");
     assert_eq!(peer1_route.url(), &url1_v5);
     assert_eq!(peer1_route.nonce(), 5);
+}
+
+#[test]
+fn public_guardian_cannot_announce_a_non_public_address() {
+    let (p0, _, k0, pk0) = generate_test_guardian(0);
+    let (fed_id, config) = sample_global_config(&[(
+        p0,
+        pk0,
+        SafeUrl::from_str("wss://guardian0.example.com/").unwrap(),
+    )]);
+    let announce = |url: &str| {
+        let signed = ApiAnnouncement::new(SafeUrl::from_str(url).unwrap(), 1).sign(SECP256K1, &k0);
+        verify_and_merge_announcements(
+            fed_id,
+            &config,
+            &BTreeMap::new(),
+            &BTreeMap::from([(p0, signed)]),
+        )
+        .1
+    };
+
+    for url in [
+        "ws://127.0.0.1:8173/",
+        "ws://2130706433:8173/",
+        "wss://10.0.0.5/",
+        "ws://169.254.169.254/latest/meta-data/",
+        "ws://[::1]:8173/",
+        "ws://[::ffff:192.168.1.1]/",
+        "ws://localhost:8173/",
+        "ws://admin.LOCALHOST./",
+    ] {
+        assert!(!announce(url), "{url} must be rejected");
+    }
+    for url in [
+        "wss://guardian0-new.example.com/",
+        "ws://1.1.1.1:8173/",
+        "iroh://4ezhsc3hwr4q6n6r4h4yt4uf7pdazkbl2yoyevvwz5dcp7un6wka",
+    ] {
+        assert!(announce(url), "{url} must be accepted");
+    }
+}
+
+#[test]
+fn private_guardian_may_announce_another_private_address() {
+    let (p0, _, k0, pk0) = generate_test_guardian(0);
+    let (fed_id, config) =
+        sample_global_config(&[(p0, pk0, SafeUrl::from_str("ws://127.0.0.1:8173/").unwrap())]);
+    let signed = ApiAnnouncement::new(SafeUrl::from_str("ws://127.0.0.1:9173/").unwrap(), 1)
+        .sign(SECP256K1, &k0);
+    let (_, changed) = verify_and_merge_announcements(
+        fed_id,
+        &config,
+        &BTreeMap::new(),
+        &BTreeMap::from([(p0, signed)]),
+    );
+    assert!(
+        changed,
+        "a LAN or local federation keeps rotating within its network"
+    );
 }
