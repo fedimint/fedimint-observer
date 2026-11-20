@@ -21,7 +21,7 @@ fn peers(urls: &[&str]) -> ApiPeers {
 
 fn small_limits() -> ApiLimits {
     ApiLimits {
-        trusted_endpoints: 16,
+        announced_endpoints: 16,
         urls_per_guardian: 2,
         selections: 4,
         lookup_pairs: 4,
@@ -73,23 +73,25 @@ async fn hostile_guardian_exhausting_its_budget_holds_only_its_own_route() -> an
 }
 
 #[tokio::test]
-async fn canonical_admission_is_atomic() -> anyhow::Result<()> {
+async fn announcements_cannot_exhaust_canonical_capacity() -> anyhow::Result<()> {
     let mut clients = clients(ApiLimits {
-        trusted_endpoints: 3,
+        announced_endpoints: 1,
         ..small_limits()
     })
     .await?;
-    let first = peers(&["ws://x/", "ws://y/"]);
-    clients.selected(federation(1), &first, &first)?;
+    let first_canonical = peers(&["ws://canonical-1/"]);
+    clients.selected(
+        federation(1),
+        &first_canonical,
+        &peers(&["ws://announced-1/"]),
+    )?;
+    assert_eq!(clients.announced_urls.len(), 1);
 
-    let too_big = peers(&["ws://z/", "ws://w/"]);
-    assert!(clients.selected(federation(2), &too_big, &too_big).is_err());
-    assert_eq!(clients.trusted_urls.len(), 2, "nothing partially admitted");
-    assert_eq!(clients.selections.len(), 1);
-
-    let reusing = peers(&["ws://x/", "ws://z/"]);
-    clients.selected(federation(3), &reusing, &reusing)?;
-    assert_eq!(clients.trusted_urls.len(), 3);
+    let second_canonical = peers(&["ws://canonical-2/", "ws://canonical-3/"]);
+    let (selected, _) = clients.selected(federation(2), &second_canonical, &second_canonical)?;
+    assert_eq!(selected, second_canonical);
+    assert_eq!(clients.selections.len(), 2);
+    assert_eq!(clients.announced_urls.len(), 1);
     Ok(())
 }
 
@@ -108,7 +110,7 @@ async fn selection_limit_bounds_federations_sharing_urls() -> anyhow::Result<()>
     assert!(clients.selected(federation(3), &shared, &rotated).is_err());
     assert!(clients.canonical(federation(3), &shared).is_err());
     assert_eq!(clients.selections.len(), 2);
-    assert_eq!(clients.trusted_urls.len(), 1);
+    assert!(clients.announced_urls.is_empty());
     assert!(clients.guardian_urls.is_empty());
     Ok(())
 }
@@ -119,31 +121,32 @@ async fn canonical_client_initializes_its_selection() -> anyhow::Result<()> {
     let canonical = peers(&["ws://g0/", "ws://g1/"]);
     clients.canonical(federation(1), &canonical)?;
     assert_eq!(clients.selections[&federation(1)].peers, canonical);
-    assert_eq!(clients.trusted_urls.len(), 2);
+    assert!(clients.announced_urls.is_empty());
     Ok(())
 }
 
 #[tokio::test]
 async fn already_admitted_url_needs_no_global_slot() -> anyhow::Result<()> {
     let mut clients = clients(ApiLimits {
-        trusted_endpoints: 2,
+        announced_endpoints: 1,
         ..small_limits()
     })
     .await?;
     let first = peers(&["ws://x/"]);
     let second = peers(&["ws://y/"]);
     clients.selected(federation(1), &first, &first)?;
-    clients.selected(federation(2), &second, &second)?;
+    clients.selected(federation(2), &second, &peers(&["ws://z/"]))?;
 
-    let (selected, _) = clients.selected(federation(1), &first, &second)?;
-    assert_eq!(selected, second, "a known URL takes no new global slot");
+    let announced = peers(&["ws://z/"]);
+    let (selected, _) = clients.selected(federation(1), &first, &announced)?;
+    assert_eq!(selected, announced, "a known URL takes no new global slot");
     assert_eq!(
         clients.guardian_urls[&(federation(1), PeerId::from(0))].len(),
         1
     );
 
-    let (selected, _) = clients.selected(federation(1), &first, &peers(&["ws://z/"]))?;
-    assert_eq!(selected, second, "the global limit holds a new URL");
+    let (selected, _) = clients.selected(federation(1), &first, &peers(&["ws://w/"]))?;
+    assert_eq!(selected, announced, "the global limit holds a new URL");
     Ok(())
 }
 
@@ -197,9 +200,9 @@ async fn failed_lookup_creates_no_pool() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn public_lookups_never_consume_trusted_admission() -> anyhow::Result<()> {
+async fn public_lookups_never_consume_announced_admission() -> anyhow::Result<()> {
     let mut clients = clients(ApiLimits {
-        trusted_endpoints: 1,
+        announced_endpoints: 1,
         ..small_limits()
     })
     .await?;
@@ -216,7 +219,11 @@ async fn public_lookups_never_consume_trusted_admission() -> anyhow::Result<()> 
         peers(&["ws://c/", "ws://d/"]),
         None,
     )?;
-    assert!(clients.trusted_urls.is_empty());
+    assert!(clients.announced_urls.is_empty());
+    assert!(
+        clients.selections.is_empty(),
+        "lookups never create a selection"
+    );
 
     let observed = peers(&["ws://observed/"]);
     clients.selected(federation(1), &observed, &observed)?;

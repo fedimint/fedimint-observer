@@ -14,8 +14,8 @@ use crate::guardian_api::{guardian_api, ApiPeers, ScopedPool};
 #[cfg(test)]
 mod tests;
 
-/// Distinct trusted guardian URLs, canonical and announced
-const MAX_TRUSTED_ENDPOINTS: usize = 4096;
+/// Distinct announced guardian URLs
+const MAX_ANNOUNCED_ENDPOINTS: usize = 4096;
 /// Announced URLs each guardian may introduce
 const MAX_URLS_PER_GUARDIAN: usize = 16;
 /// Federations with a selected route
@@ -29,7 +29,7 @@ const MAX_LOOKUP_CLIENTS: usize = 512;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ApiLimits {
-    trusted_endpoints: usize,
+    announced_endpoints: usize,
     urls_per_guardian: usize,
     selections: usize,
     lookup_pairs: usize,
@@ -40,7 +40,7 @@ pub(crate) struct ApiLimits {
 impl Default for ApiLimits {
     fn default() -> Self {
         Self {
-            trusted_endpoints: MAX_TRUSTED_ENDPOINTS,
+            announced_endpoints: MAX_ANNOUNCED_ENDPOINTS,
             urls_per_guardian: MAX_URLS_PER_GUARDIAN,
             selections: MAX_SELECTIONS,
             lookup_pairs: MAX_LOOKUP_PAIRS,
@@ -87,7 +87,7 @@ pub(crate) struct ApiClients {
     connectors: ConnectorRegistry,
     /// Observed and canonical clients; no API secret
     trusted: ScopedPool,
-    trusted_urls: HashSet<SafeUrl>,
+    announced_urls: HashSet<SafeUrl>,
     /// Announced URLs admitted per guardian
     guardian_urls: HashMap<(FederationId, PeerId), Vec<SafeUrl>>,
     selections: HashMap<FederationId, Selection>,
@@ -106,7 +106,7 @@ pub(crate) struct ApiClients {
 impl std::fmt::Debug for ApiClients {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ApiClients")
-            .field("trusted_urls", &self.trusted_urls.len())
+            .field("announced_urls", &self.announced_urls.len())
             .field("selections", &self.selections.len())
             .field("held", &self.held.len())
             .field("lookup_pools", &self.lookup_pools.len())
@@ -122,7 +122,7 @@ impl ApiClients {
             limits,
             connectors: connectors.clone(),
             trusted: ScopedPool::new(connectors, None),
-            trusted_urls: HashSet::new(),
+            announced_urls: HashSet::new(),
             guardian_urls: HashMap::new(),
             selections: HashMap::new(),
             held: HashSet::new(),
@@ -135,12 +135,12 @@ impl ApiClients {
         }
     }
 
-    /// Trusted URLs admitted, and guardians held on an older route
+    /// Announced URLs admitted, and guardians held on an older route
     pub(crate) fn admission_status(&self) -> (usize, usize) {
-        (self.trusted_urls.len(), self.held.len())
+        (self.announced_urls.len(), self.held.len())
     }
 
-    /// The federation's selection; admits its canonical URLs all or nothing
+    /// The federation's selection; canonical URLs are free
     fn ensure_selection(
         &mut self,
         federation_id: FederationId,
@@ -153,18 +153,6 @@ impl ApiClients {
                 )
                 .into());
             }
-            let new_urls = canonical
-                .values()
-                .filter(|url| !self.trusted_urls.contains(*url))
-                .cloned()
-                .collect::<HashSet<_>>();
-            if self.trusted_urls.len() + new_urls.len() > self.limits.trusted_endpoints {
-                return Err(ClientError::unavailable(
-                    "Too many guardian endpoints; try again after the observer restarts",
-                )
-                .into());
-            }
-            self.trusted_urls.extend(new_urls);
             let api = guardian_api(&self.trusted, canonical.clone());
             self.selections.insert(
                 federation_id,
@@ -196,14 +184,14 @@ impl ApiClients {
         if urls.contains(url) {
             return true;
         }
-        let needs_slot = !self.trusted_urls.contains(url);
+        let needs_slot = !self.announced_urls.contains(url);
         if urls.len() >= self.limits.urls_per_guardian
-            || (needs_slot && self.trusted_urls.len() >= self.limits.trusted_endpoints)
+            || (needs_slot && self.announced_urls.len() >= self.limits.announced_endpoints)
         {
             return false;
         }
         urls.push(url.clone());
-        self.trusted_urls.insert(url.clone());
+        self.announced_urls.insert(url.clone());
         true
     }
 
@@ -234,7 +222,7 @@ impl ApiClients {
                     %federation_id,
                     %peer_id,
                     urls_per_guardian = self.limits.urls_per_guardian,
-                    trusted_endpoints = self.trusted_urls.len(),
+                    announced_endpoints = self.announced_urls.len(),
                     "Guardian route not admitted; keeping its previous route until restart"
                 );
             }

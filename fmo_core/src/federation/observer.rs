@@ -671,7 +671,7 @@ impl FederationObserver {
             .expect("API client cache lock poisoned")
     }
 
-    /// Trusted URLs admitted, and guardians held on an older route
+    /// Announced URLs admitted, and guardians held on an older route
     pub(crate) fn route_admission_status(&self) -> (usize, usize) {
         self.api_clients().admission_status()
     }
