@@ -196,7 +196,7 @@ empty, isolated database, rolls back its fixtures, and does not use
 
 | Variable | Command |
 | --- | --- |
-| `FMO_WORK_TEST_DATABASE` | `cargo test -p fmo_core postgres_ -- --ignored` |
+| `FMO_WORK_TEST_DATABASE` | `cargo test -p fmo_core postgres_ -- --ignored --test-threads=1` |
 | `FMO_WALLETV2_TEST_DATABASE` | `cargo test -p fmo_module_walletv2 postgres_ -- --ignored` |
 | `FMO_LNV2_TEST_DATABASE` | `cargo test -p fmo_module_lnv2 postgres_ -- --ignored` |
 
