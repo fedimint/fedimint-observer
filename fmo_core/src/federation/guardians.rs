@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
@@ -9,17 +10,19 @@ use fedimint_api_client::api::{DynGlobalApi, FederationApiExt, StatusResponse};
 use fedimint_core::config::{ClientConfig, FederationId};
 use fedimint_core::core::ModuleInstanceId;
 use fedimint_core::encoding::Encodable;
-use fedimint_core::endpoint_constants::STATUS_ENDPOINT;
+use fedimint_core::endpoint_constants::{API_ANNOUNCEMENTS_ENDPOINT, STATUS_ENDPOINT};
 use fedimint_core::module::ApiRequestErased;
+use fedimint_core::net::api_announcement::SignedApiAnnouncement;
+use fedimint_core::util::SafeUrl;
 use fedimint_core::{NumPeers, PeerId};
 use fedimint_wallet_common::endpoint_constants::BLOCK_COUNT_LOCAL_ENDPOINT;
 use fmo_api_types::{FederationHealth, GuardianHealth, GuardianHealthLatest};
 use futures::future::join_all;
+use futures::{stream, StreamExt};
 use postgres_from_row::FromRow;
 use tracing::info;
 
 use crate::federation::endpoints::verify_and_merge_announcements;
-
 use crate::federation::observer::FederationObserver;
 use crate::util::{module_instance_id, query};
 
@@ -29,7 +32,6 @@ impl FederationObserver {
         federation_id: FederationId,
         config: ClientConfig,
     ) -> anyhow::Result<()> {
-        let mut api = self.federation_api(&config.global)?;
         let block_source = BlockHeightSource::of(&config);
         let peer_ids: Vec<PeerId> = config.global.api_endpoints.keys().copied().collect();
 
@@ -41,10 +43,11 @@ impl FederationObserver {
             log_poll_interval(poll_interval, offline_since);
         }
 
-        let mut last_announcement_check = Instant::now() - Duration::from_secs(3600);
-
         loop {
             let poll_started = tokio::time::Instant::now();
+            // Resolve once per bounded health round so a route rotation retires
+            // the old connector pool before the next sample.
+            let api = self.federation_api(&config.global)?;
 
             let mut peer_status_responses = poll_guardians(&api, &peer_ids, block_source).await;
             // While backed off, a miss can be a connection that is still being
@@ -58,114 +61,9 @@ impl FederationObserver {
                 tokio::time::sleep(BACKED_OFF_RETRY_DELAY).await;
                 peer_status_responses = poll_guardians(&api, &peer_ids, block_source).await;
             }
-            let mut any_answered = peer_status_responses
+            let any_answered = peer_status_responses
                 .iter()
                 .any(|(_, status, ..)| status.is_some());
-            let any_offline = peer_status_responses
-                .iter()
-                .any(|(_, status, ..)| status.is_none());
-
-            if any_answered
-                && (any_offline || last_announcement_check.elapsed() >= Duration::from_secs(300))
-            {
-                let answering_peers: Vec<PeerId> = peer_status_responses
-                    .iter()
-                    .filter_map(|(id, status, ..)| status.as_ref().map(|_| *id))
-                    .collect();
-
-                let queries = answering_peers.iter().map(|&answering_peer| {
-                    let api = &api;
-                    async move {
-                        match tokio::time::timeout(
-                            Duration::from_secs(5),
-                            api.api_announcements(answering_peer),
-                        )
-                        .await
-                        {
-                            Ok(Ok(announcements)) => Some(announcements),
-                            Ok(Err(err)) => {
-                                tracing::debug!(
-                                    %federation_id,
-                                    %answering_peer,
-                                    err = %err,
-                                    "Failed to fetch API announcements from peer"
-                                );
-                                None
-                            }
-                            Err(_) => {
-                                tracing::debug!(
-                                    %federation_id,
-                                    %answering_peer,
-                                    "Timed out fetching API announcements from peer"
-                                );
-                                None
-                            }
-                        }
-                    }
-                });
-
-                let results = futures::future::join_all(queries).await;
-                if results.iter().any(Option::is_some) {
-                    last_announcement_check = Instant::now();
-                }
-
-                let mut merged_incoming = BTreeMap::new();
-                for announcements in results.into_iter().flatten() {
-                    for (target_peer, announcement) in announcements {
-                        match merged_incoming.entry(target_peer) {
-                            std::collections::btree_map::Entry::Vacant(e) => {
-                                e.insert(announcement);
-                            }
-                            std::collections::btree_map::Entry::Occupied(mut e) => {
-                                if announcement.api_announcement.nonce
-                                    > e.get().api_announcement.nonce
-                                {
-                                    e.insert(announcement);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if !merged_incoming.is_empty() {
-                    let existing = self
-                        .get_guardian_endpoints(federation_id)
-                        .unwrap_or_default();
-                    let (updated, changed) = verify_and_merge_announcements(
-                        federation_id,
-                        config.global.broadcast_public_keys.as_ref(),
-                        &existing,
-                        &merged_incoming,
-                    );
-
-                    if changed {
-                        let old_peers = self.active_api_peers(federation_id, &config.global);
-                        if let Err(e) = self
-                            .update_guardian_endpoints(federation_id, &updated)
-                            .await
-                        {
-                            tracing::error!(%federation_id, err = %e, "Failed to persist updated guardian endpoints");
-                        } else {
-                            self.invalidate_observed_client(&old_peers);
-                            match self.federation_api(&config.global) {
-                                Ok(new_api) => {
-                                    api = new_api;
-                                    if any_offline {
-                                        peer_status_responses =
-                                            poll_guardians(&api, &peer_ids, block_source).await;
-                                        any_answered = peer_status_responses
-                                            .iter()
-                                            .any(|(_, status, ..)| status.is_some());
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!(%federation_id, err = %e, "Failed to rebuild API client with updated endpoints");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
 
             let timestamp = chrono::Utc::now().naive_utc();
             offline_since = if any_answered {
@@ -216,6 +114,148 @@ impl FederationObserver {
                 poll_interval = next_interval;
             }
             tokio::time::sleep_until(poll_started + poll_interval).await;
+        }
+    }
+
+    /// Refreshes signed routes off the health path; the next poll uses them
+    pub async fn monitor_guardian_endpoints(
+        &self,
+        federation_id: FederationId,
+        config: ClientConfig,
+    ) -> anyhow::Result<()> {
+        let peer_ids: Vec<PeerId> = config.global.api_endpoints.keys().copied().collect();
+        let mut interval = tokio::time::interval(ANNOUNCEMENT_REFRESH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut next_target = 0;
+        let mut next_announcement = 0;
+        loop {
+            interval.tick().await;
+            let old_peers = self.active_api_peers(federation_id, &config.global);
+            let active_api = match self.federation_api(&config.global) {
+                Ok(api) => Some(api),
+                Err(error) => {
+                    tracing::warn!(%federation_id, %error, "Could not construct active guardian discovery client");
+                    None
+                }
+            };
+            let canonical_api = match self.federation_api_without_announcements(&config.global) {
+                Ok(api) => Some(api),
+                Err(error) => {
+                    tracing::warn!(%federation_id, %error, "Could not construct canonical guardian recovery client");
+                    None
+                }
+            };
+            if active_api.is_none() && canonical_api.is_none() {
+                anyhow::bail!("no guardian route set is available for endpoint discovery");
+            }
+            let window = discovery_targets(
+                &peer_ids,
+                &old_peers,
+                &config.global,
+                next_target,
+                MAX_ANNOUNCEMENT_REQUESTS_PER_ROUND,
+            );
+            let mut updated = self
+                .get_guardian_endpoints(federation_id)
+                .unwrap_or_default();
+            let mut changed = false;
+            let external_io = self.external_io.clone();
+            let requests = window.targets.iter().copied().filter_map(|target| {
+                let api = match target.route {
+                    DiscoveryRoute::Active => active_api.as_ref().or(canonical_api.as_ref()),
+                    DiscoveryRoute::Canonical => canonical_api.as_ref(),
+                }
+                .cloned();
+                api.map(|api| (target, api))
+            });
+            let mut queries = stream::iter(requests)
+                .map(|(target, api)| {
+                    let external_io = external_io.clone();
+                    async move {
+                        let result = tokio::time::timeout(ANNOUNCEMENT_QUERY_TIMEOUT, async {
+                            let _permit = external_io.acquire_owned().await?;
+                            api.request_single_peer::<serde_json::Value>(
+                                API_ANNOUNCEMENTS_ENDPOINT.to_owned(),
+                                ApiRequestErased::default(),
+                                target.peer_id,
+                            )
+                            .await
+                            .map_err(anyhow::Error::from)
+                        })
+                        .await;
+                        (target, result)
+                    }
+                })
+                .buffer_unordered(MAX_CONCURRENT_ANNOUNCEMENT_QUERIES);
+            let deadline = tokio::time::sleep(ANNOUNCEMENT_DISCOVERY_TIMEOUT);
+            tokio::pin!(deadline);
+            let mut completed_requests = 0;
+
+            loop {
+                let item = tokio::select! {
+                    item = queries.next() => item,
+                    () = &mut deadline => {
+                        tracing::debug!(%federation_id, "Guardian endpoint discovery round reached its deadline");
+                        break;
+                    }
+                };
+                let Some((target, result)) = item else {
+                    break;
+                };
+                completed_requests += 1;
+                let answering_peer = target.peer_id;
+                let value = match result {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(error)) => {
+                        tracing::debug!(%federation_id, %answering_peer, %error, "Failed to fetch guardian endpoint announcements");
+                        continue;
+                    }
+                    Err(_) => {
+                        tracing::debug!(%federation_id, %answering_peer, "Guardian endpoint announcement request timed out");
+                        continue;
+                    }
+                };
+                if !json_fits_admission_limit(&value, MAX_ACCEPTED_ANNOUNCEMENT_BYTES) {
+                    tracing::warn!(%federation_id, %answering_peer, limit = MAX_ACCEPTED_ANNOUNCEMENT_BYTES, "Ignoring guardian endpoint announcement response above the admission limit");
+                    continue;
+                }
+                let Ok(announcements) =
+                    serde_json::from_value::<BTreeMap<PeerId, SignedApiAnnouncement>>(value)
+                else {
+                    tracing::warn!(%federation_id, %answering_peer, "Ignoring malformed guardian endpoint announcement response");
+                    continue;
+                };
+                let announcement_window = bounded_announcement_window(
+                    announcements,
+                    &config.global,
+                    next_announcement,
+                    MAX_ANNOUNCEMENTS_VERIFIED_PER_RESPONSE,
+                );
+                next_announcement = announcement_window.next_start;
+                if announcement_window.total_known > MAX_ANNOUNCEMENTS_VERIFIED_PER_RESPONSE {
+                    tracing::debug!(
+                        %federation_id,
+                        %answering_peer,
+                        known_announcements = announcement_window.total_known,
+                        verified_this_response = announcement_window.announcements.len(),
+                        "Processing a rotating bounded guardian announcement window"
+                    );
+                }
+                let (next, response_changed) = verify_and_merge_announcements(
+                    federation_id,
+                    config.global.broadcast_public_keys.as_ref(),
+                    &updated,
+                    &announcement_window.announcements,
+                );
+                updated = next;
+                changed |= response_changed;
+            }
+            next_target = window.next_start(completed_requests);
+
+            if changed {
+                self.update_guardian_endpoints(federation_id, &updated)
+                    .await?;
+            }
         }
     }
 
@@ -539,6 +579,150 @@ impl BlockHeightSource {
 
 /// Polls of a federation that is online, or partly so
 const ONLINE_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const ANNOUNCEMENT_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const ANNOUNCEMENT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+const ANNOUNCEMENT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_CONCURRENT_ANNOUNCEMENT_QUERIES: usize = 4;
+const MAX_ANNOUNCEMENT_REQUESTS_PER_ROUND: usize = 64;
+const MAX_ANNOUNCEMENTS_VERIFIED_PER_RESPONSE: usize = 64;
+// Checked after decoding: the pinned connector has no per-RPC receive cap.
+const MAX_ACCEPTED_ANNOUNCEMENT_BYTES: usize = 64 * 1024;
+
+struct LimitedWriter {
+    remaining: usize,
+}
+
+impl Write for LimitedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.remaining {
+            return Err(std::io::Error::other("JSON exceeds admission limit"));
+        }
+        self.remaining -= bytes.len();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn json_fits_admission_limit(value: &serde_json::Value, limit: usize) -> bool {
+    serde_json::to_writer(LimitedWriter { remaining: limit }, value).is_ok()
+}
+
+struct AnnouncementWindow {
+    announcements: BTreeMap<PeerId, SignedApiAnnouncement>,
+    next_start: usize,
+    total_known: usize,
+}
+
+/// Known members only, starting at a rotating offset in large federations
+fn bounded_announcement_window(
+    announcements: BTreeMap<PeerId, SignedApiAnnouncement>,
+    global: &fedimint_core::config::GlobalClientConfig,
+    start: usize,
+    limit: usize,
+) -> AnnouncementWindow {
+    let Some(keys) = global.broadcast_public_keys.as_ref() else {
+        return AnnouncementWindow {
+            announcements: BTreeMap::new(),
+            next_start: 0,
+            total_known: 0,
+        };
+    };
+    let mut known = announcements
+        .into_iter()
+        .filter(|(peer_id, _)| {
+            global.api_endpoints.contains_key(peer_id) && keys.contains_key(peer_id)
+        })
+        .collect::<Vec<_>>();
+    let total_known = known.len();
+    if total_known == 0 {
+        return AnnouncementWindow {
+            announcements: BTreeMap::new(),
+            next_start: 0,
+            total_known,
+        };
+    }
+    let start = start % total_known;
+    known.rotate_left(start);
+    let count = limit.min(total_known);
+    let announcements = known.into_iter().take(count).collect();
+    AnnouncementWindow {
+        announcements,
+        next_start: (start + count.max(1)) % total_known,
+        total_known,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiscoveryRoute {
+    Active,
+    Canonical,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DiscoveryTarget {
+    peer_id: PeerId,
+    route: DiscoveryRoute,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DiscoveryWindow {
+    targets: Vec<DiscoveryTarget>,
+    start: usize,
+    total_targets: usize,
+}
+
+impl DiscoveryWindow {
+    fn next_start(&self, completed_requests: usize) -> usize {
+        if self.total_targets == 0 {
+            return 0;
+        }
+        (self.start + completed_requests.max(1)) % self.total_targets
+    }
+}
+
+/// A rotating window of active and canonical targets, so no peer starves
+fn discovery_targets(
+    peer_ids: &[PeerId],
+    active: &BTreeMap<PeerId, SafeUrl>,
+    global: &fedimint_core::config::GlobalClientConfig,
+    start: usize,
+    limit: usize,
+) -> DiscoveryWindow {
+    let mut all = Vec::with_capacity(peer_ids.len().saturating_mul(2));
+    for &peer_id in peer_ids {
+        all.push(DiscoveryTarget {
+            peer_id,
+            route: DiscoveryRoute::Active,
+        });
+        let canonical = global.api_endpoints.get(&peer_id).map(|peer| &peer.url);
+        if active.get(&peer_id) != canonical {
+            all.push(DiscoveryTarget {
+                peer_id,
+                route: DiscoveryRoute::Canonical,
+            });
+        }
+    }
+    if all.is_empty() || limit == 0 {
+        return DiscoveryWindow {
+            targets: Vec::new(),
+            start: 0,
+            total_targets: all.len(),
+        };
+    }
+    let start = start % all.len();
+    let count = limit.min(all.len());
+    let targets = (0..count)
+        .map(|offset| all[(start + offset) % all.len()])
+        .collect();
+    DiscoveryWindow {
+        targets,
+        start,
+        total_targets: all.len(),
+    }
+}
 
 /// Retry of a poll that got no answer while backed off
 const BACKED_OFF_RETRY_DELAY: Duration = Duration::from_secs(30);

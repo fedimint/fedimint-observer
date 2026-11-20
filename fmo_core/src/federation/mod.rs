@@ -105,11 +105,8 @@ pub(crate) async fn get_federation_config(
     )
 }
 
-/// The config of an observed federation, decoded with this build's modules.
-///
-/// Returns the canonical configuration untouched so `config.federation_id()` stays
-/// invariant across guardian rotations. Dynamic announced routes are applied
-/// only when dialing.
+/// The canonical config of an observed federation, decoded with this build's
+/// modules; announced routes apply only when dialing
 pub(crate) async fn observed_config_json(
     observer: &FederationObserver,
     federation_id: FederationId,

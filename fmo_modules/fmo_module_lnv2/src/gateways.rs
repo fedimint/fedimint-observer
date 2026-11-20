@@ -504,14 +504,16 @@ async fn poll_instance(
     config: ClientConfig,
     instance: u16,
 ) -> anyhow::Result<()> {
-    let api = services
-        .federation_api(&config.global)?
-        .with_module(instance);
     let bytes = fed.consensus_encode_to_vec();
     let jitter = (bytes.iter().map(|b| u64::from(*b)).sum::<u64>() + u64::from(instance)) % 31;
     tokio::time::sleep(Duration::from_secs(jitter)).await;
     let mut failures = 0u32;
     loop {
+        // Resolve for every bounded round so a signed guardian rotation takes
+        // effect without restarting the gateway collector.
+        let api = services
+            .federation_api(&config.global)?
+            .with_module(instance);
         let result = tokio::time::timeout(Duration::from_secs(40), async {
             let _permit = services.external_io_permit().await?;
             let responses = stream::iter(config.global.api_endpoints.keys().copied())

@@ -31,9 +31,11 @@ just run
 
 1. Take a database backup and verify a restore in an isolated database.
 2. Stop the existing collector and start the updated one. It applies the core
-   schema (currently v12) and the module migrations. Populated databases upgrade
+   schema (currently v13) and the module migrations. Populated databases upgrade
    from core v11 or newer; older ones need the previous release's migrations
-   first.
+   first. Each collector that takes the worker lease claims a new guardian-route
+   write epoch, and PostgreSQL rejects route writes from the previous collector
+   after that, so a slow outgoing collector cannot overwrite newer routes.
 3. Allow time for backfills and index builds. Migrations run transactionally
    with no statement deadline and a 30 second lock deadline, and the indexes are
    regular builds: plan a maintenance window on a large database. Some module
@@ -56,6 +58,7 @@ just run
 | `FO_EXTERNAL_CONCURRENCY` | `8` | Concurrent metadata, Wallet v2, and enrichment operations |
 | `FO_HTTP_CONCURRENCY` | `128` | Concurrent application requests per process |
 | `FO_HEALTH_RETENTION_DAYS` | `90` | Raw guardian history and Lightning v2 gateway health retention; `0` disables pruning |
+| `FO_REPLICA_ENDPOINT_REFRESH_SECS` | `60` | Background refresh interval for verified guardian routes in shared storage, including worker catch-up and API-only replicas |
 
 Retention must be at least 31 days when enabled. Size the sum of the pools
 across all replicas below PostgreSQL's connection limit, leaving room for
@@ -79,17 +82,17 @@ contested and credited to neither.
 
 ## Egress policy
 
-Gateway endpoints come from guardians, and their Iroh addresses from discovery
-records the gateway operator publishes. HTTPS probes are pinned to public
-addresses in code; Iroh probes are not, so a published record can direct QUIC
-handshake packets to private addresses. Authentication stops another node from
-posing as the named gateway, but it does not stop those packets being sent or
-handshake and discovery replies being received. The
-public config inspector also connects to guardian URLs from user-supplied invite
-codes. Enforce this at the network layer: run the observer as a dedicated user,
-container or network namespace and drop its outbound traffic to non-public
-destinations, allowing first the few internal services it needs. With nftables,
-for example:
+Guardian routes can change through signed announcements, gateway endpoints
+come from guardians, and gateway Iroh addresses come from discovery records the
+gateway operator publishes. A valid signature authenticates who announced a
+destination; it does not establish that the destination is safe. HTTPS gateway
+probes are pinned to public addresses in code, but guardian WebSocket/Iroh and
+gateway Iroh connections are not, so authenticated input can still direct
+traffic to private addresses. The public config inspector also connects to
+guardian URLs from user-supplied invite codes. Enforce this at the network
+layer: run the observer as a dedicated user, container or network namespace and
+drop its outbound traffic to non-public destinations, allowing first the few
+internal services it needs. With nftables, for example:
 
 ```
 table inet fmo_egress {

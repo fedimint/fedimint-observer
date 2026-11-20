@@ -135,7 +135,7 @@ export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
 
 ### Database
 
-PostgreSQL. Core migrations are `fmo_core/schema/v0.sql` to `v12.sql`; some
+PostgreSQL. Core migrations are `fmo_core/schema/v0.sql` to `v13.sql`; some
 modules also keep SQL in `fmo_modules/<module>/schema/`. A populated database
 upgrades only from v11 or newer (`MIN_UPGRADE_VERSION`); older ones need the
 previous release's backfills. Old migrations stay for fresh setups.
