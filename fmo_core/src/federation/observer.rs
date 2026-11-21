@@ -809,18 +809,26 @@ impl FederationObserver {
             .instrument(info_span!("health", fed = %federation_id.to_prefix())),
         );
 
-        let slf = self.worker();
         let federation_id = federation.federation_id;
-        let config = federation.config.clone();
-        self.task_group.spawn_cancellable(
-            format!("Guardian endpoint monitor for {federation_id}"),
-            supervise("Guardian endpoint monitor", move || {
-                let slf = slf.clone();
-                let config = config.clone();
-                async move { slf.monitor_guardian_endpoints(federation_id, config).await }
-            })
-            .instrument(info_span!("guardian_routes", fed = %federation_id.to_prefix())),
-        );
+        // Without broadcast keys no announcement can be verified.
+        if federation.config.global.broadcast_public_keys.is_some() {
+            let slf = self.worker();
+            let config = federation.config.clone();
+            self.task_group.spawn_cancellable(
+                format!("Guardian endpoint monitor for {federation_id}"),
+                supervise("Guardian endpoint monitor", move || {
+                    let slf = slf.clone();
+                    let config = config.clone();
+                    async move { slf.monitor_guardian_endpoints(federation_id, config).await }
+                })
+                .instrument(info_span!("guardian_routes", fed = %federation_id.to_prefix())),
+            );
+        } else {
+            info!(
+                %federation_id,
+                "Federation has no broadcast public keys; guardian endpoint discovery is disabled"
+            );
+        }
 
         self.spawn_projectors(&federation);
         self.spawn_module_federation_tasks(federation);
