@@ -95,7 +95,9 @@ requests, and verifies at most 64 known members from each response before
 rotating that source's window. Each announcement has a 4 KiB post-decode
 admission limit. The pinned WebSocket and Iroh connectors receive and decode
 the response before Observer can apply that check; enforcing a per-RPC
-receive-side byte cap requires connector support.
+receive-side byte cap requires connector support. Observer can't verify
+announcements for a federation whose config has no broadcast public keys, so
+discovery doesn't run for it; it always uses its configured endpoints.
 
 Lightning v2 gateway data comes from guardians and gateways and is bounded:
 256 gateway URLs per guardian per poll, 1,024 registered and 1,024 retired
