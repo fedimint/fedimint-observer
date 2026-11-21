@@ -493,8 +493,6 @@ impl Gateways<'_> {
 
         let ln_instance_id =
             module_instance_id(&config, "ln").context("No LN module found in federation config")?;
-        let api = self.services.federation_api(&config.global)?;
-
         let peer_ids: Vec<fedimint_core::PeerId> =
             config.global.api_endpoints.keys().copied().collect();
 
@@ -504,6 +502,14 @@ impl Gateways<'_> {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
+            // Resolved per round for rotations; without a client, skip the round.
+            let api = match self.services.federation_api(&config.global) {
+                Ok(api) => api,
+                Err(err) => {
+                    warn!(%federation_id, %err, "No guardian API client for gateway poll round, no snapshot recorded");
+                    continue;
+                }
+            };
             // Nothing is recorded for a failed round, so it shows as "no polls"
             // (not observed) rather than as every gateway being offline
             if let Err(e) = self

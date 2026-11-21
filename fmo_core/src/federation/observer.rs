@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,9 +36,15 @@ use crate::module::{schema_name, ModuleRegistry, Services};
 use crate::task::supervise;
 use crate::util::{query, query_one, query_opt, query_value};
 
+#[cfg(test)]
+#[path = "observer_tests.rs"]
+mod endpoint_restore_tests;
+
 /// Per request to the mempool instance; callers bound their total time
 /// themselves
 const ESPLORA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bounds a session fetch so its retry can switch to rotated routes
+const SESSION_FETCH_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(90);
 // Older SQL is retained for new databases; populated databases upgrade from
 // v11.
 const CORE_MIGRATIONS: &[&str] = &[
@@ -55,33 +61,21 @@ const CORE_MIGRATIONS: &[&str] = &[
     include_str!("../../schema/v10.sql"),
     include_str!("../../schema/v11.sql"),
     include_str!("../../schema/v12.sql"),
+    include_str!("../../schema/v13.sql"),
 ];
 const NO_ACTIVITY: FederationActivity = FederationActivity {
     num_transactions: 0,
     amount_transferred: Amount::ZERO,
 };
 
-/// Distinct guardian endpoint sets [`FederationObserver::federation_api`]
-/// keeps clients for: observed federations
-const MAX_OBSERVED_API_CLIENTS: usize = 4096;
+const GUARDIAN_ENDPOINT_REFRESH_BATCH_SIZE: i64 = 128;
+/// Startup restore budget; the periodic refresh continues from the cursor
+const MAX_GUARDIAN_ENDPOINT_STARTUP_BATCHES: usize = 32;
 
-/// Distinct guardian endpoint sets [`FederationObserver::lookup_api`] keeps
-/// clients for. Public invite lookups can name any servers, so they get their
-/// own budget and can't crowd out observed federations.
-const MAX_LOOKUP_API_CLIENTS: usize = 512;
+use crate::federation::api_clients::{ApiClients, ApiLimits, LookupClass};
+use crate::guardian_api::ApiPeers;
 
-type ApiPeers = std::collections::BTreeMap<PeerId, fedimint_core::util::SafeUrl>;
-
-/// Shared guardian API clients, see [`FederationObserver::federation_api`]
-#[derive(Default, Debug)]
-struct ApiClients {
-    /// Observed federations, which only admins add
-    observed: HashMap<ApiPeers, fedimint_api_client::api::DynGlobalApi>,
-    /// Invite lookups, by endpoints and the invite's API secret
-    lookups: HashMap<(ApiPeers, Option<String>), fedimint_api_client::api::DynGlobalApi>,
-}
-
-fn api_peers(global: &fedimint_core::config::GlobalClientConfig) -> ApiPeers {
+fn canonical_api_peers(global: &fedimint_core::config::GlobalClientConfig) -> ApiPeers {
     global
         .api_endpoints
         .iter()
@@ -89,11 +83,70 @@ fn api_peers(global: &fedimint_core::config::GlobalClientConfig) -> ApiPeers {
         .collect()
 }
 
+fn guardian_endpoint_announcements(
+    endpoints: &crate::federation::endpoints::GuardianEndpointsMap,
+) -> BTreeMap<PeerId, fedimint_core::net::api_announcement::SignedApiAnnouncement> {
+    endpoints
+        .iter()
+        .map(|(&peer_id, route)| (peer_id, route.announcement().clone()))
+        .collect()
+}
+
+/// Claims the next write epoch, only while `lease` holds the worker lock
+async fn claim_worker_epoch(lease: &tokio_postgres::Client) -> anyhow::Result<i64> {
+    let (class_id, object_id) = crate::runtime::WORKER_LOCK;
+    let row = tokio::time::timeout(
+        Duration::from_secs(30),
+        lease.query_opt(
+            "UPDATE guardian_endpoint_write_state
+             SET worker_epoch = worker_epoch + 1
+             WHERE singleton = TRUE
+               AND EXISTS (
+                   SELECT 1 FROM pg_locks
+                   WHERE locktype = 'advisory' AND granted AND pid = pg_backend_pid()
+                     AND classid::bigint = $1 AND objid::bigint = $2 AND objsubid = 2
+               )
+             RETURNING worker_epoch",
+            &[&i64::from(class_id), &i64::from(object_id)],
+        ),
+    )
+    .await
+    .context("Claiming the guardian endpoint worker epoch timed out")?
+    .context("Failed to claim guardian endpoint worker epoch")?;
+    Ok(row
+        .context("The worker lease is no longer held; not claiming a write epoch")?
+        .get(0))
+}
+
+async fn load_guardian_endpoint_inputs(
+    pool: &deadpool_postgres::Pool,
+    after_revision: i64,
+) -> anyhow::Result<Vec<tokio_postgres::Row>> {
+    let conn = pool.get().await?;
+    conn.query(
+        "SELECT o.federation_id, o.data, o.revision, f.config
+             FROM federation_observations o
+             JOIN federations f ON f.federation_id = o.federation_id
+             WHERE o.kind = $1 AND o.revision > $2
+             ORDER BY o.revision
+             LIMIT $3",
+        &[
+            &crate::federation::endpoints::GUARDIAN_ENDPOINTS_OBSERVATION_KIND,
+            &after_revision,
+            &GUARDIAN_ENDPOINT_REFRESH_BATCH_SIZE,
+        ],
+    )
+    .await
+    .context("Failed to load persisted guardian endpoint announcements")
+}
+
 #[derive(Debug, Clone)]
 pub struct FederationObserver {
     connection_pool: deadpool_postgres::Pool,
     worker_pool: deadpool_postgres::Pool,
     worker_lease: Option<Arc<tokio_postgres::Client>>,
+    /// Claimed with the worker lease; fences route writes after handoff
+    worker_epoch: Option<i64>,
     pub(crate) work_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) external_io: Arc<tokio::sync::Semaphore>,
     pub(crate) work_notifications: crate::work::WorkNotifications,
@@ -109,6 +162,14 @@ pub struct FederationObserver {
     /// One guardian API client per set of guardian endpoints, see
     /// [`Self::federation_api`]
     api_clients: Arc<std::sync::Mutex<ApiClients>>,
+    /// Verified announced routes per federation
+    guardian_endpoints: Arc<
+        std::sync::RwLock<
+            HashMap<FederationId, crate::federation::endpoints::GuardianEndpointsMap>,
+        >,
+    >,
+    /// Highest admitted route revision; also serializes refreshes and commits
+    guardian_endpoint_revision: Arc<tokio::sync::Mutex<i64>>,
     modules: ModuleRegistry,
     /// Tells a federation's module projectors about stored sessions and moved
     /// cursors
@@ -153,6 +214,7 @@ impl FederationObserver {
             worker_pool: connection_pool.clone(),
             connection_pool,
             worker_lease,
+            worker_epoch: None,
             work_budget: Arc::new(tokio::sync::Semaphore::new(options.worker_concurrency)),
             external_io: Arc::new(tokio::sync::Semaphore::new(options.external_concurrency)),
             work_notifications,
@@ -160,9 +222,14 @@ impl FederationObserver {
             admin_auth: admin_auth.to_owned(),
             esplora,
             task_group,
+            api_clients: Arc::new(std::sync::Mutex::new(ApiClients::new(
+                &connectors,
+                ApiLimits::default(),
+            ))),
             connectors,
             federation_config_cache: Default::default(),
-            api_clients: Default::default(),
+            guardian_endpoints: Default::default(),
+            guardian_endpoint_revision: Default::default(),
             modules,
             projector_wakeups: Default::default(),
             nostr_pool: Default::default(),
@@ -181,11 +248,20 @@ impl FederationObserver {
                 version == CORE_MIGRATIONS.len() as i32 - 1,
                 "Start the worker to migrate the database before API replicas"
             );
+            slf.restore_guardian_endpoints_at_startup().await?;
+            slf.spawn_guardian_endpoint_refresh(Duration::from_secs(
+                options.replica_endpoint_refresh_secs,
+            ));
             return Ok(slf);
         }
         // The dedicated worker lease serializes startup migrations as well as
         // collection. An API-only instance never runs migrations.
         slf.setup_schema().await?;
+        slf.worker_epoch = Some(slf.claim_guardian_endpoint_worker_epoch().await?);
+        slf.restore_guardian_endpoints_at_startup().await?;
+        slf.spawn_guardian_endpoint_refresh(Duration::from_secs(
+            options.replica_endpoint_refresh_secs,
+        ));
 
         for federation in slf.list_federations().await? {
             slf.spawn_observer(federation);
@@ -253,70 +329,397 @@ impl FederationObserver {
         &self.connectors
     }
 
-    /// The shared client for the API of the guardians of an observed
-    /// federation.
-    ///
-    /// Every new client opens its own connection to each guardian, and the
-    /// connection pool keeps those connections, so they are never closed while
-    /// the guardian keeps them alive. Creating a client per request therefore
-    /// leaks connections on both sides; this hands out one client per set of
-    /// endpoints for the life of the process. For federations that aren't
-    /// observed, use [`Self::lookup_api`].
+    /// Verified announced routes of a federation
+    pub fn get_guardian_endpoints(
+        &self,
+        federation_id: FederationId,
+    ) -> Option<crate::federation::endpoints::GuardianEndpointsMap> {
+        self.guardian_endpoints
+            .read()
+            .expect("guardian endpoints lock poisoned")
+            .get(&federation_id)
+            .cloned()
+    }
+
+    /// Config endpoints with the newest stored routes applied
+    pub fn latest_api_peers(
+        &self,
+        federation_id: FederationId,
+        global: &fedimint_core::config::GlobalClientConfig,
+    ) -> ApiPeers {
+        let guard = self
+            .guardian_endpoints
+            .read()
+            .expect("guardian endpoints lock poisoned");
+        crate::federation::endpoints::latest_api_peers(global, guard.get(&federation_id))
+    }
+
+    async fn claim_guardian_endpoint_worker_epoch(&self) -> anyhow::Result<i64> {
+        let lease = self
+            .worker_lease
+            .as_ref()
+            .context("Only the worker may claim a guardian endpoint write epoch")?;
+        claim_worker_epoch(lease).await
+    }
+
+    /// Commits routes under the write fence, then caches the committed map
+    pub async fn update_guardian_endpoints(
+        &self,
+        federation_id: FederationId,
+        endpoints: &crate::federation::endpoints::GuardianEndpointsMap,
+    ) -> anyhow::Result<()> {
+        let _refresh_guard = self.guardian_endpoint_revision.lock().await;
+        let committed = self
+            .commit_guardian_endpoints(federation_id, endpoints)
+            .await?;
+        self.guardian_endpoints
+            .write()
+            .expect("guardian endpoints write lock poisoned")
+            .insert(federation_id, committed);
+        Ok(())
+    }
+
+    async fn commit_guardian_endpoints(
+        &self,
+        federation_id: FederationId,
+        proposed: &crate::federation::endpoints::GuardianEndpointsMap,
+    ) -> anyhow::Result<crate::federation::endpoints::GuardianEndpointsMap> {
+        let worker_epoch = self
+            .worker_epoch
+            .context("API-only processes cannot commit guardian endpoints")?;
+        let federation_bytes = federation_id.consensus_encode_to_vec();
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
+        transaction
+            .batch_execute("SET LOCAL lock_timeout = '5s'")
+            .await?;
+
+        // Lock first, so the reads below see the previous commit.
+        let state = transaction
+            .query_one(
+                "SELECT worker_epoch, last_revision
+                 FROM guardian_endpoint_write_state
+                 WHERE singleton = TRUE
+                 FOR UPDATE",
+                &[],
+            )
+            .await
+            .context("Failed to acquire guardian endpoint write fence")?;
+        let active_epoch: i64 = state.get(0);
+        let last_revision: i64 = state.get(1);
+        ensure!(
+            worker_epoch == active_epoch,
+            "Guardian endpoint worker epoch changed during handoff"
+        );
+        let epoch_setting = worker_epoch.to_string();
+        transaction
+            .query_one(
+                "SELECT set_config('fmo.guardian_endpoint_worker_epoch', $1, TRUE)",
+                &[&epoch_setting],
+            )
+            .await?;
+
+        let config_bytes: Vec<u8> = transaction
+            .query_one(
+                "SELECT config FROM federations WHERE federation_id = $1",
+                &[&federation_bytes],
+            )
+            .await
+            .context("Federation config is missing while committing guardian endpoints")?
+            .get(0);
+        let config = fedimint_core::config::ClientConfig::consensus_decode_whole(
+            &config_bytes,
+            &Default::default(),
+        )
+        .context("Failed to decode federation config while committing guardian endpoints")?;
+        ensure!(
+            config.calculate_federation_id() == federation_id,
+            "Stored config does not match the guardian endpoint federation"
+        );
+
+        let observation_kind = crate::federation::endpoints::GUARDIAN_ENDPOINTS_OBSERVATION_KIND;
+        let stored_data = transaction
+            .query_opt(
+                "SELECT data FROM federation_observations
+                 WHERE federation_id = $1 AND kind = $2",
+                &[&federation_bytes, &observation_kind],
+            )
+            .await?
+            .map(|row| row.get::<_, serde_json::Value>(0));
+        // Replace a malformed row instead of failing every commit.
+        let stored_announcements = match stored_data.clone().map(
+            serde_json::from_value::<
+                BTreeMap<PeerId, fedimint_core::net::api_announcement::SignedApiAnnouncement>,
+            >,
+        ) {
+            None => BTreeMap::new(),
+            Some(Ok(announcements)) => announcements,
+            Some(Err(err)) => {
+                warn!(%federation_id, %err, "Replacing malformed stored guardian endpoints");
+                BTreeMap::new()
+            }
+        };
+
+        // Stored routes already cover this process's cache.
+        let (durable, _) = crate::federation::endpoints::verify_and_merge_announcements(
+            federation_id,
+            &config.global,
+            &BTreeMap::new(),
+            &stored_announcements,
+        );
+        let (committed, _) = crate::federation::endpoints::verify_and_merge_announcements(
+            federation_id,
+            &config.global,
+            &durable,
+            &guardian_endpoint_announcements(proposed),
+        );
+        let committed_data = serde_json::to_value(guardian_endpoint_announcements(&committed))
+            .context("Failed to serialize committed guardian endpoints")?;
+
+        if stored_data.as_ref() != Some(&committed_data) {
+            let next_revision = last_revision
+                .checked_add(1)
+                .context("Guardian endpoint revision exhausted")?;
+            transaction
+                .execute(
+                    "UPDATE guardian_endpoint_write_state
+                     SET last_revision = $1
+                     WHERE singleton = TRUE",
+                    &[&next_revision],
+                )
+                .await?;
+            transaction
+                .execute(
+                    "INSERT INTO federation_observations(federation_id, kind, data, revision)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT(federation_id, kind) DO UPDATE SET
+                         data = EXCLUDED.data,
+                         observed_at = now(),
+                         revision = EXCLUDED.revision",
+                    &[
+                        &federation_bytes,
+                        &observation_kind,
+                        &committed_data,
+                        &next_revision,
+                    ],
+                )
+                .await?;
+        }
+        transaction.commit().await?;
+        Ok(committed)
+    }
+
+    async fn restore_guardian_endpoints_at_startup(&self) -> anyhow::Result<()> {
+        for _ in 0..MAX_GUARDIAN_ENDPOINT_STARTUP_BATCHES {
+            if !self.load_guardian_endpoint_batch().await? {
+                return Ok(());
+            }
+        }
+        warn!(
+            rows = MAX_GUARDIAN_ENDPOINT_STARTUP_BATCHES
+                * usize::try_from(GUARDIAN_ENDPOINT_REFRESH_BATCH_SIZE)
+                    .expect("positive endpoint refresh batch size"),
+            "Guardian endpoint startup restore reached its bounded row budget; continuing in the background"
+        );
+        Ok(())
+    }
+
+    fn spawn_guardian_endpoint_refresh(&self, refresh_interval: Duration) {
+        let observer = self.clone();
+        self.task_group.spawn_cancellable(
+            "sync guardian endpoints",
+            supervise("Guardian endpoints refresh", move || {
+                let observer = observer.clone();
+                async move {
+                    loop {
+                        match observer.load_guardian_endpoint_batch().await {
+                            // A backlog drains without waiting between pages.
+                            Ok(true) => {
+                                tokio::task::yield_now().await;
+                                continue;
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                tracing::warn!(err = %e, "Failed to refresh guardian endpoints");
+                            }
+                        }
+                        fedimint_core::runtime::sleep(refresh_interval).await;
+                    }
+                }
+            }),
+        );
+    }
+
+    /// Verifies one batch of stored routes; returns whether more may follow
+    async fn load_guardian_endpoint_batch(&self) -> anyhow::Result<bool> {
+        // Held from read to cursor advance, so an older batch can't win.
+        let mut admitted_revision = self.guardian_endpoint_revision.lock().await;
+        let after_revision = *admitted_revision;
+        let rows = load_guardian_endpoint_inputs(&self.connection_pool, after_revision).await?;
+        if rows.is_empty() {
+            return Ok(false);
+        }
+        let batch_was_full = rows.len()
+            == usize::try_from(GUARDIAN_ENDPOINT_REFRESH_BATCH_SIZE)
+                .expect("positive endpoint refresh batch size");
+
+        let mut changes = Vec::new();
+        let mut max_revision = after_revision;
+        for row in rows {
+            let fed_bytes: Vec<u8> = row.get(0);
+            let data: serde_json::Value = row.get(1);
+            let revision: i64 = row.get(2);
+            let config_bytes: Vec<u8> = row.get(3);
+            max_revision = max_revision.max(revision);
+            let federation_id =
+                match FederationId::consensus_decode_whole(&fed_bytes, &Default::default()) {
+                    Ok(federation_id) => federation_id,
+                    Err(err) => {
+                        warn!(
+                            ?err,
+                            "Skipping guardian endpoints with an invalid federation id"
+                        );
+                        continue;
+                    }
+                };
+            let config = match fedimint_core::config::ClientConfig::consensus_decode_whole(
+                &config_bytes,
+                &Default::default(),
+            ) {
+                Ok(config) => config,
+                Err(err) => {
+                    warn!(%federation_id, ?err, "Skipping guardian endpoints with an invalid federation config");
+                    continue;
+                }
+            };
+
+            // Stored routes are re-verified, never trusted.
+            let raw_announcements = match serde_json::from_value::<
+                BTreeMap<
+                    fedimint_core::PeerId,
+                    fedimint_core::net::api_announcement::SignedApiAnnouncement,
+                >,
+            >(data)
+            {
+                Ok(announcements) => announcements,
+                Err(err) => {
+                    warn!(%federation_id, %err, "Failed to deserialize stored guardian endpoints");
+                    continue;
+                }
+            };
+            let existing = self
+                .guardian_endpoints
+                .read()
+                .expect("guardian endpoints lock poisoned")
+                .get(&federation_id)
+                .cloned()
+                .unwrap_or_default();
+            let (verified, changed) = crate::federation::endpoints::verify_and_merge_announcements(
+                federation_id,
+                &config.global,
+                &existing,
+                &raw_announcements,
+            );
+            if changed {
+                changes.push((federation_id, verified));
+            }
+        }
+
+        {
+            let mut cache = self
+                .guardian_endpoints
+                .write()
+                .expect("guardian endpoints write lock poisoned");
+            for (federation_id, verified) in &changes {
+                cache.insert(*federation_id, verified.clone());
+            }
+        }
+        *admitted_revision = max_revision;
+        for (federation_id, verified) in changes {
+            info!(
+                %federation_id,
+                num_endpoints = verified.len(),
+                "Refreshed verified guardian endpoints"
+            );
+        }
+
+        Ok(batch_was_full)
+    }
+
+    /// An observed federation's client; see [`Self::lookup_api`] for others
     pub fn federation_api(
         &self,
         global: &fedimint_core::config::GlobalClientConfig,
     ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
-        let peers = api_peers(global);
-        let mut clients = self
-            .api_clients
-            .lock()
-            .expect("API client cache lock poisoned");
-        if let Some(api) = clients.observed.get(&peers) {
-            return Ok(api.clone());
-        }
-        if clients.observed.len() >= MAX_OBSERVED_API_CLIENTS {
-            return Err(crate::error::ClientError::unavailable(
-                "Too many federations observed; try again after the observer restarts",
-            )
-            .into());
-        }
-        let api = crate::util::federation_api(&self.connectors, &peers, None)?;
-        clients.observed.insert(peers, api.clone());
-        Ok(api)
+        Ok(self.selected_api(global)?.1)
     }
 
-    /// The shared client for guardians named by an invite code, of a
-    /// federation that may not be observed. Like [`Self::federation_api`], but
-    /// with the invite's API secret and a separate, smaller budget, since
-    /// anyone can ask to look up any servers.
+    /// The route this process dials, and its client
+    pub(crate) fn selected_api(
+        &self,
+        global: &fedimint_core::config::GlobalClientConfig,
+    ) -> anyhow::Result<(ApiPeers, fedimint_api_client::api::DynGlobalApi)> {
+        let federation_id = global.calculate_federation_id();
+        let mut clients = self.api_clients();
+        let latest = self.latest_api_peers(federation_id, global);
+        clients.selected(federation_id, &canonical_api_peers(global), &latest)
+    }
+
+    fn api_clients(&self) -> std::sync::MutexGuard<'_, ApiClients> {
+        self.api_clients
+            .lock()
+            .expect("API client cache lock poisoned")
+    }
+
+    /// Announced URLs admitted, and guardians held on an older route
+    pub(crate) fn route_admission_status(&self) -> (usize, usize) {
+        self.api_clients().admission_status()
+    }
+
+    pub(crate) fn federation_api_without_announcements(
+        &self,
+        global: &fedimint_core::config::GlobalClientConfig,
+    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
+        self.api_clients().canonical(
+            global.calculate_federation_id(),
+            &canonical_api_peers(global),
+        )
+    }
+
+    /// A client for an invite's guardians, with its secret and own budget
     pub fn lookup_api(
         &self,
         global: &fedimint_core::config::GlobalClientConfig,
         api_secret: Option<String>,
     ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
-        let peers = api_peers(global);
-        let mut clients = self
-            .api_clients
-            .lock()
-            .expect("API client cache lock poisoned");
-        if api_secret.is_none() {
-            if let Some(api) = clients.observed.get(&peers) {
-                return Ok(api.clone());
-            }
-        }
-        let key = (peers, api_secret);
-        if let Some(api) = clients.lookups.get(&key) {
-            return Ok(api.clone());
-        }
-        if clients.lookups.len() >= MAX_LOOKUP_API_CLIENTS {
-            return Err(crate::error::ClientError::unavailable(
-                "Too many federations looked up; try again after the observer restarts",
-            )
-            .into());
-        }
-        let api = crate::util::federation_api(&self.connectors, &key.0, key.1.clone())?;
-        clients.lookups.insert(key, api.clone());
-        Ok(api)
+        let federation_id = global.calculate_federation_id();
+        self.lookup_api_for_federation(federation_id, global, api_secret)
+    }
+
+    pub(crate) fn lookup_api_for_federation(
+        &self,
+        federation_id: FederationId,
+        global: &fedimint_core::config::GlobalClientConfig,
+        api_secret: Option<String>,
+    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
+        let mut clients = self.api_clients();
+        let peers = self.latest_api_peers(federation_id, global);
+        clients.lookup(LookupClass::Announced, federation_id, peers, api_secret)
+    }
+
+    /// Literal routes, the fallback when an announced route fails
+    pub(crate) fn lookup_api_without_announcements(
+        &self,
+        federation_id: FederationId,
+        global: &fedimint_core::config::GlobalClientConfig,
+        api_secret: Option<String>,
+    ) -> anyhow::Result<fedimint_api_client::api::DynGlobalApi> {
+        self.api_clients().lookup(
+            LookupClass::Literal,
+            federation_id,
+            canonical_api_peers(global),
+            api_secret,
+        )
     }
 
     pub fn modules(&self) -> &ModuleRegistry {
@@ -406,6 +809,27 @@ impl FederationObserver {
             .instrument(info_span!("health", fed = %federation_id.to_prefix())),
         );
 
+        let federation_id = federation.federation_id;
+        // Without broadcast keys no announcement can be verified.
+        if federation.config.global.broadcast_public_keys.is_some() {
+            let slf = self.worker();
+            let config = federation.config.clone();
+            self.task_group.spawn_cancellable(
+                format!("Guardian endpoint monitor for {federation_id}"),
+                supervise("Guardian endpoint monitor", move || {
+                    let slf = slf.clone();
+                    let config = config.clone();
+                    async move { slf.monitor_guardian_endpoints(federation_id, config).await }
+                })
+                .instrument(info_span!("guardian_routes", fed = %federation_id.to_prefix())),
+            );
+        } else {
+            info!(
+                %federation_id,
+                "Federation has no broadcast public keys; guardian endpoint discovery is disabled"
+            );
+        }
+
         self.spawn_projectors(&federation);
         self.spawn_module_federation_tasks(federation);
     }
@@ -467,6 +891,16 @@ impl FederationObserver {
         .await
     }
 
+    /// Whether v13 is this release's rather than a pre-release one
+    async fn has_guardian_endpoint_fence_schema(&self) -> anyhow::Result<bool> {
+        query_value(
+            &self.connection().await?,
+            "SELECT to_regclass('guardian_endpoint_write_state') IS NOT NULL",
+            &[],
+        )
+        .await
+    }
+
     async fn setup_schema(&self) -> anyhow::Result<()> {
         self.connection()
             .await?
@@ -514,17 +948,16 @@ impl FederationObserver {
                 version => Some(version as usize),
             };
 
-        // Databases that applied the pre-release v12..v14 of this branch,
-        // since merged into one v12. A pre-release v12 lacks the
-        // session_time_repairs table that v12 now creates.
+        // Pre-release v12..v14 were merged into v12 and v13; detect them.
         let pre_release = match maybe_schema_version {
-            Some(13 | 14) => true,
+            Some(14) => true,
+            Some(13) => !self.has_guardian_endpoint_fence_schema().await?,
             Some(12) => !self.has_session_time_repair_schema().await?,
             _ => false,
         };
         ensure!(
             !pre_release,
-            "Database schema is from a pre-release build whose v12..v14 migrations were since merged into v12; restore the database from a v11 backup or start a new one"
+            "Database schema is from a pre-release build whose v12..v14 migrations were since merged into v12 and v13; restore the database from a v11 backup or start a new one"
         );
         ensure!(
             maybe_schema_version.is_none_or(|version| version < CORE_MIGRATIONS.len()),
@@ -1005,21 +1438,20 @@ impl FederationObserver {
         federation_id: FederationId,
         config: ClientConfig,
     ) -> anyhow::Result<()> {
-        // Shared, so the supervisor restarting this task doesn't leak
-        // guardian connections
-        let api = self.federation_api(&config.global)?;
         let decoders = self.modules.decoders_for_config(&config);
 
         info!("Starting background job for {federation_id}");
         let next_session = self.next_session_index(federation_id).await?;
         debug!("Next session {next_session}");
-        let api_fetch = api.clone();
         let gate = SessionFetchGate::new(next_session);
         let fetch_gate = gate.clone();
+        let observer = self.clone();
+        let global = config.global.clone();
         let mut session_stream = futures::stream::iter(next_session..)
             .map(move |session_index| {
                 debug!("Starting fetch job for session {session_index}");
-                let api_fetch_single = api_fetch.clone();
+                let observer = observer.clone();
+                let global = global.clone();
                 let decoders_single = decoders.clone();
                 let gate = fetch_gate.clone();
                 async move {
@@ -1028,9 +1460,25 @@ impl FederationObserver {
                         background_backoff(),
                         || async {
                             gate.wait_turn(session_index).await;
-                            let result = api_fetch_single
-                                .await_block(session_index, &decoders_single)
-                                .await;
+                            // Resolved per attempt so rotated routes are dialed
+                            let api = match observer.federation_api(&global) {
+                                Ok(api) => api,
+                                Err(e) => {
+                                    gate.record(false);
+                                    return Err(e);
+                                }
+                            };
+                            let result = match tokio::time::timeout(
+                                SESSION_FETCH_ATTEMPT_TIMEOUT,
+                                api.await_block(session_index, &decoders_single),
+                            )
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => Err(anyhow::anyhow!(
+                                    "session {session_index} fetch attempt timed out; refreshing guardian routes"
+                                )),
+                            };
                             gate.record(result.is_ok());
                             result
                         },

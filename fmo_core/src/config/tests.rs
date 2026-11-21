@@ -59,3 +59,58 @@ async fn concurrent_downloads_of_an_invite_share_a_slot() {
     drop(second);
     assert!(slots.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn unavailable_announced_route_falls_back_to_literal_invite_route() {
+    let federation_id = endpoints_config(BTreeMap::new()).calculate_federation_id();
+    let result = prefer_announced_route(
+        federation_id,
+        "test invite lookup",
+        || Ok(async { Err::<&str, _>(anyhow!("announced route unavailable")) }),
+        || Ok(async { Ok("literal invite route") }),
+    )
+    .await
+    .expect("the literal route remains a bounded fallback");
+
+    assert_eq!(result, "literal invite route");
+}
+
+#[tokio::test]
+async fn literal_invite_route_is_constructed_after_announced_client_failure() {
+    let federation_id = endpoints_config(BTreeMap::new()).calculate_federation_id();
+    let result = prefer_announced_route(
+        federation_id,
+        "test invite lookup",
+        || {
+            Err::<std::future::Ready<anyhow::Result<&str>>, _>(anyhow!(
+                "announced client construction failed"
+            ))
+        },
+        || {
+            Ok(std::future::ready(Ok(
+                "independently constructed literal route",
+            )))
+        },
+    )
+    .await
+    .expect("literal client construction must be independent");
+
+    assert_eq!(result, "independently constructed literal route");
+}
+
+#[tokio::test]
+async fn working_announced_route_does_not_construct_broken_literal_client() {
+    let federation_id = endpoints_config(BTreeMap::new()).calculate_federation_id();
+    let result = prefer_announced_route(
+        federation_id,
+        "test invite lookup",
+        || Ok(std::future::ready(Ok("working announced route"))),
+        || -> anyhow::Result<std::future::Ready<anyhow::Result<&str>>> {
+            panic!("literal client must be lazy when the announced route works")
+        },
+    )
+    .await
+    .expect("the announced route succeeds independently");
+
+    assert_eq!(result, "working announced route");
+}
