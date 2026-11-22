@@ -45,7 +45,7 @@ jobs:
 
     - name: Run unit tests
       working-directory: ./fmo_frontend_react
-      run: npm run test:config && npm run test:pagination && npm run test:charts && npm run test:format && npm run test:gateways && npm run test:http && npm run test:guardians && npm run test:manifold && npm run test:lookups
+      run: npm run test:config && npm run test:pagination && npm run test:charts && npm run test:format && npm run test:gateways && npm run test:http && npm run test:guardians && npm run test:manifold && npm run test:lookups && npm run test:search
 
     - name: Build production bundle
       working-directory: ./fmo_frontend_react

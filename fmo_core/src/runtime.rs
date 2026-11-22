@@ -26,6 +26,9 @@ pub struct RuntimeOptions {
     /// Zero retains raw health indefinitely. Otherwise keep at least 31 days.
     #[arg(long, env = "FO_HEALTH_RETENTION_DAYS", default_value_t = 90)]
     pub health_retention_days: u32,
+    /// How often processes reload guardian routes from the database
+    #[arg(long, env = "FO_REPLICA_ENDPOINT_REFRESH_SECS", default_value_t = 60)]
+    pub replica_endpoint_refresh_secs: u64,
 }
 
 impl RuntimeOptions {
@@ -35,7 +38,8 @@ impl RuntimeOptions {
                 && self.worker_db_connections > 0
                 && self.worker_concurrency > 0
                 && self.external_concurrency > 0
-                && self.http_concurrency > 0,
+                && self.http_concurrency > 0
+                && self.replica_endpoint_refresh_secs > 0,
             "Connection and concurrency limits must be positive"
         );
         anyhow::ensure!(
@@ -98,6 +102,9 @@ fn lose_worker_lease(tasks: &fedimint_core::task::TaskGroup) {
 
 /// This dedicated connection is never returned to a pool. If it is lost,
 /// cancel workers immediately rather than continue without ownership.
+/// Advisory lock keys of the worker lease
+pub(crate) const WORKER_LOCK: (i32, i32) = (1_718_447_973, 1);
+
 pub(crate) async fn worker_lease(
     database: &str,
     tasks: fedimint_core::task::TaskGroup,
@@ -136,7 +143,10 @@ pub(crate) async fn worker_lease(
     .context("Worker notification subscription timed out")??;
     let row = tokio::time::timeout(
         Duration::from_secs(10),
-        client.query_one("SELECT pg_try_advisory_lock(1718447973, 1)", &[]),
+        client.query_one(
+            "SELECT pg_try_advisory_lock($1, $2)",
+            &[&WORKER_LOCK.0, &WORKER_LOCK.1],
+        ),
     )
     .await
     .context("Worker lock acquisition timed out")??;
