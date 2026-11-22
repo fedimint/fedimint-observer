@@ -1,0 +1,1 @@
+import{j as e}from"./index-BGL8vRyf.js";function o({onClick:n,label:t="Try again"}){return e.jsx("button",{type:"button",onClick:n,className:"font-medium underline hover:no-underline",children:t})}export{o as R};
