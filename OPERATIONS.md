@@ -31,9 +31,11 @@ just run
 
 1. Take a database backup and verify a restore in an isolated database.
 2. Stop the existing collector and start the updated one. It applies the core
-   schema (currently v12) and the module migrations. Populated databases upgrade
+   schema (currently v13) and the module migrations. Populated databases upgrade
    from core v11 or newer; older ones need the previous release's migrations
-   first.
+   first. Each collector that takes the worker lease claims a new guardian-route
+   write epoch, and PostgreSQL rejects route writes from the previous collector
+   after that, so a slow outgoing collector cannot overwrite newer routes.
 3. Allow time for backfills and index builds. Migrations run transactionally
    with no statement deadline and a 30 second lock deadline, and the indexes are
    regular builds: plan a maintenance window on a large database. Some module
@@ -56,6 +58,7 @@ just run
 | `FO_EXTERNAL_CONCURRENCY` | `8` | Concurrent metadata, Wallet v2, and enrichment operations |
 | `FO_HTTP_CONCURRENCY` | `128` | Concurrent application requests per process |
 | `FO_HEALTH_RETENTION_DAYS` | `90` | Raw guardian history and Lightning v2 gateway health retention; `0` disables pruning |
+| `FO_REPLICA_ENDPOINT_REFRESH_SECS` | `60` | Background refresh interval for verified guardian routes in shared storage, including worker catch-up and API-only replicas |
 
 Retention must be at least 31 days when enabled. Size the sum of the pools
 across all replicas below PostgreSQL's connection limit, leaving room for
@@ -69,6 +72,33 @@ and `/metrics` bypass admission. Put public TLS termination, per-client rate
 limits, and access controls for `/metrics` and administrative paths at the
 reverse proxy.
 
+Fedimint's connection pool keeps each guardian connection, WebSocket or Iroh,
+until the remote end closes it, so Observer bounds which routes may enter its
+pools. Admitted routes are not evicted until restart.
+
+- Observed federations share one pool across at most 4,096 federations. Their
+  canonical endpoints come only from federations admins add.
+  Announcements have their own cap of 4,096 distinct URLs, so they cannot crowd
+  out canonical routes; each guardian may introduce 16 announced URLs. A
+  guardian over either announcement budget keeps its last selected route and
+  logs a warning once; its newest route is still stored, and a restart or a
+  fresh replica adopts it. `fmo_guardian_routes_held` counts such guardians.
+- Invite lookups, including `/config/:invite/meta`, use separate pools, one
+  per API secret, and up to 1,024
+  `(secret, URL)` pairs. Announced and literal routes can each introduce 512,
+  so a failing announced route can't use up its fallback's capacity. When
+  full, lookups of new servers fail until restart; rate-limit `/config` at the
+  reverse proxy.
+
+Endpoint discovery performs at most 64 requests per round with four concurrent
+requests, and verifies at most 64 known members from each response before
+rotating that source's window. Each announcement has a 4 KiB post-decode
+admission limit. The pinned WebSocket and Iroh connectors receive and decode
+the response before Observer can apply that check; enforcing a per-RPC
+receive-side byte cap requires connector support. Observer can't verify
+announcements for a federation whose config has no broadcast public keys, so
+discovery doesn't run for it; it always uses its configured endpoints.
+
 Lightning v2 gateway data comes from guardians and gateways and is bounded:
 256 gateway URLs per guardian per poll, 1,024 registered and 1,024 retired
 gateways per federation module instance, and probe history kept for
@@ -79,17 +109,19 @@ contested and credited to neither.
 
 ## Egress policy
 
-Gateway endpoints come from guardians, and their Iroh addresses from discovery
-records the gateway operator publishes. HTTPS probes are pinned to public
-addresses in code; Iroh probes are not, so a published record can direct QUIC
-handshake packets to private addresses. Authentication stops another node from
-posing as the named gateway, but it does not stop those packets being sent or
-handshake and discovery replies being received. The
-public config inspector also connects to guardian URLs from user-supplied invite
-codes. Enforce this at the network layer: run the observer as a dedicated user,
-container or network namespace and drop its outbound traffic to non-public
-destinations, allowing first the few internal services it needs. With nftables,
-for example:
+Guardian routes can change through signed announcements, gateway endpoints
+come from guardians, and gateway Iroh addresses come from discovery records the
+gateway operator publishes. A valid signature authenticates who announced a
+destination; it does not establish that the destination is safe. HTTPS gateway
+probes are pinned to public addresses in code. A guardian whose configured
+endpoint is public cannot announce a non-public IP address or `localhost`, but
+announced hostnames are not resolved, and guardian WebSocket/Iroh and gateway
+Iroh connections are not pinned, so authenticated input can still direct
+traffic to private addresses. The public config inspector also connects to
+guardian URLs from user-supplied invite codes. Enforce this at the network
+layer: run the observer as a dedicated user, container or network namespace and
+drop its outbound traffic to non-public destinations, allowing first the few
+internal services it needs. With nftables, for example:
 
 ```
 table inet fmo_egress {
@@ -131,7 +163,8 @@ the proxy.
 `/live` (and legacy `/health`) is liveness. `/ready` checks the database and
 local worker ownership; it does not assert that every federation is
 synchronized. `/metrics` exposes HTTP request, error and rejection counters, a
-latency histogram, pool usage, and local worker health. Responses carry an
+latency histogram, pool usage, local worker health, and guardian route
+admission (`fmo_guardian_announced_urls_admitted`, `fmo_guardian_routes_held`). Responses carry an
 `x-request-id`.
 
 Monitor snapshot ages, queue backlog, and module lag alongside HTTP percentiles:
@@ -191,7 +224,7 @@ empty, isolated database, rolls back its fixtures, and does not use
 
 | Variable | Command |
 | --- | --- |
-| `FMO_WORK_TEST_DATABASE` | `cargo test -p fmo_core postgres_ -- --ignored` |
+| `FMO_WORK_TEST_DATABASE` | `cargo test -p fmo_core postgres_ -- --ignored --test-threads=1` |
 | `FMO_WALLETV2_TEST_DATABASE` | `cargo test -p fmo_module_walletv2 postgres_ -- --ignored` |
 | `FMO_LNV2_TEST_DATABASE` | `cargo test -p fmo_module_lnv2 postgres_ -- --ignored` |
 

@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -504,15 +505,17 @@ async fn poll_instance(
     config: ClientConfig,
     instance: u16,
 ) -> anyhow::Result<()> {
-    let api = services
-        .federation_api(&config.global)?
-        .with_module(instance);
     let bytes = fed.consensus_encode_to_vec();
     let jitter = (bytes.iter().map(|b| u64::from(*b)).sum::<u64>() + u64::from(instance)) % 31;
     tokio::time::sleep(Duration::from_secs(jitter)).await;
     let mut failures = 0u32;
     loop {
         let result = tokio::time::timeout(Duration::from_secs(40), async {
+            // Resolved per round for rotations; a failure takes the round backoff.
+            let api = services
+                .federation_api(&config.global)
+                .context("No guardian API client for gateway registry poll")?
+                .with_module(instance);
             let _permit = services.external_io_permit().await?;
             let responses = stream::iter(config.global.api_endpoints.keys().copied())
                 .map(|peer| {
