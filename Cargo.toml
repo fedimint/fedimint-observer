@@ -15,6 +15,13 @@ exclude = ["fmo_modules/fmo_module_stability_pool"]
 
 resolver = "2"
 
+# Full debug info made target/ grow to 30+ GB; keep only file:line
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [workspace.dependencies]
 fedimint-api-client = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
 fedimint-connectors = { version = "0.12.0", git = "https://github.com/fedimint/fedimint", tag = "v0.12.0" }
