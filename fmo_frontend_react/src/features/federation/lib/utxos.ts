@@ -1,7 +1,8 @@
+import type { PageSize } from '../../../utils/pageSize';
 import type { FederationUtxosResponse, GuardianClaimedUtxoState, GuardianUtxoReport, UtxoView } from '../../../types/api';
 import { shortMiddle } from '../../../utils/format';
 
-export const UTXOS_PER_PAGE = 25;
+export const UTXOS_PER_PAGE: PageSize = 25;
 export const UTXO_VIEWS = ['all', 'verified', 'pending', 'mismatch'] as const satisfies readonly UtxoView[];
 
 export type UtxoKind = Exclude<UtxoView, 'all'>;
@@ -19,18 +20,18 @@ export interface UtxoInventoryRow {
 export const UTXO_KIND_STYLES: Record<UtxoKind, { label: string; pill: string; detail?: string }> = {
   verified: {
     label: 'Verified',
-    pill: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300',
-    detail: 'text-gray-500 dark:text-gray-400',
+    pill: 'bg-ok-soft text-ok-ink',
+    detail: 'text-ink-3',
   },
   pending: {
     label: 'Pending',
-    pill: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-    detail: 'text-amber-700 dark:text-amber-300/90',
+    pill: 'bg-warn-soft text-warn-ink',
+    detail: 'text-warn-ink',
   },
   mismatch: {
     label: 'Mismatch',
-    pill: 'bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-300',
-    detail: 'text-rose-700 dark:text-rose-300/90',
+    pill: 'bg-crit-soft text-crit-ink',
+    detail: 'text-crit-ink',
   },
 };
 

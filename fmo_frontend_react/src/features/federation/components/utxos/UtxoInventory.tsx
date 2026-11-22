@@ -1,6 +1,7 @@
 import type { FederationOverview } from '../../../../types/api';
 import { Alert } from '../../../../components/ui/Alert';
 import { NumberedPagination } from '../../../../components/ui/NumberedPagination';
+import { PageSizeSelect } from '../../../../components/ui/PageSizeSelect';
 import type { FederationUtxos } from '../../hooks/useFederationUtxos';
 import { UtxoNotices } from './UtxoNotices';
 import { UtxoToolbar } from './UtxoToolbar';
@@ -22,16 +23,16 @@ export function UtxoInventory({ utxos, overview, overviewFailed, network }: Utxo
         message="This view compares reconstructed observer history with guardian wallet data. Results may change while history is catching up."
       />
 
-      <section className="mt-5 overflow-hidden border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-        <div className="flex flex-wrap items-end justify-between gap-3 border-b border-gray-200 px-4 py-4 dark:border-gray-700 sm:px-6">
+      <section className="overflow-hidden rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgba(10,17,34,0.04)]">
+        <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line px-4 py-4 sm:px-6">
           <div>
-            <h2 className="text-base font-semibold text-gray-950 dark:text-white">Wallet UTXO Inventory</h2>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            <h2 className="text-[0.95rem] font-semibold tracking-tight text-ink">Wallet UTXO inventory</h2>
+            <p className="mt-0.5 text-xs text-ink-3 sm:text-[0.8rem]">
               One row per outpoint. Guardian agreement is shown alongside the reconstructed observer record.
             </p>
           </div>
           {utxos.data && (
-            <div className="text-xs text-gray-500 dark:text-gray-400">
+            <div className="text-xs text-ink-3">
               {utxos.comparedIds.length} of {utxos.guardians.length} guardians compared
             </div>
           )}
@@ -40,7 +41,10 @@ export function UtxoInventory({ utxos, overview, overviewFailed, network }: Utxo
         <UtxoNotices utxos={utxos} overview={overview} overviewFailed={overviewFailed} />
         <UtxoToolbar utxos={utxos} />
         <UtxoTable utxos={utxos} network={network} />
-        <NumberedPagination label="UTXO pages" page={utxos.currentPage} pageCount={utxos.pageCount} onChange={utxos.setPage} />
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-4 py-3 sm:px-6">
+          <PageSizeSelect value={utxos.pageSize} onChange={utxos.setPageSize} disabled={utxos.loading} />
+          <NumberedPagination label="UTXO pages" page={utxos.currentPage} pageCount={utxos.pageCount} onChange={utxos.setPage} />
+        </div>
       </section>
     </>
   );

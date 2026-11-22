@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Select } from '../../../components/ui/Select';
 import type { GatewayWindow } from '../../../types/api';
 import { GatewayV2Directory } from './GatewayV2Directory';
 
@@ -15,11 +16,11 @@ export function GatewayV2Modules({ id, instances, timeWindow }: GatewayV2Modules
   return (
     <>
       {instances.length > 1 && (
-        <label className="mb-4 block text-sm">
-          Lightning module{' '}
-          <select value={instance} onChange={(event) => setInstance(Number(event.target.value))} className="ml-2 rounded-lg border border-gray-300 bg-white p-2 dark:border-gray-600 dark:bg-gray-800">
+        <label className="mb-4 inline-flex items-center gap-2 text-xs text-ink-3">
+          Lightning module
+          <Select value={instance} onChange={(event) => setInstance(Number(event.target.value))}>
             {instances.map((id) => <option key={id} value={id}>Lightning #{id}</option>)}
-          </select>
+          </Select>
         </label>
       )}
       <GatewayV2Directory key={`${id}:${instance}:${timeWindow}`} id={id} instance={instance} timeWindow={timeWindow} />

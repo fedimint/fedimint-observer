@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Card } from './Card';
 
 interface PanelProps {
   /** Shown as the panel's heading */
@@ -10,16 +11,12 @@ interface PanelProps {
   children: ReactNode;
 }
 
-/** A white card with an optional heading, as on the federation page */
-export function Panel({ title, padding = 'p-4 sm:p-6', className = '', children }: PanelProps) {
+/** A card with an optional heading; the same surface as every dashboard block */
+export function Panel({ title, padding, className = '', children }: PanelProps) {
   return (
-    <div className={`bg-white dark:bg-gray-800 rounded-lg shadow-md border border-gray-200 dark:border-gray-700 ${padding} ${className}`}>
-      {title && (
-        <h2 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white mb-3 sm:mb-4">
-          {title}
-        </h2>
-      )}
+    <Card as="div" padding={padding} className={className}>
+      {title && <h2 className="mb-4 text-[0.95rem] font-semibold tracking-tight text-ink">{title}</h2>}
       {children}
-    </div>
+    </Card>
   );
 }

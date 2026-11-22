@@ -25,7 +25,7 @@ export function CombinedMiniChart({ transactionData, volumeData, dates,
       return <div key={index} className="flex h-full min-w-0 flex-1 items-end justify-center gap-0.5"
         title={`${labels?.[index] ?? `Day ${index + 1}`}\nTransactions: ${formatTransaction(count)}\nVolume: ${formatVolume(volume)}\n${average}`}>
         <span className={`w-[30%] rounded-t-[2px] ${count === 0 ? 'opacity-20' : ''}`} style={{ backgroundColor: '#3b82f6', height: `${Math.min(100, count / transactionMax * 100)}%`, minHeight: 1 }} />
-        <span className={`w-[30%] rounded-t-[2px] ${volume === 0 ? 'opacity-20' : ''}`} style={{ backgroundColor: '#10b981', height: `${Math.min(100, volume / volumeMax * 100)}%`, minHeight: 1 }} />
+        <span className={`w-[30%] rounded-t-[2px] bg-ok ${volume === 0 ? 'opacity-20' : ''}`} style={{ height: `${Math.min(100, volume / volumeMax * 100)}%`, minHeight: 1 }} />
       </div>;
     })}
   </div>;

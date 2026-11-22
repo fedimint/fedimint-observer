@@ -28,12 +28,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
 export function ReloadMessage({ message }: { message: string }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 p-6 text-center text-sm text-gray-600 dark:text-gray-300">
+    <div className="flex flex-col items-center justify-center gap-3 p-6 text-center text-sm text-ink-2">
       <p>{message}</p>
       <button
         type="button"
         onClick={() => window.location.reload()}
-        className="rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 font-semibold text-blue-800 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/50 dark:text-blue-200"
+        className="rounded-lg border border-accent/30 bg-accent-soft px-4 py-2 font-semibold text-accent-ink hover:bg-accent-soft"
       >
         Reload page
       </button>

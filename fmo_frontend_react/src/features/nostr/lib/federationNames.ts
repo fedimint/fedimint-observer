@@ -7,6 +7,8 @@ export interface NostrFederation {
   name: string | null;
   invite: string;
   health?: FederationHealth;
+  /** Whether this observer tracks the federation */
+  observed?: boolean;
 }
 
 // Each name lookup makes the server fetch the federation's config, so only a few run at once
@@ -21,10 +23,14 @@ export function federationName(meta: Record<string, unknown>): string | null {
   return name ? String(name) : null;
 }
 
+// A failed lookup (often a federation whose guardians are gone, which the
+// server spends a dial and a 502 on) is not tried again for this long
+const NAME_LOOKUP_FAILURE_TTL_MS = 15 * 60_000;
+
 // Each lookup makes the server ask the federation's guardians, and names
 // rarely change, so they are remembered for the session instead of fetched on
 // every visit.
-const federationNames = new LookupCache<string | null>();
+const federationNames = new LookupCache<string | null>({ failureTtlMs: NAME_LOOKUP_FAILURE_TTL_MS });
 
 // Gives up after the timeout. It is not tied to one visit of the page: a lookup
 // still running when the page closes completes into the cache for the next.

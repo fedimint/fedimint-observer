@@ -35,7 +35,7 @@ export function UptimeStrip({ gateway, strip, dataWindow, windowMinutes }: Uptim
             className="group relative h-3.5 flex-1 cursor-help rounded-[3px]"
           >
             <span className={`block h-full rounded-[3px] transition-transform duration-150 group-hover:scale-y-125 ${getUptimeStripClass(status)}`} />
-            <span className={`pointer-events-none absolute bottom-full z-20 mb-2 hidden w-max rounded-md bg-gray-950 px-2 py-1 text-[11px] font-medium text-white shadow-lg group-hover:block dark:bg-black ${uptimeTooltipPosition(index)}`}>
+            <span className={`pointer-events-none absolute bottom-full z-20 mb-2 hidden w-max rounded-md bg-ink-3 px-2 py-1 text-[11px] font-medium text-white shadow-lg group-hover:block ${uptimeTooltipPosition(index)}`}>
               {tooltip}
             </span>
           </span>

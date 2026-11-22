@@ -2,13 +2,12 @@ import { lazy, Suspense, useMemo } from 'react';
 import type { EChartsOption } from 'echarts';
 import type { GatewayUptimeTrendPoint, GatewayWindow } from '../../../types/api';
 import { useTheme } from '../../../hooks/useTheme';
+import { chartTheme } from '../../reliability/lib/chartTheme';
 import { formatUtcDate } from '../../../utils/time';
 import { ErrorBoundary, ReloadMessage } from '../../../components/ui/ErrorBoundary';
 
 const UptimeTrendChart = lazy(() => import('./UptimeTrendChart').then((module) => ({ default: module.UptimeTrendChart })));
 
-const LIGHT = { label: '#6b7280', axis: '#d1d5db', grid: '#e5e7eb', line: '#2563eb', area: 'rgba(37, 99, 235, 0.12)' };
-const DARK = { label: '#9ca3af', axis: '#4b5563', grid: '#374151', line: '#60a5fa', area: 'rgba(96, 165, 250, 0.15)' };
 
 interface UptimeTrendSectionProps {
   timeWindow: GatewayWindow;
@@ -20,7 +19,10 @@ interface UptimeTrendSectionProps {
 /** Daily availability across all of the federation's gateways */
 export function UptimeTrendSection({ timeWindow, points, placeholder }: UptimeTrendSectionProps) {
   const { isDark } = useTheme();
-  const colors = isDark ? DARK : LIGHT;
+  const colors = useMemo(() => {
+    const theme = chartTheme(isDark);
+    return { label: theme.ink3, axis: theme.axis, grid: theme.grid, line: theme.series, area: theme.seriesSoft };
+  }, [isDark]);
 
   // Each point starts at UTC midnight and covers that UTC day
   const labels = useMemo(
@@ -41,22 +43,22 @@ export function UptimeTrendSection({ timeWindow, points, placeholder }: UptimeTr
   }), [colors, labels, points]);
 
   return (
-    <section className="mb-4 rounded-xl border border-gray-200 bg-white px-4 pt-4 shadow-xs dark:border-gray-700 dark:bg-gray-800 sm:px-5" aria-labelledby="uptime-trend-heading">
+    <section className="mb-4 rounded-xl border border-line bg-surface px-4 pt-4 shadow-xs sm:px-5" aria-labelledby="uptime-trend-heading">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <h2 id="uptime-trend-heading" className="text-base font-semibold text-gray-950 dark:text-white">Gateway availability trend ({timeWindow.toUpperCase()})</h2>
-          <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Each point combines every gateway poll snapshot recorded on that day · days in UTC.</p>
+          <h2 id="uptime-trend-heading" className="text-base font-semibold text-ink">Gateway availability trend ({timeWindow.toUpperCase()})</h2>
+          <p className="mt-0.5 text-xs text-ink-3">Each point combines every gateway poll snapshot recorded on that day · days in UTC.</p>
         </div>
-        {points.length > 0 && <span className="text-xs text-gray-500 dark:text-gray-400">{points.length} day{points.length === 1 ? '' : 's'} with data</span>}
+        {points.length > 0 && <span className="text-xs text-ink-3">{points.length} day{points.length === 1 ? '' : 's'} with data</span>}
       </div>
       {points.length > 0 ? (
         <ErrorBoundary fallback={<div className="flex h-[210px] items-center justify-center"><ReloadMessage message="The availability chart could not be loaded." /></div>}>
-          <Suspense fallback={<div className="flex h-[210px] items-center justify-center text-sm text-gray-500 dark:text-gray-400">Loading chart…</div>}>
+          <Suspense fallback={<div className="flex h-[210px] items-center justify-center text-sm text-ink-3">Loading chart…</div>}>
             <UptimeTrendChart option={option} />
           </Suspense>
         </ErrorBoundary>
       ) : (
-        <div className="flex h-[210px] items-center justify-center text-sm text-gray-500 dark:text-gray-400">{placeholder}</div>
+        <div className="flex h-[210px] items-center justify-center text-sm text-ink-3">{placeholder}</div>
       )}
     </section>
   );

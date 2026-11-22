@@ -9,6 +9,7 @@ import {
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useTheme } from '../../../hooks/useTheme';
+import { chartTheme } from '../../reliability/lib/chartTheme';
 import type { HistogramEntry } from '../../../utils/histogram';
 
 // Register only the components we need
@@ -21,10 +22,6 @@ echarts.use([
 ]);
 
 // Dark is what the chart always used; light matches the app's other charts
-const CHART_COLORS = {
-  dark: { label: '#9ca3af', axis: '#374151', grid: '#374151', tooltip: '#1f2937', tooltipBorder: '#374151', tooltipText: '#fff' },
-  light: { label: '#6b7280', axis: '#d1d5db', grid: '#e5e7eb', tooltip: '#ffffff', tooltipBorder: '#e5e7eb', tooltipText: '#111827' },
-};
 
 interface TransactionChartProps {
   data: HistogramEntry[];
@@ -46,13 +43,16 @@ export function TransactionChart({
   onZoomChange,
 }: TransactionChartProps) {
   const { isDark } = useTheme();
-  const colors = isDark ? CHART_COLORS.dark : CHART_COLORS.light;
+  const colors = useMemo(() => {
+    const theme = chartTheme(isDark);
+    return { label: theme.ink3, axis: theme.axis, grid: theme.grid, tooltip: theme.surface, tooltipBorder: theme.axis, tooltipText: theme.ink2, ok: theme.ok };
+  }, [isDark]);
 
   // Separate the base chart option from zoom state
   const baseChartOption = useMemo(() => {
     const dates = data.map(d => d.date);
     const values = data.map(d => chartMetric === 'volume' ? d.volume : d.count);
-    const avgValues = movingAverageWindow > 0 
+    const avgValues = movingAverageWindow > 0
       ? data.map(d => chartMetric === 'volume' ? d.avgVolume : d.avgCount)
       : [];
 
@@ -156,7 +156,7 @@ export function TransactionChart({
                 smooth: true,
                 symbol: 'none',
                 lineStyle: {
-                  color: '#059669',
+                  color: colors.ok,
                   width: 3,
                   type: 'dashed'
                 }

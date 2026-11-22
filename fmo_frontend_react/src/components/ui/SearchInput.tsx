@@ -1,4 +1,6 @@
-import { CloseIcon, SearchIcon } from './icons';
+import type { KeyboardEvent } from 'react';
+import { CONTROL_SIZE, FIELD, type ControlSize } from './controls';
+import { Icon } from './Icon';
 
 interface SearchInputProps {
   value: string;
@@ -7,34 +9,36 @@ interface SearchInputProps {
   /** Accessible name of the field */
   label: string;
   /** Accessible name of the button that clears the field */
-  clearLabel: string;
-  onKeyDown?: (event: React.KeyboardEvent<HTMLInputElement>) => void;
+  clearLabel?: string;
+  onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
+  size?: ControlSize;
+  className?: string;
 }
 
-/** A full-width search field with a search icon and a button to clear it */
-export function SearchInput({ value, onChange, placeholder, label, clearLabel, onKeyDown }: SearchInputProps) {
+/** A search field with a search icon and a button to clear it */
+export function SearchInput({ value, onChange, placeholder, label, clearLabel = 'Clear search', onKeyDown, size = 'sm', className = '' }: SearchInputProps) {
+  const iconSize = size === 'sm' ? 'size-3.5' : 'size-4';
+  const inset = size === 'sm' ? 'pl-8 pr-8' : 'pl-10 pr-10';
   return (
-    <div className="relative">
-      <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-        <SearchIcon className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-      </div>
+    <div className={`relative min-w-0 ${className}`}>
+      <Icon name="search" className={`pointer-events-none absolute top-1/2 -translate-y-1/2 text-ink-3 ${iconSize} ${size === 'sm' ? 'left-2.5' : 'left-3.5'}`} />
       <input
-        type="text"
+        type="search"
         aria-label={label}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={onKeyDown}
-        className="block w-full p-4 pl-10 pr-10 text-sm text-gray-900 border border-gray-300 rounded-lg bg-white focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-800 dark:border-gray-600 dark:placeholder-gray-400 dark:text-white dark:focus:ring-blue-500 dark:focus:border-blue-500"
         placeholder={placeholder}
+        className={`${FIELD} ${CONTROL_SIZE[size]} ${inset} block w-full [&::-webkit-search-cancel-button]:hidden`}
       />
       {value && (
         <button
           type="button"
           aria-label={clearLabel}
           onClick={() => onChange('')}
-          className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+          className={`absolute top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-3 hover:bg-surface-3 hover:text-ink ${size === 'sm' ? 'right-1.5' : 'right-2.5'}`}
         >
-          <CloseIcon />
+          <Icon name="close" className={iconSize} />
         </button>
       )}
     </div>

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { CONTROL_SIZE, TOGGLE_OFF, TOGGLE_ON } from './controls';
 
 interface FilterChipsProps<T extends string> {
   options: readonly T[];
@@ -12,7 +13,7 @@ interface FilterChipsProps<T extends string> {
   className?: string;
 }
 
-/** A row of pill-shaped toggle buttons, exactly one of them pressed */
+/** A wrapping row of filter toggles, exactly one of them pressed */
 export function FilterChips<T extends string>({ options, value, onChange, renderLabel, label, className = '' }: FilterChipsProps<T>) {
   return (
     <div className={`flex flex-wrap gap-2 ${className}`} role="group" aria-label={label}>
@@ -22,8 +23,8 @@ export function FilterChips<T extends string>({ options, value, onChange, render
           type="button"
           aria-pressed={value === option}
           onClick={() => onChange(option)}
-          className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium capitalize ${
-            value === option ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 text-gray-600 dark:border-gray-600 dark:text-gray-300'
+          className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border font-medium capitalize transition-colors ${CONTROL_SIZE.sm} ${
+            value === option ? TOGGLE_ON : TOGGLE_OFF
           }`}
         >
           {renderLabel(option)}

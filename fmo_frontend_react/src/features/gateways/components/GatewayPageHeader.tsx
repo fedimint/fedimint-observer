@@ -1,13 +1,14 @@
 import type { ReactNode, Ref } from 'react';
 import type { GatewayOverviewSummary, GatewayWindow } from '../../../types/api';
+import { Segmented } from '../../../components/ui/Segmented';
+import { StatusDot } from '../../../components/ui/Status';
 import { GATEWAY_WINDOWS } from '../lib/gatewayRows';
+
+const WINDOW_OPTIONS = GATEWAY_WINDOWS.map((value) => ({ value, label: value }));
 
 interface GatewayPageHeaderProps {
   /** Takes keyboard focus after a successful retry removes the focused button */
   headingRef: Ref<HTMLHeadingElement>;
-  /** The federation's name, a placeholder while it loads, or null to say "Federation" */
-  name: string | null;
-  nameLoading: boolean;
   timeWindow: GatewayWindow;
   onSelectWindow: (window: GatewayWindow) => void;
   /** Loading, freshness or fallback note under the window buttons */
@@ -16,34 +17,18 @@ interface GatewayPageHeaderProps {
   children?: ReactNode;
 }
 
-/** The federation's name, the time window buttons and the gateway counts */
-export function GatewayPageHeader({ headingRef, name, nameLoading, timeWindow, onSelectWindow, windowStatus, children }: GatewayPageHeaderProps) {
+/** The section title, the time window buttons and the gateway counts */
+export function GatewayPageHeader({ headingRef, timeWindow, onSelectWindow, windowStatus, children }: GatewayPageHeaderProps) {
   return (
-    <header className="mt-4 mb-4 rounded-2xl border border-slate-200 bg-linear-to-br from-white to-blue-50 p-5 shadow-xs dark:border-gray-700 dark:from-gray-800 dark:to-blue-950/30 sm:p-6">
-      <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
+    <header className="mb-4 rounded-xl border border-line bg-surface p-4 shadow-[0_1px_2px_rgba(10,17,34,0.04)] sm:p-5">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
         <div>
-          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-700 dark:text-blue-300">Lightning gateway observatory</div>
-          <h1 ref={headingRef} tabIndex={-1} className="mt-2 wrap-break-word text-3xl font-bold tracking-tight text-gray-950 outline-hidden dark:text-white">
-            {name || (nameLoading
-              ? <span aria-hidden="true" className="inline-block h-8 w-56 max-w-full animate-pulse rounded-lg bg-slate-200 align-middle dark:bg-gray-700" />
-              : 'Federation')}
-          </h1>
+          <h2 ref={headingRef} tabIndex={-1} className="text-[0.95rem] font-semibold tracking-tight text-ink outline-hidden">Lightning gateways</h2>
+          <p className="mt-0.5 text-xs text-ink-3 sm:text-[0.8rem]">Gateways registered with the federation's Lightning module, as the observer polls them</p>
         </div>
-        <div className="rounded-xl bg-slate-100 p-1 dark:bg-gray-900">
-          <div className="flex gap-1" role="group" aria-label="Time window">
-            {GATEWAY_WINDOWS.map((option) => (
-              <button
-                key={option}
-                type="button"
-                aria-pressed={timeWindow === option}
-                onClick={() => onSelectWindow(option)}
-                className={`rounded-lg px-3 py-2 text-sm font-semibold ${timeWindow === option ? 'bg-white text-blue-700 shadow-xs dark:bg-gray-700 dark:text-blue-300' : 'text-gray-600 dark:text-gray-400'}`}
-              >
-                {option.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          <div className="px-2 pt-1 text-right text-[11px] text-gray-600 dark:text-gray-400">{windowStatus}</div>
+        <div className="flex shrink-0 flex-col items-start gap-1 sm:items-end">
+          <Segmented label="Time window" options={WINDOW_OPTIONS} value={timeWindow} onChange={onSelectWindow} />
+          <span className="text-[11px] text-ink-3">{windowStatus}</span>
         </div>
       </div>
       {children}
@@ -63,24 +48,24 @@ interface GatewaySummaryBarProps {
 /** Gateways by status, vetted count and average uptime */
 export function GatewaySummaryBar({ summary, liveCount, switchingWindow }: GatewaySummaryBarProps) {
   return (
-    <div aria-busy={switchingWindow} className={`mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-200 pt-3 text-sm transition-opacity dark:border-gray-700 ${switchingWindow ? 'opacity-60' : ''}`}>
+    <div aria-busy={switchingWindow} className={`mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line pt-3 text-sm transition-opacity ${switchingWindow ? 'opacity-60' : ''}`}>
       {summary ? (
         <>
-          <span className="font-semibold text-gray-950 dark:text-white">{summary.total} gateways</span>
-          <span className="text-green-700 dark:text-green-300">● {summary.online} online</span>
-          <span className="text-yellow-700 dark:text-yellow-300">● {summary.degraded} degraded</span>
-          <span className="text-red-700 dark:text-red-300">● {summary.offline} offline</span>
-          {summary.unknown > 0 && <span className="text-gray-600 dark:text-gray-300">● {summary.unknown} unknown</span>}
-          {summary.retired > 0 && <span className="text-gray-500 dark:text-gray-400">{summary.retired} retired</span>}
-          <span className="text-gray-600 dark:text-gray-300">{summary.vetted} vetted</span>
-          <span className="sm:ml-auto font-semibold text-indigo-700 dark:text-indigo-300">
+          <span className="font-semibold text-ink">{summary.total} gateways</span>
+          <span className="inline-flex items-center gap-1.5 text-ink-2"><StatusDot tone="ok" />{summary.online} online</span>
+          <span className="inline-flex items-center gap-1.5 text-ink-2"><StatusDot tone="warn" />{summary.degraded} degraded</span>
+          <span className="inline-flex items-center gap-1.5 text-ink-2"><StatusDot tone="crit" />{summary.offline} offline</span>
+          {summary.unknown > 0 && <span className="inline-flex items-center gap-1.5 text-ink-2"><StatusDot tone="neutral" />{summary.unknown} unknown</span>}
+          {summary.retired > 0 && <span className="text-ink-3">{summary.retired} retired</span>}
+          <span className="text-ink-2">{summary.vetted} vetted</span>
+          <span className="sm:ml-auto font-semibold text-ink">
             {summary.avg_uptime_pct !== null
-              ? <>{summary.avg_uptime_pct.toFixed(1)}% uptime <span className="font-normal text-xs text-gray-500 dark:text-gray-400">({(summary.avg_coverage_pct ?? 0).toFixed(0)}% observed)</span></>
+              ? <>{summary.avg_uptime_pct.toFixed(1)}% uptime <span className="font-normal text-xs text-ink-3">({(summary.avg_coverage_pct ?? 0).toFixed(0)}% observed)</span></>
               : 'No uptime data'}
           </span>
         </>
       ) : (
-        <span className="text-gray-600 dark:text-gray-300">{liveCount} gateways from the live registry · no recorded history</span>
+        <span className="text-ink-2">{liveCount} gateways from the live registry · no recorded history</span>
       )}
     </div>
   );

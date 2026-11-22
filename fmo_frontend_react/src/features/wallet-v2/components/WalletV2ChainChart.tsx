@@ -5,6 +5,7 @@ import { LineChart } from 'echarts/charts';
 import { GridComponent, TooltipComponent } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useTheme } from '../../../hooks/useTheme';
+import { chartTheme } from '../../reliability/lib/chartTheme';
 import type { WalletV2OnChainTransaction } from '../../../types/api';
 import { asBitcoin } from '../../../utils/format';
 
@@ -17,19 +18,20 @@ interface WalletV2ChainChartProps {
 export function WalletV2ChainChart({ transactions }: WalletV2ChainChartProps) {
   const { isDark } = useTheme();
   const option = useMemo(() => {
+    const theme = chartTheme(isDark);
     const ordered = [...transactions].sort((a, b) => a.index - b.index);
     const labels = ordered.map((transaction) => `#${transaction.index}`);
     const values = ordered.map((transaction) => ({
       value: transaction.output_msat,
       itemStyle: {
-        color: transaction.output_msat >= transaction.input_msat ? '#10b981' : '#f97316',
+        color: transaction.output_msat >= transaction.input_msat ? theme.ok : theme.serious,
       },
     }));
-    const labelColor = isDark ? '#9ca3af' : '#6b7280';
-    const axisColor = isDark ? '#374151' : '#d1d5db';
-    const gridColor = isDark ? '#374151' : '#e5e7eb';
-    const tooltipBackground = isDark ? '#1f2937' : '#ffffff';
-    const tooltipText = isDark ? '#ffffff' : '#111827';
+    const labelColor = theme.ink3;
+    const axisColor = theme.axis;
+    const gridColor = theme.grid;
+    const tooltipBackground = theme.surface;
+    const tooltipText = theme.ink2;
 
     return {
       animation: false,
@@ -70,8 +72,8 @@ export function WalletV2ChainChart({ transactions }: WalletV2ChainChartProps) {
         smooth: false,
         symbol: 'circle',
         symbolSize: 8,
-        lineStyle: { color: '#6366f1', width: 2 },
-        areaStyle: { color: 'rgba(99, 102, 241, 0.12)' },
+        lineStyle: { color: theme.series, width: 2 },
+        areaStyle: { color: theme.seriesSoft },
       }],
     };
   }, [isDark, transactions]);

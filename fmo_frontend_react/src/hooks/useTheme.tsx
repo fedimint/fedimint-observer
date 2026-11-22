@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { readStorage, writeStorage } from '../utils/storage';
 
 export type Theme = 'light' | 'dark' | 'auto';
@@ -47,8 +47,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const isDark = theme === 'dark' || (theme === 'auto' && prefersDark);
 
   // Apply theme class whenever the effective theme changes
+  const firstApply = useRef(true);
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', isDark);
+    const root = document.documentElement;
+    // A switch cross-fades colours briefly; the first paint and reduced motion do not
+    const fade = !firstApply.current && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    firstApply.current = false;
+    if (fade) root.classList.add('theme-switching');
+    root.classList.toggle('dark', isDark);
+    if (!fade) return;
+    const timer = setTimeout(() => root.classList.remove('theme-switching'), 260);
+    return () => {
+      clearTimeout(timer);
+      root.classList.remove('theme-switching');
+    };
   }, [isDark]);
 
   // Listen for storage changes from other tabs/windows
@@ -76,7 +88,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       } else {
         newTheme = 'light';
       }
-      
+
       // Save to localStorage, or clear it for auto mode
       writeStorage('theme', newTheme === 'auto' ? null : newTheme);
       return newTheme;

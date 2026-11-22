@@ -21,8 +21,8 @@ export function ExpiryNotice({ federation, expiry, successor }: ExpiryNoticeProp
   return (
     <div className={`mb-4 rounded-lg border p-3 text-sm ${
       closed
-        ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-500/60 dark:bg-red-900/20 dark:text-red-300'
-        : 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-500/60 dark:bg-amber-900/20 dark:text-amber-300'
+        ? 'border-crit/30 bg-crit-soft text-crit-ink'
+        : 'border-warn/30 bg-warn-soft text-warn-ink'
     }`}>
       <strong>{closed ? 'Shut down' : 'Shutting down'}</strong>
       {' '}on {formatUtcDateTime(expiry)}.

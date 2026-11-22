@@ -22,15 +22,7 @@ export const WINDOW_MINUTES: Record<GatewayWindow, number> = {
 };
 export const UPTIME_SEGMENTS = 30;
 /** Rows rendered at first, and added by each "Show more" */
-export const GATEWAYS_PER_BATCH = 50;
 const RETIRED_AFTER_MINUTES = 7 * 24 * 60;
-const STATUS_RANK: Record<GatewayStatus, number> = {
-  offline: 0,
-  degraded: 1,
-  unknown: 2,
-  online: 3,
-  retired: 4,
-};
 
 export interface GatewayWithStatus extends GatewayInfo {
   firstSeenDate: Date | null;
@@ -92,26 +84,26 @@ export function formatCompactDuration(minutes: number): string {
 export function statusClasses(status: GatewayStatus): string {
   switch (status) {
     case 'online':
-      return 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300';
+      return 'bg-ok-soft text-ok-ink';
     case 'degraded':
-      return 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300';
+      return 'bg-warn-soft text-warn-ink';
     case 'offline':
-      return 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300';
+      return 'bg-crit-soft text-crit-ink';
     default:
-      return 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300';
+      return 'bg-surface-3 text-ink-2';
   }
 }
 
 export function getUptimeStripClass(status: UptimeStripStatus): string {
   switch (status) {
     case 'online':
-      return 'bg-green-500 dark:bg-green-400';
+      return 'bg-ok';
     case 'degraded':
-      return 'bg-yellow-500 dark:bg-yellow-400';
+      return 'bg-warn';
     case 'offline':
-      return 'bg-red-500 dark:bg-red-400';
+      return 'bg-crit';
     default:
-      return 'bg-gray-300 dark:bg-gray-600';
+      return 'bg-line-strong';
   }
 }
 
@@ -243,39 +235,4 @@ export function toGatewayRow(gateway: GatewayInfo, now: number, windowMinutes: n
     totalVolumeMsatWindow,
     searchText,
   };
-}
-
-/** The rows matching the status filter and search, in the chosen order */
-export function filterAndSortGateways(
-  rows: GatewayWithStatus[],
-  filter: GatewayFilter,
-  search: string,
-  sort: GatewaySort,
-  direction: SortDirection,
-): GatewayWithStatus[] {
-  const query = search.trim().toLowerCase();
-  const filtered = rows.filter((row) => (
-    (filter === 'all' ? row.status !== 'retired' : row.status === filter)
-    && (!query || row.searchText.includes(query))
-  ));
-
-  return filtered.sort((left, right) => {
-    let comparison: number;
-    switch (sort) {
-      case 'status':
-        comparison = STATUS_RANK[left.status] - STATUS_RANK[right.status]
-          || (left.minutesSinceLastSeen ?? 0) - (right.minutesSinceLastSeen ?? 0);
-        break;
-      case 'uptime':
-        comparison = left.estimatedUptimePct - right.estimatedUptimePct;
-        break;
-      case 'activity':
-        comparison = (left.realActivityScore ?? -1) - (right.realActivityScore ?? -1);
-        break;
-      case 'freshness':
-      default:
-        comparison = (left.lastSeenDate?.getTime() ?? 0) - (right.lastSeenDate?.getTime() ?? 0);
-    }
-    return direction === 'asc' ? comparison : -comparison;
-  });
 }

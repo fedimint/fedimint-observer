@@ -1,3 +1,5 @@
+import { Icon, type IconName } from './Icon';
+
 type AlertLevel = 'info' | 'warning' | 'error' | 'success';
 
 interface AlertProps {
@@ -5,25 +7,20 @@ interface AlertProps {
   level: AlertLevel;
 }
 
+const STYLE: Record<AlertLevel, { box: string; icon: IconName }> = {
+  info: { box: 'border-accent/25 bg-accent-soft text-accent-ink', icon: 'info' },
+  warning: { box: 'border-warn/40 bg-warn-soft text-warn-ink', icon: 'alert' },
+  error: { box: 'border-crit/25 bg-crit-soft text-crit-ink', icon: 'xCircle' },
+  success: { box: 'border-ok/25 bg-ok-soft text-ok-ink', icon: 'checkCircle' },
+};
+
+/** A one-message notice above a block: tone border, icon, text */
 export function Alert({ message, level }: AlertProps) {
-  const styles = {
-    info: 'p-4 mb-4 text-sm text-blue-800 rounded-lg bg-blue-50 dark:bg-gray-800 dark:text-blue-400',
-    warning: 'p-4 mb-4 text-sm text-yellow-800 rounded-lg bg-yellow-50 dark:bg-gray-800 dark:text-yellow-300',
-    error: 'p-4 mb-4 text-sm text-red-800 rounded-lg bg-red-50 dark:bg-gray-800 dark:text-red-400',
-    success: 'p-4 mb-4 text-sm text-green-800 rounded-lg bg-green-50 dark:bg-gray-800 dark:text-green-400',
-  };
-
-  const titles = {
-    info: 'Info: ',
-    warning: 'Warning: ',
-    error: 'Error: ',
-    success: 'Success: ',
-  };
-
+  const { box, icon } = STYLE[level];
   return (
-    <div className={styles[level]} role="alert">
-      <span className="font-bold">{titles[level]}</span>
-      {message}
+    <div role={level === 'error' ? 'alert' : 'status'} className={`mb-4 flex items-start gap-2.5 rounded-xl border px-4 py-3 text-sm ${box}`}>
+      <Icon name={icon} className="mt-0.5 size-4" />
+      <p className="min-w-0">{message}</p>
     </div>
   );
 }

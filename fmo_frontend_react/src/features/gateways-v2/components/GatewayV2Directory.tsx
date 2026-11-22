@@ -1,15 +1,20 @@
 import { useCallback, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../../../services/api';
 import type { GatewayV2Registry, GatewayWindow } from '../../../types/api';
 import { errorMessage } from '../../../utils/errors';
 import { useCursorPages } from '../../../hooks/useCursorPages';
 import { CursorPager } from '../../../components/ui/CursorPager';
+import { usePageSize } from '../../../hooks/usePageSize';
 import { FilterChips } from '../../../components/ui/FilterChips';
+import { SearchInput } from '../../../components/ui/SearchInput';
+import { Select } from '../../../components/ui/Select';
 import { StatTile } from '../../../components/ui/StatTile';
 import { card, muted } from '../../../components/ui/styles';
 import { GATEWAY_V2_FILTERS, observedDate, visibleGateways, type GatewayV2Filter, type GatewayV2Sort } from '../lib/gatewaysV2';
 import { GatewayV2AvailabilityTrend } from './GatewayV2AvailabilityTrend';
 import { GatewayV2Row } from './GatewayV2Row';
+import { GatewayV2Detail } from './GatewayV2Detail';
 
 const REFRESH_MS = 60_000;
 const nextAfter = (registry: GatewayV2Registry) => registry.next_after;
@@ -25,9 +30,10 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<GatewayV2Filter>('all');
   const [sort, setSort] = useState<GatewayV2Sort>('name');
+  const [pageSize, setPageSize] = usePageSize('gateways-v2', 25);
   const fetchPage = useCallback(
-    (after: string | undefined, signal: AbortSignal) => api.getGatewayV2Registry(id, instance, timeWindow, after, signal),
-    [id, instance, timeWindow],
+    (after: string | undefined, signal: AbortSignal) => api.getGatewayV2Registry(id, instance, timeWindow, pageSize, after, signal),
+    [id, instance, timeWindow, pageSize],
   );
   const pages = useCursorPages({ fetchPage, nextCursor: nextAfter, refreshMs: REFRESH_MS });
   const registry = pages.page;
@@ -42,10 +48,23 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
   const successful = totals?.online_samples ?? 0;
   const medianLatency = totals?.median_latency_ms ?? null;
   const visible = visibleGateways(gateways, filter, search, sort);
+  // The server pages over every gateway it recorded, removed ones included
+  const pagedTotal = totals ? totals.registered + totals.removed : undefined;
+
+  // The selected gateway opens in the side panel, kept in the URL by its endpoint
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedEndpoint = searchParams.get('gateway');
+  const selected = gateways.find((gateway) => gateway.api_endpoint === selectedEndpoint) ?? null;
+  const selectGateway = (endpoint: string | null) => {
+    const next = new URLSearchParams(window.location.search);
+    if (endpoint === null) next.delete('gateway');
+    else next.set('gateway', endpoint);
+    setSearchParams(next, { replace: endpoint === null });
+  };
 
   return (
     <>
-      {error && <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-4 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">{error}. <button type="button" className="underline" onClick={pages.restart}>Try again</button></p>}
+      {error && <p role="alert" className="mb-4 rounded-lg bg-warn-soft p-4 text-sm text-warn-ink">{error}. <button type="button" className="underline" onClick={pages.restart}>Try again</button></p>}
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatTile label="Registered gateways" value={totals ? totals.registered.toLocaleString() : '—'} detail={registry?.next_after || pages.onLaterPage ? 'Across all pages; use the arrows for more' : 'Registered with the federation'} />
         <StatTile label="Online now" value={totals ? totals.online.toLocaleString() : '—'} detail={totals ? `${totals.degraded} degraded · ${totals.offline} offline · ${totals.unknown} unknown` : '—'} />
@@ -58,25 +77,25 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
         <div className={`mb-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs ${muted}`}>
           <span>Registry: {registry.successful_guardians}/{registry.total_guardians} guardians answered</span>
           <span>Updated {observedDate(registry.observed_at)}</span>
-          {registry.stale && <span className="text-amber-600 dark:text-amber-300">Registry collection delayed</span>}
+          {registry.stale && <span className="text-warn-ink">Registry collection delayed</span>}
           {registry.successful_guardians < registry.total_guardians && <span>Previous registrations are retained during partial coverage.</span>}
         </div>
       )}
       <section className={`${card} overflow-hidden`}>
-        <div className="border-b border-gray-200 p-4 dark:border-gray-700 sm:p-5">
-          <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
+        <div className="border-b border-line p-4 sm:p-5">
+          <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-start">
             <div>
-              <h2 className="text-lg font-semibold">Gateway directory</h2>
-              <p className={`mt-1 text-xs ${muted}`}>{visible.length} of {gateways.length} gateways on this page · {timeWindow.toUpperCase()} observed history · search, sort and filters apply to this page</p>
+              <h2 className="text-[0.95rem] font-semibold tracking-tight text-ink">Gateway directory</h2>
+              <p className={`mt-1 text-xs ${muted}`}>{visible.length} of {gateways.length} gateways on this page · {timeWindow.toUpperCase()} observed history · search, sort and filters apply to this page; the counts on the filters cover all pages · select a gateway for its keys, fees and activity</p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search gateways" placeholder="Search this page" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm outline-hidden focus:ring-2 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-900" />
-              <select value={sort} onChange={(event) => setSort(event.target.value as GatewayV2Sort)} aria-label="Sort gateways" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900">
+              <SearchInput value={search} onChange={setSearch} label="Search gateways" placeholder="Search this page" className="sm:w-56" />
+              <Select value={sort} onChange={(event) => setSort(event.target.value as GatewayV2Sort)} aria-label="Sort gateways">
                 <option value="name">Gateway name</option>
                 <option value="status">Status</option>
                 <option value="latency">Response time</option>
                 <option value="activity">Contract activity</option>
-              </select>
+              </Select>
             </div>
           </div>
           <FilterChips
@@ -89,18 +108,19 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
           />
         </div>
         {!registry && !error && <p className={`p-8 text-center text-sm ${muted}`}>Loading gateway details…</p>}
-        {registry && visible.length === 0 && <p className={`p-8 text-center text-sm ${muted}`}>{gateways.length ? 'No gateways match this view.' : registry.observed_at ? 'No registered gateways have been reported.' : 'Collecting gateway registrations…'}</p>}
-        <div className="divide-y divide-gray-200 dark:divide-gray-700">
-          {visible.map((gateway) => <GatewayV2Row key={gateway.api_endpoint} gateway={gateway} timeWindow={timeWindow} />)}
+        {registry && visible.length === 0 && <p className={`p-8 text-center text-sm ${muted}`}>{gateways.length ? (pages.hasNext || pages.onLaterPage ? 'No gateways on this page match this view; other pages may have some.' : 'No gateways match this view.') : registry.observed_at ? 'No registered gateways have been reported.' : 'Collecting gateway registrations…'}</p>}
+        <div className="divide-y divide-line">
+          {visible.map((gateway) => <GatewayV2Row key={gateway.api_endpoint} gateway={gateway} timeWindow={timeWindow} onSelect={() => selectGateway(gateway.api_endpoint)} />)}
         </div>
         {registry && (
-          <div className="border-t border-gray-200 p-3 empty:hidden dark:border-gray-700">
-            <CursorPager label="Gateway pages" page={pages.pageNumber} hasNext={pages.hasNext} loading={pages.loadingPage} onPrevious={pages.previous} onNext={pages.next} />
+          <div className="border-t border-line p-3 empty:hidden">
+            <CursorPager label="Gateway pages" page={pages.pageNumber} hasNext={pages.hasNext} loading={pages.loadingPage} onPrevious={pages.previous} onNext={pages.next} pageSize={pageSize} onPageSizeChange={setPageSize} total={pagedTotal} />
           </div>
         )}
       </section>
       <p className={`mt-3 text-xs ${muted}`}>Online means the gateway answered a routing-info check and supports this federation. Contract counts describe public federation activity, not payment routing capacity.</p>
-      {pages.onLaterPage && <button type="button" onClick={pages.restart} className="mt-2 text-sm text-blue-600 dark:text-blue-400">Back to page 1 and resume refresh</button>}
+      {selected && <GatewayV2Detail gateway={selected} timeWindow={timeWindow} onClose={() => selectGateway(null)} />}
+      {pages.onLaterPage && <button type="button" onClick={pages.restart} className="mt-2 text-sm text-accent-ink">Back to page 1 and resume refresh</button>}
     </>
   );
 }

@@ -4,9 +4,9 @@ import { RetryButton } from '../../../../components/ui/RetryButton';
 import type { FederationUtxos } from '../../hooks/useFederationUtxos';
 
 const tones = {
-  neutral: 'border-gray-200 text-gray-600 dark:border-gray-700 dark:text-gray-300',
-  warning: 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200',
-  problem: 'border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200',
+  neutral: 'border-line text-ink-2',
+  warning: 'border-warn/30 bg-warn-soft text-warn-ink',
+  problem: 'border-crit/30 bg-crit-soft text-crit-ink',
 };
 
 function Notice({ tone, children }: { tone: keyof typeof tones; children: ReactNode }) {
@@ -29,7 +29,7 @@ export function UtxoNotices({ utxos, overview, overviewFailed }: UtxoNoticesProp
   return (
     <>
       {error && (
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300 sm:px-6" role="alert">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-crit/30 bg-crit-soft px-4 py-3 text-xs text-crit-ink sm:px-6" role="alert">
           <span><span className="font-bold">Error: </span>Could not load the UTXOs: {error.message}</span>
           {error.retryable && <RetryButton onClick={utxos.retry} />}
         </div>

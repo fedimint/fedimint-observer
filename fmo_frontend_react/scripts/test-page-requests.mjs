@@ -69,3 +69,158 @@ test('numbered pagination shows the ends and the neighbours of the current page'
   assert.deepEqual(pageItems(1, 10), [1, 2, 'gap', 10]);
   assert.deepEqual(pageItems(10, 10), [1, 'gap', 9, 10]);
 });
+
+// The gateway list's position (useGatewayOverview), clicked through every
+// order of answers and failures the hook can see.
+import { initialPagedList, pagedListReducer, requestedCursors, shownPageNumber } from '../src/utils/pagedList.ts';
+
+const step = (state, ...actions) => actions.reduce(pagedListReducer, state);
+const loaded = (state, data) => ({ type: 'loaded', key: state.key, cursors: requestedCursors(state), data });
+const failed = (state) => ({ type: 'failed', key: state.key, cursors: requestedCursors(state) });
+
+test('Next moves the page number only once the next page arrives', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'page 1'));
+  s = step(s, { type: 'next', cursor: 'c2' });
+  assert.equal(shownPageNumber(s), 1, 'still page 1 while page 2 loads');
+  assert.equal(s.data, 'page 1');
+  assert.deepEqual(requestedCursors(s), ['c2']);
+  s = step(s, loaded(s, 'page 2'));
+  assert.equal(shownPageNumber(s), 2);
+  assert.equal(s.data, 'page 2');
+});
+
+test('a failed Next keeps page 1, and Next again requests page 2 again', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'page 1'));
+  s = step(s, { type: 'next', cursor: 'c2' });
+  const firstAttempt = s.attempt;
+  s = step(s, failed(s));
+  assert.equal(shownPageNumber(s), 1, 'the rows and the number stay');
+  assert.equal(s.data, 'page 1');
+  s = step(s, { type: 'next', cursor: 'c2' });
+  assert.equal(shownPageNumber(s), 1, 'retrying cannot advance over stale rows');
+  assert.deepEqual(requestedCursors(s), ['c2'], 'the same page, not page 3');
+  assert.notEqual(s.attempt, firstAttempt, 'a new attempt, so the hook requests it again');
+  s = step(s, loaded(s, 'page 2'));
+  assert.equal(shownPageNumber(s), 2);
+});
+
+test('Previous returns through the pages, again only once each arrives', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'p1'), { type: 'next', cursor: 'c2' });
+  s = step(s, loaded(s, 'p2'), { type: 'next', cursor: 'c3' });
+  s = step(s, loaded(s, 'p3'));
+  assert.equal(shownPageNumber(s), 3);
+  s = step(s, { type: 'previous' });
+  assert.equal(shownPageNumber(s), 3);
+  assert.deepEqual(requestedCursors(s), ['c2']);
+  s = step(s, loaded(s, 'p2 again'));
+  assert.equal(shownPageNumber(s), 2);
+  s = step(s, { type: 'previous' });
+  s = step(s, loaded(s, 'p1 again'));
+  assert.equal(shownPageNumber(s), 1);
+  assert.equal(s.data, 'p1 again');
+});
+
+test('Previous on page 1 only drops a pending page', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'p1'));
+  assert.equal(step(s, { type: 'previous' }), s);
+  s = step(s, { type: 'next', cursor: 'c2' }, { type: 'previous' });
+  assert.equal(s.pending, null);
+  assert.equal(shownPageNumber(s), 1);
+});
+
+test('a refresh of the page shown replaces its rows without moving', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'p1'), { type: 'next', cursor: 'c2' });
+  s = step(s, loaded(s, 'p2'));
+  const before = requestedCursors(s);
+  s = step(s, loaded(s, 'p2 refreshed'));
+  assert.equal(s.data, 'p2 refreshed');
+  assert.equal(shownPageNumber(s), 2);
+  assert.equal(requestedCursors(s), before, 'same cursors array, so the request is not repeated');
+});
+
+test('a query change during a request goes back to page 1 and drops the late answer', () => {
+  let s = step(initialPagedList('q1'));
+  s = step(s, loaded(s, 'q1 p1'), { type: 'next', cursor: 'c2' });
+  const inFlight = loaded(s, 'q1 p2'); // requested before the query changed
+  s = step(s, { type: 'query', key: 'q2' });
+  assert.equal(shownPageNumber(s), 1);
+  assert.deepEqual(requestedCursors(s), []);
+  s = step(s, inFlight);
+  assert.equal(s.data, 'q1 p1', 'the old query\'s page 2 never lands in the new list');
+  assert.equal(shownPageNumber(s), 1);
+  s = step(s, loaded(s, 'q2 p1'));
+  assert.equal(s.data, 'q2 p1');
+});
+
+test('an answer for a page the reader has left is ignored', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'p1'), { type: 'next', cursor: 'c2' });
+  const late = loaded(s, 'p2');
+  s = step(s, { type: 'previous' }); // gave up on page 2 while it loaded
+  s = step(s, late);
+  assert.equal(shownPageNumber(s), 1);
+  assert.equal(s.data, 'p1');
+});
+
+test('after a failed Next, background refreshes reload the page shown, not the failed one', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'p1'), { type: 'next', cursor: 'c2' });
+  const attemptBeforeFailure = s.attempt;
+  s = step(s, failed(s));
+  assert.equal(s.pending, null, 'the failed navigation is no longer pending');
+  assert.equal(s.attempt, attemptBeforeFailure, 'the failure itself starts no request');
+  // A minute later the refresh asks for page 1 again
+  s = step(s, { type: 'refresh' });
+  assert.notEqual(s.attempt, attemptBeforeFailure);
+  assert.deepEqual(requestedCursors(s), []);
+  s = step(s, loaded(s, 'p1 refreshed'));
+  assert.equal(shownPageNumber(s), 1, 'no jump to page 2 without a click');
+  assert.equal(s.data, 'p1 refreshed');
+  // While page 2 keeps failing, page 1 keeps refreshing
+  s = step(s, { type: 'next', cursor: 'c2' });
+  s = step(s, failed(s), { type: 'refresh' });
+  s = step(s, loaded(s, 'p1 again'));
+  assert.equal(s.data, 'p1 again');
+  assert.equal(shownPageNumber(s), 1);
+});
+
+test('a refresh while a later page is shown reloads that page', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'p1'), { type: 'next', cursor: 'c2' });
+  s = step(s, loaded(s, 'p2'), { type: 'next', cursor: 'c3' });
+  s = step(s, failed(s), { type: 'refresh' });
+  assert.deepEqual(requestedCursors(s), ['c2']);
+  s = step(s, loaded(s, 'p2 refreshed'));
+  assert.equal(shownPageNumber(s), 2);
+  assert.equal(s.data, 'p2 refreshed');
+});
+
+test('Try again after a failed Next asks for the failed page again', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'p1'), { type: 'next', cursor: 'c2' });
+  s = step(s, failed(s), { type: 'retry' });
+  assert.deepEqual(requestedCursors(s), ['c2']);
+  assert.deepEqual(s.pending, ['c2']);
+  s = step(s, loaded(s, 'p2'));
+  assert.equal(shownPageNumber(s), 2);
+});
+
+test('a failed refresh of the page shown changes nothing', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'p1'), { type: 'refresh' });
+  assert.equal(step(s, failed(s)), s);
+});
+
+test('a failure for a page the reader has left is ignored', () => {
+  let s = step(initialPagedList('q'));
+  s = step(s, loaded(s, 'p1'), { type: 'next', cursor: 'c2' });
+  const late = failed(s);
+  s = step(s, { type: 'next', cursor: 'c2' }); // a new attempt at the same page
+  s = step(s, { type: 'query', key: 'q2' });
+  assert.equal(step(s, late), s);
+});

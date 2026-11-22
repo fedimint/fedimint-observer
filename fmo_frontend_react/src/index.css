@@ -5,12 +5,175 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
+  Design tokens.
+
+  The gray scale is re-stepped toward navy, so every existing `gray-*` class
+  (light and dark) takes on the observer's navy identity without touching the
+  components that use it. Semantic tokens below switch with the theme and are
+  what new components are written against.
+*/
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --color-gray-50: #f5f7fb;
+  --color-gray-100: #edf0f6;
+  --color-gray-200: #dfe4ee;
+  --color-gray-300: #c6cedd;
+  --color-gray-400: #8f9bb3;
+  --color-gray-500: #66738c;
+  --color-gray-600: #4a566f;
+  --color-gray-700: #28334d;
+  --color-gray-800: #151e34;
+  --color-gray-900: #0c1326;
+  --color-gray-950: #070c1a;
+
+  /*
+    Blue is re-stepped to the brand blue of the Fedimint mark, so the existing
+    pages' blue buttons, links and tabs match the accent. 600 and 700, the
+    button fills, keep at least 4.5:1 against white text.
+  */
+  --color-blue-50: #eef5fe;
+  --color-blue-100: #dbe9fc;
+  --color-blue-200: #bcd6fa;
+  --color-blue-300: #8ebbf6;
+  --color-blue-400: #5b9ef0;
+  --color-blue-500: #2f80e4;
+  --color-blue-600: #1d6fd8;
+  --color-blue-700: #1557b0;
+  --color-blue-800: #154a8e;
+  --color-blue-900: #163e72;
+  --color-blue-950: #0f2747;
+}
+
+@theme inline {
+  --color-canvas: var(--fmo-canvas);
+  --color-surface: var(--fmo-surface);
+  --color-surface-2: var(--fmo-surface-2);
+  --color-surface-3: var(--fmo-surface-3);
+  --color-line: var(--fmo-line);
+  --color-line-strong: var(--fmo-line-strong);
+  --color-ink: var(--fmo-ink);
+  --color-ink-2: var(--fmo-ink-2);
+  --color-ink-3: var(--fmo-ink-3);
+  /* Operational data */
+  --color-accent: var(--fmo-accent);
+  --color-accent-soft: var(--fmo-accent-soft);
+  --color-accent-ink: var(--fmo-accent-ink);
+  /* Manifold */
+  --color-manifold: var(--fmo-manifold);
+  --color-manifold-soft: var(--fmo-manifold-soft);
+  --color-manifold-ink: var(--fmo-manifold-ink);
+  /* Status, reserved: always shown with an icon and a label */
+  --color-ok: var(--fmo-ok);
+  --color-ok-soft: var(--fmo-ok-soft);
+  --color-ok-ink: var(--fmo-ok-ink);
+  --color-warn: var(--fmo-warn);
+  --color-warn-soft: var(--fmo-warn-soft);
+  --color-warn-ink: var(--fmo-warn-ink);
+  --color-serious: var(--fmo-serious);
+  --color-serious-soft: var(--fmo-serious-soft);
+  --color-serious-ink: var(--fmo-serious-ink);
+  --color-on-accent: var(--fmo-on-accent);
+  --color-crit: var(--fmo-crit);
+  --color-crit-soft: var(--fmo-crit-soft);
+  --color-crit-ink: var(--fmo-crit-ink);
+  --color-demo: var(--fmo-demo);
+  --color-demo-soft: var(--fmo-demo-soft);
+  --color-demo-ink: var(--fmo-demo-ink);
+}
+
+:root {
+  color-scheme: light;
+  --fmo-canvas: #f3f5fa;
+  --fmo-surface: #ffffff;
+  --fmo-surface-2: #f6f8fc;
+  --fmo-surface-3: #eceff6;
+  --fmo-line: #e1e6ef;
+  --fmo-line-strong: #c9d1df;
+  --fmo-ink: #0b1220;
+  --fmo-ink-2: #3a4660;
+  --fmo-ink-3: #5b6781;
+
+  --fmo-accent: #1d6fd8;
+  --fmo-accent-soft: #e8f1fd;
+  --fmo-accent-ink: #1557b0;
+  --fmo-on-accent: #ffffff;
+
+  --fmo-manifold: #9333ea;
+  --fmo-manifold-soft: #f5edfe;
+  --fmo-manifold-ink: #7e22ce;
+
+  /*
+    Status: healthy is cool and every problem warm, darker as it gets worse,
+    so the four stay apart under red-green colour blindness (dataviz validator)
+  */
+  --fmo-ok: #0f9f8a;
+  --fmo-ok-soft: #e3f5f1;
+  --fmo-ok-ink: #0b6b5d;
+  --fmo-warn: #f2c14e;
+  --fmo-warn-soft: #fdf3d8;
+  --fmo-warn-ink: #7a5600;
+  --fmo-serious: #e8743b;
+  --fmo-serious-soft: #fdeee5;
+  --fmo-serious-ink: #9a3f12;
+  --fmo-crit: #b3123f;
+  --fmo-crit-soft: #fbe7ec;
+  --fmo-crit-ink: #99102f;
+  --fmo-demo: #c2410c;
+  --fmo-demo-soft: #fff1e7;
+  --fmo-demo-ink: #9a3412;
+
+  /* Charts */
+  --fmo-chart-grid: #e6eaf1;
+  --fmo-chart-axis: #c9d1df;
+  --fmo-cell-empty: #edf0f6;
+}
+
+.dark {
+  color-scheme: dark;
+  --fmo-canvas: #0a1122;
+  --fmo-surface: #111a30;
+  --fmo-surface-2: #16203a;
+  --fmo-surface-3: #1c2744;
+  --fmo-line: #222d49;
+  --fmo-line-strong: #2f3b5c;
+  --fmo-ink: #eef2fa;
+  --fmo-ink-2: #c3cbdc;
+  --fmo-ink-3: #8d99b2;
+
+  --fmo-accent: #4f9ff0;
+  --fmo-accent-soft: rgba(79, 159, 240, 0.14);
+  --fmo-accent-ink: #7cb8f7;
+  --fmo-on-accent: #0a1122;
+
+  --fmo-manifold: #bd7af5;
+  --fmo-manifold-soft: rgba(189, 122, 245, 0.14);
+  --fmo-manifold-ink: #d8b4fe;
+
+  --fmo-ok: #14b39b;
+  --fmo-ok-soft: rgba(20, 179, 155, 0.16);
+  --fmo-ok-ink: #5fd6c2;
+  --fmo-warn-soft: rgba(242, 193, 78, 0.14);
+  --fmo-warn-ink: #f5cf6e;
+  --fmo-serious-soft: rgba(232, 116, 59, 0.16);
+  --fmo-serious-ink: #f4a57c;
+  --fmo-crit: #c92a5a;
+  --fmo-crit-soft: rgba(201, 42, 90, 0.2);
+  --fmo-crit-ink: #f28aa6;
+  --fmo-demo: #fb923c;
+  --fmo-demo-soft: rgba(251, 146, 60, 0.14);
+  --fmo-demo-ink: #fdba74;
+
+  --fmo-chart-grid: #1d2741;
+  --fmo-chart-axis: #2f3b5c;
+  --fmo-cell-empty: #1a2440;
+}
+
+/*
   The default border color has changed to `currentcolor` in Tailwind CSS v4,
   so we've added these compatibility styles to make sure everything still
   looks the same as it did with Tailwind CSS v3.
-
-  If we ever want to remove these styles, we need to add an explicit border
-  color utility to any element that depends on these defaults.
 */
 @layer base {
   *,
@@ -19,6 +182,12 @@
   ::backdrop,
   ::file-selector-button {
     border-color: var(--color-gray-200, currentcolor);
+  }
+
+  .dark *,
+  .dark ::after,
+  .dark ::before {
+    border-color: var(--fmo-line);
   }
 
   /* Tailwind CSS v4 gives buttons the default cursor; keep v3's pointer */
@@ -33,15 +202,75 @@
   html {
     font-size: 14px;
   }
-  
+
   @media (min-width: 640px) {
     html {
-      font-size: 16px;
+      font-size: 15px;
     }
   }
-  
-  /* Ensure body has proper background colors for light/dark mode */
+
   body {
-    @apply dark:bg-gray-900 text-gray-900 dark:text-gray-100;
+    background: var(--fmo-canvas);
+    color: var(--fmo-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--fmo-accent);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Loading placeholder; still in reduced motion, where only the tone shows */
+  .skeleton {
+    background: linear-gradient(90deg, var(--fmo-surface-3) 0%, var(--fmo-surface-2) 50%, var(--fmo-surface-3) 100%);
+    background-size: 200% 100%;
+    animation: fmo-shimmer 1.4s ease-in-out infinite;
+    border-radius: 0.375rem;
+  }
+
+  /* "No samples" cells: hatched, so missing data never reads as a color */
+  .cell-empty {
+    background-color: var(--fmo-cell-empty);
+    background-image: repeating-linear-gradient(135deg, transparent 0 3px, var(--fmo-line) 3px 4px);
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+}
+
+@keyframes fmo-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+/* A federation section opening under its kept header: short enough never to delay reading */
+@keyframes fmo-section-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.fmo-section-enter {
+  animation: fmo-section-enter 180ms ease-out;
+}
+
+/* Light/dark switch: every surface eases to its new colour together */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: background-color 240ms ease-out, border-color 240ms ease-out, color 240ms ease-out, fill 240ms ease-out, stroke 240ms ease-out !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton,
+  .fmo-section-enter {
+    animation: none;
   }
 }

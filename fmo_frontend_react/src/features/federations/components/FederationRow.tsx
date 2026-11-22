@@ -24,7 +24,7 @@ interface FederationRowProps {
 // Health status messages
 const HEALTH_MESSAGES = {
   degraded: 'Some guardians are offline or out of sync',
-  offline: 'Too few guardians are answering to reach consensus',
+  offline: 'Fewer guardians answer the observer than consensus needs',
 } as const;
 
 // Stable formatter references across row renders.
@@ -64,15 +64,15 @@ export const FederationRow = memo(function FederationRow({
   return (
     <Link
       to={`/federations/${id}`}
-      className="block bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 px-3 sm:px-6 py-4 text-xs sm:text-sm"
+      className="block bg-surface hover:bg-surface-2 px-3 sm:px-6 py-4 text-xs sm:text-sm"
     >
       {/* Mobile: name and total assets, with the chart in a second row below. Desktop: 3 columns. */}
       <div className="grid grid-cols-[1.5fr_1fr] gap-3 items-start md:grid-cols-3">
         {/* Name */}
-        <div className="font-medium text-gray-900 dark:text-white min-w-0">
-          <span className="text-[10px] uppercase text-gray-600 dark:text-gray-300 block mb-1 md:hidden">Name</span>
+        <div className="font-medium text-ink min-w-0">
+          <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">Name</span>
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="font-medium text-gray-900 dark:text-white wrap-break-word min-w-0">
+            <span className="font-medium text-ink wrap-break-word min-w-0">
               {name}
             </span>
             {showWarning && <Badge level={badgeLevel} tooltip={healthMessage} showIcon />}
@@ -84,8 +84,8 @@ export const FederationRow = memo(function FederationRow({
                 title={`${isShutDown ? 'Moved' : 'Migrating'} to ${successorName ?? 'a new federation'}; ${isShutDown ? 'shut down' : 'shuts down'} on ${formatUtcDateTime(expiryTimestamp * 1000)}`}
                 className={`inline-flex min-w-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset ${
                   isShutDown
-                    ? 'bg-gray-100 text-gray-700 ring-gray-500/25 dark:bg-gray-500/10 dark:text-gray-300 dark:ring-gray-400/30'
-                    : 'bg-blue-50 text-blue-800 ring-blue-600/20 dark:bg-blue-500/10 dark:text-blue-300 dark:ring-blue-500/30'
+                    ? 'bg-surface-3 text-ink-2 ring-line-strong/60'
+                    : 'bg-accent-soft text-accent-ink ring-accent/25'
                 }`}
               >
                 <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -106,7 +106,7 @@ export const FederationRow = memo(function FederationRow({
                     event.stopPropagation();
                     window.open(MIGRATION_HELP_URL, '_blank', 'noopener,noreferrer');
                   }}
-                  className="inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-gray-300 text-[11px] font-semibold text-gray-600 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-600"
+                  className="inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-line-strong text-[11px] font-semibold text-ink-2 hover:bg-surface-3"
                 >
                   ?
                 </button>
@@ -117,11 +117,11 @@ export const FederationRow = memo(function FederationRow({
               title={`${isShutDown ? 'Shut down' : 'Shuts down'} on ${formatUtcDateTime(expiryTimestamp * 1000)}`}
               className={`mt-1.5 inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset ${
                 isShutDown
-                  ? 'bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-500/10 dark:text-red-400 dark:ring-red-500/30'
-                  : 'bg-amber-50 text-amber-800 ring-amber-600/20 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30'
+                  ? 'bg-crit-soft text-crit-ink ring-crit/25'
+                  : 'bg-warn-soft text-warn-ink ring-warn/30'
               }`}
             >
-              <span aria-hidden="true" className={`size-1.5 shrink-0 rounded-full ${isShutDown ? 'bg-red-500' : 'bg-amber-500'}`} />
+              <span aria-hidden="true" className={`size-1.5 shrink-0 rounded-full ${isShutDown ? 'bg-crit' : 'bg-warn'}`} />
               {isShutDown ? 'Shut down' : `Shuts down ${formatUtcDate(expiryTimestamp * 1000)}`}
             </span>
           ) : null}
@@ -129,13 +129,13 @@ export const FederationRow = memo(function FederationRow({
 
         {/* Total Assets */}
         <div className="text-right md:text-left">
-          <span className="text-[10px] uppercase text-gray-600 dark:text-gray-300 block mb-1 md:hidden">Total Assets</span>
-          <span className="text-gray-900 dark:text-white whitespace-nowrap md:whitespace-normal">{totalAssets === null ? 'Awaiting balance' : asBitcoin(totalAssets, 6)}</span>
+          <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">Total Assets</span>
+          <span className="text-ink whitespace-nowrap md:whitespace-normal">{totalAssets === null ? 'Awaiting balance' : asBitcoin(totalAssets, 6)}</span>
         </div>
 
         {/* Activity Charts (7d) */}
         <div className="col-span-2 md:col-span-1">
-          <span className="text-[10px] uppercase text-gray-600 dark:text-gray-300 block mb-1 md:hidden">Activity (7d)</span>
+          <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">Activity (7d)</span>
           <CombinedMiniChart
             transactionData={transactionData}
             volumeData={volumeData}
