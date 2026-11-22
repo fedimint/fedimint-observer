@@ -11,6 +11,8 @@ use fmo_core::module::{details_json, InputSummary, ObserverModule, OutputSummary
 mod activity;
 mod bounded_iroh;
 mod gateways;
+mod lnv1_link;
+mod nodes;
 mod probes;
 mod public_http;
 mod retention;
