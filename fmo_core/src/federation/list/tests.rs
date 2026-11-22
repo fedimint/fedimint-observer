@@ -26,6 +26,8 @@ fn federation(
             amount_transferred: Amount::from_msats(tx * 1000),
         }],
         deposits: deposits.map(Amount::from_msats),
+        first_session_timestamp: None,
+        last_session_timestamp: None,
         invite: format!("fed1invite{n}"),
         nostr_votes: FederationRating {
             count: 0,

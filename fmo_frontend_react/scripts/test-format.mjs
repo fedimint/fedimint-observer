@@ -6,7 +6,7 @@ process.env.TZ = 'America/Los_Angeles';
 
 const { formatMsatsCompact } = await import('../src/utils/format.ts');
 const { explorerAddressUrl, explorerTxUrl, nostrNetworkTag } = await import('../src/utils/network.ts');
-const { formatUtcDate, formatUtcDateTime, formatUtcDayHour } = await import('../src/utils/time.ts');
+const { formatUtcDate, formatUtcDateRange, formatUtcDateTime, formatUtcDayHour } = await import('../src/utils/time.ts');
 const { toHistogramEntries } = await import('../src/utils/histogram.ts');
 
 test('compact amounts switch to M sats at a million sats, not 100k', () => {
@@ -45,6 +45,10 @@ test('UTC days and times do not shift with the viewer time zone', () => {
   assert.equal(formatUtcDateTime(null, 'Not yet observed'), 'Not yet observed');
   assert.equal(formatUtcDateTime('not a date'), 'N/A');
   assert.equal(formatUtcDayHour('2026-11-08T00:00:00Z'), 'Nov 8, 00:00');
+  assert.equal(
+    formatUtcDateRange('2024-05-10T21:08:34Z', '2024-09-10T16:07:52Z'),
+    'May 10, 2024 – Sep 10, 2024',
+  );
 });
 
 test('histogram days are shown as sent, with outliers left out only when asked', () => {

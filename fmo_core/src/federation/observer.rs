@@ -1165,7 +1165,6 @@ impl FederationObserver {
                     None,
                 )
                 .to_string();
-
                 Ok(FederationSummary {
                     id: federation_id,
                     name,
@@ -1173,6 +1172,8 @@ impl FederationObserver {
                         .remove(&federation_id)
                         .unwrap_or_else(|| vec![NO_ACTIVITY; 7]),
                     deposits: self.combined_assets(&federation, &assets, &snapshots)?,
+                    first_session_timestamp: None,
+                    last_session_timestamp: None,
                     invite,
                     nostr_votes: ratings.remove(&federation_id).unwrap_or(FederationRating {
                         count: 0,
@@ -1207,6 +1208,30 @@ impl FederationObserver {
                 }
                 summaries
             })
+    }
+
+    /// Adds first and last observed session timestamps to a bounded set of
+    /// summaries. Callers select the page before asking for these ranges.
+    pub(crate) async fn attach_session_ranges(
+        &self,
+        summaries: &mut [FederationSummary],
+    ) -> anyhow::Result<()> {
+        if summaries.is_empty() {
+            return Ok(());
+        }
+        let federation_ids: Vec<Vec<u8>> = summaries
+            .iter()
+            .map(|summary| summary.id.consensus_encode_to_vec())
+            .collect();
+        let mut ranges =
+            federation_session_ranges(&self.connection().await?, &federation_ids).await?;
+        for summary in summaries {
+            (
+                summary.first_session_timestamp,
+                summary.last_session_timestamp,
+            ) = ranges.remove(&summary.id).unwrap_or((None, None));
+        }
+        Ok(())
     }
 
     /// Each federation's transactions and volume on each of the last `days`
@@ -2281,11 +2306,76 @@ pub(crate) fn federation_id_from_db(bytes: &[u8]) -> anyhow::Result<FederationId
     )?)
 }
 
+/// First and last dated sessions for the requested federations. The caller
+/// bounds `federation_ids`; each lookup is bounded by `LIMIT 1` and uses
+/// `session_times_federation_estimated`.
+async fn federation_session_ranges(
+    connection: &impl GenericClient,
+    federation_ids: &[Vec<u8>],
+) -> anyhow::Result<HashMap<FederationId, (Option<u64>, Option<u64>)>> {
+    #[derive(Debug, FromRow)]
+    struct SessionRangeRow {
+        federation_id: Vec<u8>,
+        first_session_timestamp: Option<i64>,
+        last_session_timestamp: Option<i64>,
+    }
+
+    query::<SessionRangeRow>(
+        connection,
+        "SELECT requested.federation_id,
+                (SELECT EXTRACT(EPOCH FROM st.estimated_session_timestamp)::BIGINT
+                 FROM session_times st
+                 WHERE st.federation_id = requested.federation_id
+                   AND st.estimated_session_timestamp IS NOT NULL
+                 ORDER BY st.estimated_session_timestamp ASC
+                 LIMIT 1) AS first_session_timestamp,
+                (SELECT EXTRACT(EPOCH FROM st.estimated_session_timestamp)::BIGINT
+                 FROM session_times st
+                 WHERE st.federation_id = requested.federation_id
+                   AND st.estimated_session_timestamp IS NOT NULL
+                 ORDER BY st.estimated_session_timestamp DESC
+                 LIMIT 1) AS last_session_timestamp
+         FROM UNNEST($1::BYTEA[]) AS requested(federation_id)",
+        &[&federation_ids],
+    )
+    .await?
+    .into_iter()
+    .map(|row| {
+        let federation_id = federation_id_from_db(&row.federation_id)?;
+        let invalid = row.first_session_timestamp.is_some_and(|value| value < 0)
+            || row.last_session_timestamp.is_some_and(|value| value < 0);
+        let range = if invalid {
+            warn!(
+                %federation_id,
+                first_session_timestamp = ?row.first_session_timestamp,
+                last_session_timestamp = ?row.last_session_timestamp,
+                "Ignoring session range with a timestamp before the Unix epoch"
+            );
+            (None, None)
+        } else {
+            (
+                row.first_session_timestamp.map(|value| {
+                    u64::try_from(value).expect("negative session timestamps handled above")
+                }),
+                row.last_session_timestamp.map(|value| {
+                    u64::try_from(value).expect("negative session timestamps handled above")
+                }),
+            )
+        };
+        Ok((federation_id, range))
+    })
+    .collect()
+}
+
 fn last_n_day_iter(now: NaiveDate, days: u32) -> impl Iterator<Item = NaiveDate> {
     (0..days)
         .rev()
         .map(move |day| now - chrono::Duration::days(day as i64))
 }
+
+#[cfg(test)]
+#[path = "observer/session_range_tests.rs"]
+mod session_range_tests;
 
 #[cfg(test)]
 mod tests {

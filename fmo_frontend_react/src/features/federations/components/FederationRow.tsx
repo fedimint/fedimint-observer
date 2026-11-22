@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import type { FederationActivity, FederationHealth } from '../../../types/api';
 import { Badge } from '../../../components/ui/Badge';
 import { asBitcoin } from '../../../utils/format';
-import { formatUtcDate, formatUtcDateTime } from '../../../utils/time';
+import { formatUtcDate, formatUtcDateRange, formatUtcDateTime } from '../../../utils/time';
 import { CombinedMiniChart } from './MiniChart';
 import { MIGRATION_HELP_URL, showMigrationHelp } from '../../../utils/migration';
 
@@ -11,6 +11,9 @@ interface FederationRowProps {
   id: string;
   name: string;
   totalAssets: number | null;
+  firstSessionTimestamp: number | null;
+  lastSessionTimestamp: number | null;
+  secondaryColumn: 'assets' | 'operational';
   health: FederationHealth;
   expiryTimestamp?: number | null;
   /** Federation its guardians named to migrate to, with its name when the observer tracks it */
@@ -35,6 +38,9 @@ export const FederationRow = memo(function FederationRow({
   id,
   name,
   totalAssets,
+  firstSessionTimestamp,
+  lastSessionTimestamp,
+  secondaryColumn,
   health,
   expiryTimestamp,
   successorId,
@@ -60,14 +66,21 @@ export const FederationRow = memo(function FederationRow({
   const badgeLevel = health === 'degraded' ? 'warning' : 'error';
   const healthMessage = showWarning ? HEALTH_MESSAGES[health] : '';
   const isShutDown = !!expiryTimestamp && expiryTimestamp * 1000 <= Date.now();
+  const firstSessionTime = firstSessionTimestamp === null || firstSessionTimestamp === undefined ? null : firstSessionTimestamp * 1000;
+  const lastSessionTime = lastSessionTimestamp === null || lastSessionTimestamp === undefined ? null : lastSessionTimestamp * 1000;
+  const operationalRange = formatUtcDateRange(firstSessionTime, lastSessionTime);
+  const operationalRangeTitle = firstSessionTime !== null && lastSessionTime !== null
+    ? `${formatUtcDateTime(firstSessionTime)} – ${formatUtcDateTime(lastSessionTime)}`
+    : undefined;
+  const shutDown = secondaryColumn === 'operational';
 
   return (
     <Link
       to={`/federations/${id}`}
       className="block bg-surface hover:bg-surface-2 px-3 sm:px-6 py-4 text-xs sm:text-sm"
     >
-      {/* Mobile: name and total assets, with the chart in a second row below. Desktop: 3 columns. */}
-      <div className="grid grid-cols-[1.5fr_1fr] gap-3 items-start md:grid-cols-3">
+      {/* Shut-down rows end after the operating range; live rows add the chart below/on the right. */}
+      <div className={`grid grid-cols-[1.5fr_1fr] gap-3 items-start ${shutDown ? 'md:grid-cols-2' : 'md:grid-cols-3'}`}>
         {/* Name */}
         <div className="font-medium text-ink min-w-0">
           <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">Name</span>
@@ -127,14 +140,23 @@ export const FederationRow = memo(function FederationRow({
           ) : null}
         </div>
 
-        {/* Total Assets */}
+        {/* Assets for live lists; observed operating range for shut-down federations */}
         <div className="text-right md:text-left">
-          <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">Total Assets</span>
-          <span className="text-ink whitespace-nowrap md:whitespace-normal">{totalAssets === null ? 'Awaiting balance' : asBitcoin(totalAssets, 6)}</span>
+          <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">
+            {shutDown ? 'Observed session dates (UTC)' : 'Total Assets'}
+          </span>
+          <span
+            className="text-ink whitespace-nowrap md:whitespace-normal"
+            title={shutDown ? operationalRangeTitle : undefined}
+          >
+            {shutDown
+              ? operationalRange
+              : totalAssets === null ? 'Awaiting balance' : asBitcoin(totalAssets, 6)}
+          </span>
         </div>
 
         {/* Activity Charts (7d) */}
-        <div className="col-span-2 md:col-span-1">
+        {!shutDown && <div className="col-span-2 md:col-span-1">
           <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">Activity (7d)</span>
           <CombinedMiniChart
             transactionData={transactionData}
@@ -145,7 +167,7 @@ export const FederationRow = memo(function FederationRow({
             maxTransaction={maxTransaction}
             maxVolume={maxVolume}
           />
-        </div>
+        </div>}
       </div>
     </Link>
   );

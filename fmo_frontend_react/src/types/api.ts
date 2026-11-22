@@ -90,6 +90,10 @@ export interface FederationSummary {
   name: string | null;
   last_7d_activity: FederationActivity[];
   deposits: number | null;
+  /** First dated session observed, in Unix seconds */
+  first_session_timestamp: number | null;
+  /** Last dated session observed, in Unix seconds */
+  last_session_timestamp: number | null;
   invite: string;
   health: FederationHealth;
   expiry_timestamp: number | null;

@@ -15,15 +15,18 @@ interface FederationListProps {
   scale: ActivityScale;
   /** Rows per page and previous/next, under the rows */
   pager?: ReactNode;
+  /** What the middle column represents */
+  secondaryColumn?: 'assets' | 'operational';
 }
 
 /** Column headings over the rows; phones show each row's labels instead */
-function FederationListHeader() {
+function FederationListHeader({ secondaryColumn }: { secondaryColumn: 'assets' | 'operational' }) {
+  const shutDown = secondaryColumn === 'operational';
   return (
-    <div className="hidden md:grid bg-surface-2 px-3 sm:px-6 py-3 text-xs text-ink-2 uppercase font-semibold grid-cols-3 gap-4 border-y border-line">
+    <div className={`hidden md:grid bg-surface-2 px-3 sm:px-6 py-3 text-xs text-ink-2 uppercase font-semibold gap-4 border-y border-line ${shutDown ? 'grid-cols-2' : 'grid-cols-3'}`}>
       <div>Name</div>
-      <div>Total Assets</div>
-      <div>Activity Charts (7d)</div>
+      <div>{shutDown ? 'Observed session dates (UTC)' : 'Total Assets'}</div>
+      {!shutDown && <div>Activity Charts (7d)</div>}
     </div>
   );
 }
@@ -52,10 +55,10 @@ export function FederationListSkeleton({ rows = 6 }: { rows?: number }) {
 }
 
 /** A headed list of federation rows, or its loading, error or empty state */
-export function FederationList({ federations, loading, failed, emptyText, scale, pager }: FederationListProps) {
+export function FederationList({ federations, loading, failed, emptyText, scale, pager, secondaryColumn = 'assets' }: FederationListProps) {
   return (
     <>
-      <FederationListHeader />
+      <FederationListHeader secondaryColumn={secondaryColumn} />
       <div className="divide-y divide-line">
         {loading ? (
           loading
@@ -70,6 +73,9 @@ export function FederationList({ federations, loading, failed, emptyText, scale,
               id={fed.id}
               name={fed.name || 'Unnamed'}
               totalAssets={fed.deposits}
+              firstSessionTimestamp={fed.first_session_timestamp}
+              lastSessionTimestamp={fed.last_session_timestamp}
+              secondaryColumn={secondaryColumn}
               health={fed.health}
               expiryTimestamp={fed.expiry_timestamp}
               successorId={fed.successor_id}

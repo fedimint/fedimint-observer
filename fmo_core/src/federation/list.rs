@@ -225,12 +225,18 @@ pub(crate) async fn list_federation_page(
         .into_iter()
         .filter(|f| group_of(f, now) == query.group && matches_search(f, query.search.as_deref()))
         .collect();
-    let page = keyset_page(
+    let mut page = keyset_page(
         matching,
         |f| sort_key(f, query.sort, direction),
         query.after.as_deref(),
         limit,
     )?;
+    if query.group == FederationGroup::ShutDown {
+        state
+            .federation_observer
+            .attach_session_ranges(&mut page.items)
+            .await?;
+    }
     Ok(Json(FederationPage {
         federations: page.items,
         next_after: page.next_after,

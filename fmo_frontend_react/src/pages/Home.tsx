@@ -177,6 +177,7 @@ export function Home() {
         failed={shutDown.failed}
         scale={active.page ? active.scale : shutDown.scale}
         pager={<GroupPager group={shutDown} label="Shut down federation pages" {...pagerProps} />}
+        secondaryColumn="operational"
       />
     </div>
   );
