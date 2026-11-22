@@ -58,7 +58,7 @@ pub(crate) enum SortDirection {
 pub(crate) struct FederationListQuery {
     #[serde(default)]
     pub group: FederationGroup,
-    /// Matches the name or the invite code
+    /// Matches the name, invite code or federation ID
     pub search: Option<String>,
     #[serde(default)]
     pub sort: FederationSort,
@@ -81,16 +81,39 @@ pub(crate) fn group_of(federation: &FederationSummary, now: u64) -> FederationGr
     }
 }
 
+/// Shortest federation ID fragment matched anywhere, not just as a prefix
+const MIN_ID_SUBSTRING_LEN: usize = 6;
+
+/// Drops a `fedimint:` or `web+fedimint:` scheme, with or without `//`
+fn strip_invite_scheme(input: &str) -> &str {
+    for scheme in ["web+fedimint:", "fedimint:"] {
+        if input
+            .get(..scheme.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme))
+        {
+            let rest = &input[scheme.len()..];
+            return rest.strip_prefix("//").unwrap_or(rest);
+        }
+    }
+    input
+}
+
+/// Name, invite code or federation ID (prefix, or any 6+ character fragment)
 pub(crate) fn matches_search(federation: &FederationSummary, search: Option<&str>) -> bool {
-    let Some(needle) = search.map(str::trim).filter(|s| !s.is_empty()) else {
+    let Some(query) = search.map(str::trim).filter(|s| !s.is_empty()) else {
         return true;
     };
-    let needle = needle.to_lowercase();
+    let name_needle = query.to_lowercase();
+    let needle = strip_invite_scheme(query).to_lowercase();
+    let id = federation.id.to_string();
     federation
         .name
         .as_deref()
-        .is_some_and(|name| name.to_lowercase().contains(&needle))
-        || federation.invite.to_lowercase().contains(&needle)
+        .is_some_and(|name| name.to_lowercase().contains(&name_needle))
+        || (!needle.is_empty()
+            && (federation.invite.to_lowercase().contains(&needle)
+                || id.starts_with(&needle)
+                || (needle.len() >= MIN_ID_SUBSTRING_LEN && id.contains(&needle))))
 }
 
 fn volume_msat(federation: &FederationSummary) -> u64 {

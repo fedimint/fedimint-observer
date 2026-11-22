@@ -131,9 +131,28 @@ fn search_matches_name_or_invite_and_scale_spans_every_federation() {
     assert!(matches_search(&all[1], Some(" ALPHA ")));
     assert!(matches_search(&all[2], Some("invite3")));
     assert!(!matches_search(&all[0], Some("alpha")));
+    // Invite links carry a scheme the stored invite doesn't
+    assert!(matches_search(&all[2], Some("fedimint://fed1invite3")));
+    assert!(matches_search(&all[2], Some("WEB+FEDIMINT:fed1invite3")));
     let scale = activity_scale(&all);
     assert_eq!(scale.max_transactions, 9);
     assert_eq!(scale.max_volume_msat, 9000);
+}
+
+#[test]
+fn search_matches_federation_id_prefix_or_long_fragment() {
+    let mut fed = federation(1, None, None, FederationHealth::Online, None, 0);
+    fed.id = "245806c0fa1a9412e8477ee3a4a7536d5b00c3c52a921d7b3da27d2c3df440e8"
+        .parse()
+        .unwrap();
+    assert!(matches_search(&fed, Some("245806")));
+    assert!(matches_search(&fed, Some("2458")));
+    assert!(matches_search(&fed, Some("A9412E")));
+    // Short fragments only match at the start
+    assert!(!matches_search(&fed, Some("a941")));
+    assert!(!matches_search(&fed, Some("ffffff")));
+    // A bare scheme matches nothing rather than everything
+    assert!(!matches_search(&fed, Some("fedimint://")));
 }
 
 #[test]
