@@ -81,18 +81,30 @@ impl FederationObserver {
                         );
                         let result = async {
                             let _permit = services.external_io_permit().await?;
-                            if let Ok(Ok(meta)) =
+                            if let Ok(Ok(raw)) =
                                 tokio::time::timeout(Duration::from_secs(20), async {
                                     let api = observer.federation_api(&config.global)?;
-                                    ConsensusMetaCache::try_fetch_meta_inner(&config, &api).await
+                                    ConsensusMetaCache::try_fetch_consensus_meta_raw(&config, &api)
+                                        .await
                                 })
                                 .await
                             {
+                                // Kept apart from the parsed fields: verification
+                                // needs the exact signed string, and an override
+                                // URL must never be able to supply it
+                                crate::manifold::save_seat_bindings_observation(
+                                    &services,
+                                    federation.federation_id,
+                                    raw.as_ref(),
+                                )
+                                .await;
                                 services
                                     .save_observation(
                                         federation.federation_id,
                                         "meta-consensus",
-                                        &serde_json::to_value(meta.unwrap_or_default())?,
+                                        &serde_json::to_value(
+                                            raw.map(parse_meta_lenient).unwrap_or_default(),
+                                        )?,
                                     )
                                     .await?;
                             }

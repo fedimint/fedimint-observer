@@ -58,8 +58,10 @@ jobs:
           FMO_WALLETV2_TEST_DATABASE: postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/observer_v2_test
           FMO_WORK_TEST_DATABASE: postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/observer_v2_test
           FMO_LNV2_TEST_DATABASE: postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/observer_v2_test
+          FMO_MANIFOLD_TEST_DATABASE: postgresql://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/observer_v2_test
         run: |
           nix develop -c cargo test -p fmo_core postgres_commit_notifications_and_block_arrival -- --ignored
+          nix develop -c cargo test -p fmo_core manifold::collector::tests::postgres_ -- --ignored
           nix develop -c cargo test -p fmo_core postgres_endpoint_restore_completes_with_one_database_connection -- --ignored
           nix develop -c cargo test -p fmo_core postgres_guardian_route_migration_fences_revisions -- --ignored
           nix develop -c cargo test -p fmo_core postgres_worker_and_replica_share_rotations_without_downgrade -- --ignored
