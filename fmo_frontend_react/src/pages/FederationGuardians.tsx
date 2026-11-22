@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Card, CardHeader } from '../components/ui/Card';
 import { DataStamp } from '../components/ui/DataStamp';
 import { KeyChip } from '../components/ui/KeyChip';
@@ -7,9 +7,7 @@ import { Icon } from '../components/ui/Icon';
 import { Segmented } from '../components/ui/Segmented';
 import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/States';
 import { formatUtcDateTime } from '../utils/time';
-import { FederationHeader } from '../features/federation/components/FederationHeader';
-import { FederationPageError, FederationPageLoading } from '../features/federation/components/FederationPageState';
-import { useFederationDetails } from '../features/federation/hooks/useFederationDetails';
+import { useFederation } from '../features/federation/hooks/useFederation';
 import { useGuardianObservability } from '../features/guardians/hooks/useGuardianObservability';
 import { GuardianTable } from '../features/guardians/components/GuardianTable';
 import { GuardianDetail } from '../features/guardians/components/GuardianDetail';
@@ -31,10 +29,7 @@ function matches(row: GuardianRow, filter: Filter, search: string): boolean {
 }
 
 export function FederationGuardians() {
-  const { id = '' } = useParams<{ id: string }>();
-  const details = useFederationDetails(id);
-  const config = details.data?.config ?? null;
-  const federation = details.data?.federation ?? null;
+  const { id, federation, config } = useFederation();
   const observability = useGuardianObservability(id, config);
   const { rows, live, seatBindings, matrix, history7d } = observability;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -56,16 +51,10 @@ export function FederationGuardians() {
     issues: rows.filter((r) => r.warnings.length > 0).length,
   };
 
-  if (details.loading && !details.data) return <FederationPageLoading />;
-  if (details.failed || !federation) {
-    return <FederationPageError error={details.error} notFound={!details.failed || (details.error instanceof Error && details.error.message === 'Federation not found')} onRetry={details.reload} />;
-  }
-
   const broadcastKeys = config?.raw.global?.broadcast_public_keys ?? {};
 
   return (
     <div>
-      <FederationHeader id={id} federation={federation} config={config} />
 
       <div className="space-y-4 sm:space-y-5">
         <Card aria-labelledby="guardians-title" padding="p-0">

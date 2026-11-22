@@ -6,7 +6,7 @@ import { Segmented } from '../../../components/ui/Segmented';
 import { EmptyState, ErrorState, Skeleton } from '../../../components/ui/States';
 import { formatUtcDate, formatUtcDayHour } from '../../../utils/time';
 import { LEVEL_FILL, SLOT_DESCRIPTION, WINDOW_OPTIONS, describeSlot, slotRange } from '../lib/heatmap';
-import { useGuardianHistory } from '../hooks/useGuardianObservability';
+import { prefetchGuardianHistory, useGuardianHistory } from '../hooks/useGuardianObservability';
 import {
   availabilityLevel,
   guardianSlots,
@@ -202,7 +202,7 @@ export function AvailabilityHeatmap({ federationId, rows, initialWindow = '7d', 
         title="Guardian availability"
         description={`Share of the observer's status polls each guardian answered (${SLOT_DESCRIPTION[window]})`}
         meta={<DataStamp kind="historical" at={history.data?.generated_at} scope={`${window} window`} />}
-        actions={<Segmented label="Time range" options={WINDOW_OPTIONS} value={window} onChange={setWindow} />}
+        actions={<Segmented label="Time range" options={WINDOW_OPTIONS} value={window} onChange={setWindow} onIntent={(next) => prefetchGuardianHistory(federationId, next)} />}
       />
       {history.failed ? (
         <ErrorState title="Could not load availability history" message="The observer did not return its health history." onRetry={history.reload} />

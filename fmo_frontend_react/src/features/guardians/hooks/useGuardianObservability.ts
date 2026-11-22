@@ -48,6 +48,13 @@ export function useLiveHealth(id: string) {
   return resource;
 }
 
+/** Starts loading a window before it is chosen, e.g. while its button is hovered, so choosing it is instant */
+export function prefetchGuardianHistory(id: string, window: GuardianHealthWindow) {
+  cachedHistory(id, window, new AbortController().signal).catch((error: unknown) =>
+    console.warn('Could not prefetch guardian health history:', error),
+  );
+}
+
 /** Availability buckets for one window; switching windows shows a fresh load, not the old window's grid */
 export function useGuardianHistory(id: string, window: GuardianHealthWindow, enabled = true) {
   return useApiResource((signal) => cachedHistory(id, window, signal), [id, window], {

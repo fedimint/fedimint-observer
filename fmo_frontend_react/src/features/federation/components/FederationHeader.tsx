@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react';
-import { NavLink } from 'react-router-dom';
+import { useLayoutEffect, useRef, useState } from 'react';
+import { NavLink, useLocation } from 'react-router-dom';
 import type { FederationSummary } from '../../../types/api';
 import type { FederationConfig } from '../../../utils/config';
 import { PageHeader } from '../../../components/ui/PageHeader';
@@ -16,13 +16,40 @@ interface FederationHeaderProps {
   id: string;
   federation: FederationSummary;
   config: FederationConfig | null;
-  /** Shown under the title, e.g. what the page is about */
-  description?: ReactNode;
-  actions?: ReactNode;
 }
 
-/** The federation's name, health and section tabs, shared by its pages */
-export function FederationHeader({ id, federation, config, description, actions }: FederationHeaderProps) {
+/** Where the selected tab sits in the tab row, for the underline that slides to it */
+function useTabIndicator(tabCount: number) {
+  const list = useRef<HTMLUListElement>(null);
+  const { pathname } = useLocation();
+  const [indicator, setIndicator] = useState<{ left: number; width: number } | null>(null);
+  // Slides only between tabs, never in from the edge on first paint
+  const [animate, setAnimate] = useState(false);
+
+  useLayoutEffect(() => {
+    const row = list.current;
+    if (!row) return;
+    const measure = () => {
+      const active = row.querySelector<HTMLElement>('a[aria-current="page"]');
+      setIndicator(active ? { left: active.offsetLeft, width: active.offsetWidth } : null);
+    };
+    measure();
+    // A tab scrolled out of view on a narrow screen is brought back when chosen
+    row.querySelector<HTMLElement>('a[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const frame = requestAnimationFrame(() => setAnimate(true));
+    const resize = new ResizeObserver(measure);
+    resize.observe(row);
+    return () => {
+      cancelAnimationFrame(frame);
+      resize.disconnect();
+    };
+  }, [pathname, tabCount]);
+
+  return { list, indicator, animate };
+}
+
+/** The federation's name, health and section tabs, kept while its sections change */
+export function FederationHeader({ id, federation, config }: FederationHeaderProps) {
   const base = `/federations/${encodeURIComponent(id)}`;
   const health = HEALTH[federation.health];
   const tabs = [
@@ -36,6 +63,7 @@ export function FederationHeader({ id, federation, config, description, actions 
     ...(config?.modules.includes('walletv2') ? [{ to: `${base}/assets`, label: 'Wallet Assets' }] : []),
     { to: `${base}/config`, label: 'Config' },
   ];
+  const { list, indicator, animate } = useTabIndicator(tabs.length);
 
   return (
     <div className="mb-5">
@@ -46,19 +74,19 @@ export function FederationHeader({ id, federation, config, description, actions 
           <StatusPill tone={health.tone} title={health.title} size="md">{health.label}</StatusPill>
           {config && config.network !== 'unknown' && <StatusPill tone="neutral" icon={null} size="md">{config.network}</StatusPill>}
         </>}
-        description={description ?? <KeyChip value={id} label="federation id" head={10} tail={8} />}
-        actions={actions}
+        description={<KeyChip value={id} label="federation id" head={10} tail={8} />}
       />
       <nav aria-label="Federation sections" className="-mt-1 overflow-x-auto border-b border-line scrollbar-thin">
-        <ul className="flex gap-1">
+        <ul ref={list} className="relative flex gap-1">
           {tabs.map((tab) => (
             <li key={tab.to}>
               <NavLink
                 to={tab.to}
                 end={tab.end}
                 className={({ isActive }) =>
-                  `inline-flex items-center border-b-2 px-3 py-2.5 text-sm whitespace-nowrap transition-colors ${
-                    isActive ? 'border-accent font-medium text-ink' : 'border-transparent text-ink-3 hover:border-line-strong hover:text-ink'
+                  // One weight for every tab, so labels never shift when the selection moves
+                  `relative inline-flex items-center rounded-t-md px-3 py-2.5 text-sm font-medium whitespace-nowrap transition-colors duration-200 ${
+                    isActive ? 'text-ink' : 'text-ink-3 hover:bg-surface-2 hover:text-ink'
                   }`
                 }
               >
@@ -66,6 +94,15 @@ export function FederationHeader({ id, federation, config, description, actions 
               </NavLink>
             </li>
           ))}
+          {indicator && (
+            <li
+              aria-hidden="true"
+              className={`pointer-events-none absolute bottom-0 left-0 h-0.5 rounded-full bg-accent ${
+                animate ? 'transition-[transform,width] duration-300 ease-out motion-reduce:transition-none' : ''
+              }`}
+              style={{ width: indicator.width, transform: `translateX(${indicator.left}px)` }}
+            />
+          )}
         </ul>
       </nav>
     </div>

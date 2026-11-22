@@ -1,14 +1,11 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { useParams } from 'react-router-dom';
 import type { GuardianHealthWindow } from '../types/api';
 import { Card, CardHeader } from '../components/ui/Card';
 import { DataStamp } from '../components/ui/DataStamp';
 import { Segmented } from '../components/ui/Segmented';
 import { EmptyState, ErrorState, Skeleton } from '../components/ui/States';
-import { FederationHeader } from '../features/federation/components/FederationHeader';
-import { FederationPageError, FederationPageLoading } from '../features/federation/components/FederationPageState';
-import { useFederationDetails } from '../features/federation/hooks/useFederationDetails';
-import { useGuardianHistory, useGuardianObservability } from '../features/guardians/hooks/useGuardianObservability';
+import { useFederation } from '../features/federation/hooks/useFederation';
+import { prefetchGuardianHistory, useGuardianHistory, useGuardianObservability } from '../features/guardians/hooks/useGuardianObservability';
 import { offlinePeriods } from '../features/guardians/lib/guardianModel';
 import { WINDOW_OPTIONS } from '../features/guardians/lib/heatmap';
 import {
@@ -26,10 +23,7 @@ function ChartSkeleton({ height = 220 }: { height?: number }) {
 }
 
 export function FederationReliability() {
-  const { id = '' } = useParams<{ id: string }>();
-  const details = useFederationDetails(id);
-  const config = details.data?.config ?? null;
-  const federation = details.data?.federation ?? null;
+  const { id, config } = useFederation();
   const observability = useGuardianObservability(id, config);
   const { rows, resilience: res } = observability;
   const [window, setWindow] = useState<GuardianHealthWindow>('7d');
@@ -59,11 +53,6 @@ export function FederationReliability() {
     return list;
   }, [history.data, rows]);
 
-  if (details.loading && !details.data) return <FederationPageLoading />;
-  if (details.failed || !federation) {
-    return <FederationPageError error={details.error} notFound={!details.failed || (details.error instanceof Error && details.error.message === 'Federation not found')} onRetry={details.reload} />;
-  }
-
   const historyBody = (render: () => ReactNode) =>
     history.failed ? (
       <ErrorState title="Could not load the health history" onRetry={history.reload} />
@@ -75,17 +64,20 @@ export function FederationReliability() {
 
   return (
     <div>
-      <FederationHeader
-        id={id}
-        federation={federation}
-        config={config}
-        actions={
-          <div className="flex flex-col items-start gap-1.5 md:items-end">
-            <Segmented label="Time range" options={WINDOW_OPTIONS} value={window} onChange={setWindow} />
-            <DataStamp kind="historical" at={history.data?.generated_at} scope={`${window} window`} />
-          </div>
-        }
-      />
+      {/* One range for every chart below, so it sits above them, aligned like a card's own range */}
+      <div className="mb-4 flex flex-col-reverse gap-2 sm:mb-5 sm:flex-row sm:items-center sm:justify-between">
+        <DataStamp kind="historical" at={history.data?.generated_at} scope={`${window} window`} />
+        {/* Sized to its options, as in a card header, rather than stretched on phones */}
+        <div className="self-start sm:self-auto">
+          <Segmented
+            label="Time range"
+            options={WINDOW_OPTIONS}
+            value={window}
+            onChange={setWindow}
+            onIntent={(next) => prefetchGuardianHistory(id, next)}
+          />
+        </div>
+      </div>
 
       <div className="space-y-4 sm:space-y-5">
         <div className="grid gap-4 sm:gap-5 xl:grid-cols-5">

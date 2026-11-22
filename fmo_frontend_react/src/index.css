@@ -235,8 +235,19 @@
   to { background-position: -200% 0; }
 }
 
+/* A federation section opening under its kept header: short enough never to delay reading */
+@keyframes fmo-section-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.fmo-section-enter {
+  animation: fmo-section-enter 180ms ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .skeleton {
+  .skeleton,
+  .fmo-section-enter {
     animation: none;
   }
 }

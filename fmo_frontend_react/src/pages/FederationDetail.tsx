@@ -1,9 +1,7 @@
-import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { ExpiryNotice } from '../features/federation/components/ExpiryNotice';
 import { FederationInfoPanel } from '../features/federation/components/FederationInfoPanel';
-import { useFederationDetails } from '../features/federation/hooks/useFederationDetails';
-import { FederationHeader } from '../features/federation/components/FederationHeader';
-import { FederationPageError, FederationPageLoading } from '../features/federation/components/FederationPageState';
+import { useFederation } from '../features/federation/hooks/useFederation';
 import { InfrastructureHealth } from '../features/guardians/components/InfrastructureHealth';
 import { AvailabilityHeatmap } from '../features/guardians/components/AvailabilityHeatmap';
 import { useGuardianObservability } from '../features/guardians/hooks/useGuardianObservability';
@@ -11,26 +9,16 @@ import { useGuardianObservability } from '../features/guardians/hooks/useGuardia
 const SECTIONS = ['activity', 'utxos', 'assets', 'config'] as const;
 
 export function FederationDetail() {
-  // The router remounts this page per federation (App.tsx), so id never changes here
-  const { id = '' } = useParams<{ id: string }>();
+  const { id, federation, config, successor } = useFederation();
   const navigate = useNavigate();
-  const details = useFederationDetails(id);
   // Sections that used to be tabs here (?tab=utxos) have their own pages now
   const [searchParams] = useSearchParams();
   const legacyTab = SECTIONS.find((section) => section === searchParams.get('tab'));
 
-  const federation = details.data?.federation ?? null;
-  const config = details.data?.config ?? null;
   const observability = useGuardianObservability(id, config);
   const guardians = observability.health;
 
   if (legacyTab) return <Navigate replace to={`/federations/${encodeURIComponent(id)}/${legacyTab}`} />;
-  if (details.loading && !details.data) return <FederationPageLoading />;
-
-  if (details.failed || !federation) {
-    const notFound = details.error instanceof Error && details.error.message === 'Federation not found';
-    return <FederationPageError error={details.error} notFound={notFound || !details.failed} onRetry={details.reload} />;
-  }
 
   const expiry = federation.expiry_timestamp ? new Date(federation.expiry_timestamp * 1000) : null;
   // The invite is hidden while every guardian is known to be offline, since joining
@@ -45,8 +33,7 @@ export function FederationDetail() {
 
   return (
     <div>
-      <FederationHeader id={id} federation={federation} config={config} />
-      {expiry && <ExpiryNotice federation={federation} expiry={expiry} successor={details.data?.successor ?? null} />}
+      {expiry && <ExpiryNotice federation={federation} expiry={expiry} successor={successor} />}
 
       <div className="space-y-4 sm:space-y-5">
         <InfrastructureHealth federationId={id} observability={observability} onSelectGuardian={selectGuardian} />

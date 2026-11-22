@@ -13,10 +13,12 @@ interface SegmentedProps<T extends string> {
   options: readonly SegmentOption<T>[];
   value: T;
   onChange: (value: T) => void;
+  /** An option is about to be chosen (hovered or focused), e.g. to start loading it */
+  onIntent?: (value: T) => void;
 }
 
 /** A compact single-choice control (radio group), e.g. a time range; arrow keys move the choice */
-export function Segmented<T extends string>({ label, options, value, onChange }: SegmentedProps<T>) {
+export function Segmented<T extends string>({ label, options, value, onChange, onIntent }: SegmentedProps<T>) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const enabled = options.filter((option) => !option.disabled);
 
@@ -45,6 +47,8 @@ export function Segmented<T extends string>({ label, options, value, onChange }:
             disabled={option.disabled}
             title={option.title}
             onClick={() => onChange(option.value)}
+            onPointerEnter={onIntent && !selected ? () => onIntent(option.value) : undefined}
+            onFocus={onIntent && !selected ? () => onIntent(option.value) : undefined}
             className={`shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium tabular transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
               selected ? 'bg-surface text-ink shadow-sm ring-1 ring-line-strong' : 'text-ink-3 hover:text-ink'
             }`}
