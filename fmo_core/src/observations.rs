@@ -20,6 +20,10 @@ impl Services {
         kind: &str,
         data: &Value,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            kind != crate::federation::endpoints::GUARDIAN_ENDPOINTS_OBSERVATION_KIND,
+            "Guardian endpoints are written only through the fenced route commit"
+        );
         self.connection().await?.execute(
             "INSERT INTO federation_observations(federation_id, kind, data) VALUES ($1, $2, $3)
              ON CONFLICT (federation_id, kind) DO UPDATE SET data = EXCLUDED.data, observed_at = now()",
@@ -77,13 +81,13 @@ impl FederationObserver {
                         );
                         let result = async {
                             let _permit = services.external_io_permit().await?;
-                            if let Ok(Ok(raw)) = tokio::time::timeout(
-                                Duration::from_secs(20),
-                                ConsensusMetaCache::try_fetch_consensus_meta_raw(
-                                    &config, &observer,
-                                ),
-                            )
-                            .await
+                            if let Ok(Ok(raw)) =
+                                tokio::time::timeout(Duration::from_secs(20), async {
+                                    let api = observer.federation_api(&config.global)?;
+                                    ConsensusMetaCache::try_fetch_consensus_meta_raw(&config, &api)
+                                        .await
+                                })
+                                .await
                             {
                                 // Kept apart from the parsed fields: verification
                                 // needs the exact signed string, and an override

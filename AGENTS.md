@@ -136,13 +136,11 @@ export it: `set -a; . ./.env; set +a`): `FO_BIND` (default `127.0.0.1:3000`),
 - Handlers and tasks get a `Services` handle (database, connectors, mempool
   client, federation configs). Guardian API clients come from
   `Services::federation_api()` (observed federations) and
-  `Services::lookup_api()` (invite lookups): one shared client per guardian
-  set, never one per request, because each client keeps its guardian
-  connections open.
+  `Services::lookup_api()` (invite lookups); never build one directly.
 
 ### Database
 
-PostgreSQL. Core migrations are `fmo_core/schema/v0.sql` to `v12.sql`; some
+PostgreSQL. Core migrations are `fmo_core/schema/v0.sql` to `v13.sql`; some
 modules also keep SQL in `fmo_modules/<module>/schema/`. A populated database
 upgrades only from v11 or newer (`MIN_UPGRADE_VERSION`); older ones need the
 previous release's backfills. Old migrations stay for fresh setups.

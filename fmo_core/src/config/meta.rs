@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{anyhow, bail, ensure, Context};
 use axum::extract::{Path, State};
 use axum::Json;
+use fedimint_api_client::api::DynGlobalApi;
 use fedimint_core::config::{FederationId, JsonClientConfig};
 use fedimint_core::invite_code::InviteCode;
 use fedimint_meta_client::api::MetaFederationApi;
@@ -174,10 +175,11 @@ impl ConsensusMetaCache {
         observer: &FederationObserver,
     ) -> Option<MetaFields> {
         let federation_id = config.global.calculate_federation_id();
-        let meta = tokio::time::timeout(
-            CONSENSUS_META_TIMEOUT,
-            Self::try_fetch_meta_inner(config, observer),
-        )
+        let meta = tokio::time::timeout(CONSENSUS_META_TIMEOUT, async {
+            // Unobserved: a lookup client, which never uses trusted capacity
+            let api = observer.lookup_api(&config.global, None)?;
+            Self::try_fetch_meta_inner(config, &api).await
+        })
         .await
         .unwrap_or_else(|_| Err(anyhow!("timed out")))
         .map_err(|e| {
@@ -195,9 +197,9 @@ impl ConsensusMetaCache {
 
     pub(crate) async fn try_fetch_meta_inner(
         config: &JsonClientConfig,
-        observer: &FederationObserver,
+        api_client: &DynGlobalApi,
     ) -> anyhow::Result<Option<MetaFields>> {
-        Ok(Self::try_fetch_consensus_meta_raw(config, observer)
+        Ok(Self::try_fetch_consensus_meta_raw(config, api_client)
             .await?
             .map(parse_meta_lenient))
     }
@@ -208,7 +210,7 @@ impl ConsensusMetaCache {
     /// `parse_meta_lenient` does not keep.
     pub(crate) async fn try_fetch_consensus_meta_raw(
         config: &JsonClientConfig,
-        observer: &FederationObserver,
+        api_client: &DynGlobalApi,
     ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
         let Some((meta_instance_id, _)) = config
             .modules
@@ -217,10 +219,6 @@ impl ConsensusMetaCache {
         else {
             bail!("No meta module found in federation");
         };
-
-        // The observer's shared client: one built per refresh keeps its
-        // guardian connections open for the life of the process
-        let api_client = observer.federation_api(&config.global)?;
 
         let module_api = api_client.with_module(*meta_instance_id);
 

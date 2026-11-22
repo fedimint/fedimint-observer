@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,7 +7,7 @@ use anyhow::{anyhow, ensure};
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use fedimint_api_client::api::FederationApiExt;
+use fedimint_api_client::api::{DynGlobalApi, FederationApiExt};
 use fedimint_api_client::query::FilterMap;
 use fedimint_connectors::error::ServerError;
 use fedimint_core::config::{
@@ -188,6 +189,8 @@ const MAX_CACHED_CONFIGS: usize = 256;
 pub const INVITE_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long an invite whose download failed fails without a new attempt
 const FAILED_INVITE_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// Leaves most of the invite deadline for the literal-route fallback
+const ANNOUNCED_ROUTE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn fetch_config_inner(
     invite: &InviteCode,
@@ -248,25 +251,69 @@ async fn try_download_client_config(
     observer: &FederationObserver,
 ) -> anyhow::Result<ClientConfig> {
     let federation_id = invite.federation_id();
-    let invite_api = observer.lookup_api(
-        &endpoints_config(
-            invite
-                .peers()
-                .into_iter()
-                .map(|(peer_id, url)| {
-                    (
-                        peer_id,
-                        PeerUrl {
-                            url,
-                            name: String::new(),
-                        },
-                    )
-                })
-                .collect(),
-        ),
+    let invite_global = endpoints_config(
+        invite
+            .peers()
+            .into_iter()
+            .map(|(peer_id, url)| {
+                (
+                    peer_id,
+                    PeerUrl {
+                        url,
+                        name: String::new(),
+                    },
+                )
+            })
+            .collect(),
+    );
+    let api_endpoints = fetch_invite_endpoints_with_fallback(
+        observer,
+        federation_id,
+        &invite_global,
         invite.api_secret(),
-    )?;
-    let api_endpoints = invite_api
+    )
+    .await?;
+
+    let config_global = endpoints_config(api_endpoints);
+    let config = fetch_consensus_config_with_fallback(
+        observer,
+        federation_id,
+        &config_global,
+        invite.api_secret(),
+    )
+    .await?;
+    Ok(config)
+}
+
+async fn fetch_invite_endpoints_with_fallback(
+    observer: &FederationObserver,
+    federation_id: FederationId,
+    global: &GlobalClientConfig,
+    api_secret: Option<String>,
+) -> anyhow::Result<BTreeMap<PeerId, PeerUrl>> {
+    let announced_secret = api_secret.clone();
+    prefer_announced_route(
+        federation_id,
+        "invite endpoint discovery",
+        move || {
+            let api =
+                observer.lookup_api_for_federation(federation_id, global, announced_secret)?;
+            Ok(async move { request_invite_endpoints(&api, federation_id).await })
+        },
+        move || {
+            let api =
+                observer.lookup_api_without_announcements(federation_id, global, api_secret)?;
+            Ok(async move { request_invite_endpoints(&api, federation_id).await })
+        },
+    )
+    .await
+}
+
+async fn request_invite_endpoints(
+    api: &DynGlobalApi,
+    federation_id: FederationId,
+) -> anyhow::Result<BTreeMap<PeerId, PeerUrl>> {
+    Ok(api
         .request_with_strategy(
             FilterMap::new(move |config: ClientConfig| {
                 if config.global.calculate_federation_id() != federation_id {
@@ -279,10 +326,66 @@ async fn try_download_client_config(
             CLIENT_CONFIG_ENDPOINT.to_owned(),
             ApiRequestErased::default(),
         )
-        .await?;
+        .await?)
+}
 
-    let config = observer
-        .lookup_api(&endpoints_config(api_endpoints), invite.api_secret())?
+async fn fetch_consensus_config_with_fallback(
+    observer: &FederationObserver,
+    federation_id: FederationId,
+    global: &GlobalClientConfig,
+    api_secret: Option<String>,
+) -> anyhow::Result<ClientConfig> {
+    let announced_secret = api_secret.clone();
+    prefer_announced_route(
+        federation_id,
+        "consensus config download",
+        move || {
+            let api =
+                observer.lookup_api_for_federation(federation_id, global, announced_secret)?;
+            Ok(async move { request_consensus_config(&api, federation_id).await })
+        },
+        move || {
+            let api =
+                observer.lookup_api_without_announcements(federation_id, global, api_secret)?;
+            Ok(async move { request_consensus_config(&api, federation_id).await })
+        },
+    )
+    .await
+}
+
+async fn prefer_announced_route<T, Announced, AnnouncedFuture, Literal, LiteralFuture>(
+    federation_id: FederationId,
+    operation: &'static str,
+    announced: Announced,
+    literal: Literal,
+) -> anyhow::Result<T>
+where
+    Announced: FnOnce() -> anyhow::Result<AnnouncedFuture>,
+    AnnouncedFuture: Future<Output = anyhow::Result<T>>,
+    Literal: FnOnce() -> anyhow::Result<LiteralFuture>,
+    LiteralFuture: Future<Output = anyhow::Result<T>>,
+{
+    let announced_result = match announced() {
+        Ok(request) => tokio::time::timeout(ANNOUNCED_ROUTE_ATTEMPT_TIMEOUT, request)
+            .await
+            .map_err(|_| anyhow!("announced guardian route timed out"))
+            .and_then(std::convert::identity),
+        Err(error) => Err(error),
+    };
+    match announced_result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            debug!(%federation_id, operation, %error, "Announced guardian route failed; trying literal routes");
+            literal()?.await
+        }
+    }
+}
+
+async fn request_consensus_config(
+    api: &DynGlobalApi,
+    federation_id: FederationId,
+) -> anyhow::Result<ClientConfig> {
+    let config = api
         .request_current_consensus::<ClientConfig>(
             CLIENT_CONFIG_ENDPOINT.to_owned(),
             ApiRequestErased::default(),
@@ -295,8 +398,7 @@ async fn try_download_client_config(
     Ok(config)
 }
 
-/// A config naming only guardian endpoints, which is all
-/// [`FederationObserver::federation_api`] looks at
+/// A config with only guardian endpoints, all that lookups read
 fn endpoints_config(api_endpoints: BTreeMap<PeerId, PeerUrl>) -> GlobalClientConfig {
     GlobalClientConfig {
         api_endpoints,

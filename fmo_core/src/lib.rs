@@ -35,12 +35,14 @@ mod config;
 /// HTTP error responses with sanitized internal errors.
 mod error;
 mod federation;
+mod guardian_api;
 mod http;
 mod manifold;
 mod meta;
 pub mod module;
 mod observations;
 mod pagination;
+pub mod public_address;
 mod runtime;
 mod task;
 mod util;

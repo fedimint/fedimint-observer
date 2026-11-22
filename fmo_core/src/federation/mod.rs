@@ -1,4 +1,6 @@
+pub(crate) mod api_clients;
 pub mod db;
+pub mod endpoints;
 mod guardians;
 pub(crate) mod list;
 mod meta;
@@ -118,7 +120,8 @@ pub(crate) async fn get_federation_config(
     )
 }
 
-/// The config of an observed federation, decoded with this build's modules
+/// The canonical config of an observed federation, decoded with this build's
+/// modules; announced routes apply only when dialing
 pub(crate) async fn observed_config_json(
     observer: &FederationObserver,
     federation_id: FederationId,
