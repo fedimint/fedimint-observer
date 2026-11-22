@@ -31,15 +31,18 @@ use tokio_postgres::error::SqlState;
 use tracing::{info, info_span, Instrument};
 
 use crate::error::ClientError;
-use crate::federation::observer::{
-    insert_block_height_vote, insert_consensus_item, insert_input_details, insert_output_details,
-    insert_unix_time_vote, CiPosition, FederationObserver, SyncProgress,
-};
-use crate::federation::{db, instance_to_kind};
+use crate::federation::instance_to_kind;
+use crate::federation::observer::FederationObserver;
 use crate::module::{
     module_instance_id, CiMeta, DbTransaction, ItemMeta, ObserverModule, ProcessCtx,
 };
+use crate::store::db;
+use crate::store::rows::{
+    insert_block_height_vote, insert_consensus_item, insert_input_details, insert_output_details,
+    insert_unix_time_vote, CiPosition,
+};
 use crate::task::supervise;
+use crate::util::SyncProgress;
 
 /// Sessions a projector processes per transaction while it is behind
 const BATCH_SESSIONS: i64 = 100;
@@ -347,10 +350,27 @@ impl FederationObserver {
         Ok(())
     }
 
+    /// A repair's durable request is deleted once its rebuild is done, so a
+    /// crash or database error leaves it available for the next attempt.
+    pub(crate) async fn repair_session_times(self) -> anyhow::Result<()> {
+        let mut wakeup = self.work_notifications.subscribe("session-time-repair");
+        loop {
+            // Mark the generation before querying, retaining commits racing the query.
+            wakeup.borrow_and_update();
+            let permit = self.work_budget.acquire().await?;
+            let repaired = self.process_session_time_repair().await?;
+            drop(permit);
+            if repaired {
+                continue;
+            }
+            wakeup.changed().await?;
+        }
+    }
+
     /// Rebuilds the session times and daily activity of the federation whose
     /// repair jobs are ready and that was attempted least recently, if any.
     /// Returns whether there was one.
-    pub(super) async fn process_session_time_repair(&self) -> anyhow::Result<bool> {
+    async fn process_session_time_repair(&self) -> anyhow::Result<bool> {
         // Committed on its own: a rebuild that fails moves the federation to
         // the back of the queue instead of being claimed again at once
         let claim = self

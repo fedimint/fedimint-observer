@@ -40,8 +40,9 @@ just run
    migrations reset only their own projector cursor to backfill from stored
    sessions (Wallet v2 deposits, Lightning v2 contract activity); the gateway
    API reports `activity_caught_up` once that replay has finished.
-4. Check `/ready`, then start API replicas with the same binary and module set,
-   and deploy the matching frontend.
+4. Check `/ready`, then start API replicas with the same binary, module set and
+   sources file (see [Data sources](#data-sources)), and deploy the matching
+   frontend.
 5. Downgrading the binary after migration is refused. Roll back by restoring a
    verified backup, or ship a forward fix.
 
@@ -76,6 +77,30 @@ gateways per federation module instance, and probe history kept for
 activity is attributed by the module key a gateway reports about itself, which
 the observer cannot verify; a key claimed by more than one gateway is shown as
 contested and credited to neither.
+
+## Data sources
+
+Services outside the build push observations about federations to
+`PUT /sources/:source/federations/:federation_id/:kind` (see `ARCHITECTURE.md`).
+Push sources are declared at deploy time:
+
+| Environment variable | Default | Purpose |
+| --- | ---: | --- |
+| `FO_SOURCES_FILE` | unset | Path of the JSON document declaring the push sources and their kinds (format in `fmo_core/src/source/config.rs`); unset declares none |
+| `FO_SOURCE_TOKEN_<ID>` | none | Bearer token of the push source `<id>`, its id in upper case (`FO_SOURCE_TOKEN_UPTIME_PROBE`); 32 to 512 bytes, for example from `openssl rand -hex 32` |
+
+The file holds no secrets; the tokens do, so keep them out of it and out of
+logs. Startup fails if a declared source has no token or a short one.
+
+Give the collector and every API replica the same sources file and tokens. Any
+instance accepts pushes and serves `GET /federations/:id/sources`, so a replica
+without them answers that source's pushes with `401` and leaves its public
+observations out. The collector deletes observations past their kind's
+retention, and those of sources or kinds it no longer declares 30 days after
+their last write; it does so whether or not it declares any sources. `/metrics`
+counts each source's writes in
+`fmo_source_observations_total{source,result}`, with `result` one of `stored`,
+`superseded` or `rejected`.
 
 ## Egress policy
 
@@ -194,6 +219,7 @@ empty, isolated database, rolls back its fixtures, and does not use
 | `FMO_WORK_TEST_DATABASE` | `cargo test -p fmo_core postgres_ -- --ignored` |
 | `FMO_WALLETV2_TEST_DATABASE` | `cargo test -p fmo_module_walletv2 postgres_ -- --ignored` |
 | `FMO_LNV2_TEST_DATABASE` | `cargo test -p fmo_module_lnv2 postgres_ -- --ignored` |
+| `FMO_SOURCES_TEST_DATABASE` | `cargo test -p fmo_core source::tests::postgres_ -- --ignored` |
 
 `fmo_core/tests/run-session-time-repair.sh` creates and drops its own database
 to check upgrades from v11; set `PGHOST`, `PGPORT`, and `PGUSER` to a disposable
