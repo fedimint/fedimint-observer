@@ -23,7 +23,7 @@ export function FilterChips<T extends string>({ options, value, onChange, render
           type="button"
           aria-pressed={value === option}
           onClick={() => onChange(option)}
-          className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border font-medium capitalize transition-colors ${CONTROL_SIZE.sm} ${
+          className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border font-medium capitalize transition-colors ${CONTROL_SIZE.sm} ${
             value === option ? TOGGLE_ON : TOGGLE_OFF
           }`}
         >

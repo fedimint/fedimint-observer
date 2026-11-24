@@ -82,12 +82,12 @@ export function Nostr() {
       <InspectFederationCard />
 
       <ListCard className="mt-8">
-        <div className="p-4 sm:p-5 text-[0.95rem] font-semibold tracking-tight text-left rtl:text-right text-ink bg-surface">
+        <div className="p-4 sm:p-5 text-base font-medium text-left rtl:text-right text-ink bg-surface">
           <h1>
             Online Nostr Federations
             {online.total !== null && <span className="ml-2 text-sm font-normal text-ink-3">({online.total})</span>}
           </h1>
-          <p className="mt-0.5 text-xs sm:text-[0.8rem] font-normal tracking-normal text-ink-3">
+          <p className="mt-0.5 text-xs sm:text-sm font-normal text-ink-3">
             Federations announced via Nostr that this observer tracks and that are currently online
           </p>
         </div>
@@ -103,7 +103,7 @@ export function Nostr() {
 
       <CollapsibleGroup
         id="offline-nostr-federations"
-        title="Offline Nostr Federations"
+        title="Offline Nostr federations"
         description="Tracked federations where fewer guardians answered the observer in the last 5 minutes than consensus needs"
         group={offline}
         label="Offline Nostr federation pages"
@@ -115,7 +115,7 @@ export function Nostr() {
 
       <CollapsibleGroup
         id="unobserved-nostr-federations"
-        title="Unobserved Nostr Federations"
+        title="Unobserved Nostr federations"
         description="Announced via Nostr but not tracked by this observer, so their health is unknown; names come from their guardians when they answer"
         group={unobserved}
         label="Unobserved Nostr federation pages"

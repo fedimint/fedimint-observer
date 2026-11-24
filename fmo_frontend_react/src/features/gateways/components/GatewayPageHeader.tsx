@@ -23,12 +23,12 @@ export function GatewayPageHeader({ headingRef, timeWindow, onSelectWindow, wind
     <header className="mb-4 rounded-xl border border-line bg-surface p-4 shadow-[0_1px_2px_rgba(10,17,34,0.04)] sm:p-5">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
         <div>
-          <h2 ref={headingRef} tabIndex={-1} className="text-[0.95rem] font-semibold tracking-tight text-ink outline-hidden">Lightning gateways</h2>
-          <p className="mt-0.5 text-xs text-ink-3 sm:text-[0.8rem]">Gateways registered with the federation's Lightning module, as the observer polls them</p>
+          <h2 ref={headingRef} tabIndex={-1} className="text-base font-medium text-ink outline-hidden">Lightning gateways</h2>
+          <p className="mt-0.5 text-xs text-ink-3 sm:text-sm">Gateways registered with the federation's Lightning module, as the observer polls them</p>
         </div>
         <div className="flex shrink-0 flex-col items-start gap-1 sm:items-end">
           <Segmented label="Time window" options={WINDOW_OPTIONS} value={timeWindow} onChange={onSelectWindow} />
-          <span className="text-[11px] text-ink-3">{windowStatus}</span>
+          <span className="text-xs text-ink-3">{windowStatus}</span>
         </div>
       </div>
       {children}

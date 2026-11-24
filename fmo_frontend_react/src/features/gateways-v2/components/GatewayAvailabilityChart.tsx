@@ -12,7 +12,7 @@ export function GatewayAvailabilityChart({ buckets }: { buckets: GatewayV2Availa
   // The section names the zone once: all times in UTC
   const label = (index: number) => formatUtcDayHour(buckets[index]?.start);
   const selected = active === null ? null : buckets[active];
-  return <div className="h-[210px] pt-3 text-[10px] text-ink-2">
+  return <div className="h-52 pt-3 text-xs text-ink-2">
     <div className="flex h-40 gap-2">
       <div className="flex w-9 shrink-0 flex-col justify-between text-right" aria-hidden="true">{[100, 75, 50, 25, 0].map((value) => <span key={value} className="leading-none">{value}%</span>)}</div>
       <div className="relative mr-2 min-w-0 flex-1" role="img" aria-label="Recorded gateway check success from 0 to 100 percent. Gaps indicate no observations."

@@ -14,7 +14,7 @@ export function GatewayV2AvailabilityTrend({ trend, timeWindow }: { trend: Gatew
       {hasSamples ? (
         <GatewayAvailabilityChart buckets={trend} />
       ) : (
-        <div className={`flex h-[210px] flex-col items-center justify-center gap-2 text-center text-sm ${muted}`}>
+        <div className={`flex h-52 flex-col items-center justify-center gap-2 text-center text-sm ${muted}`}>
           <span>No probe history yet</span>
           <span className="text-xs">Availability will appear as gateway checks are recorded.</span>
         </div>

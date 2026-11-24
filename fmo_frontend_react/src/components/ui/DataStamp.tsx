@@ -27,11 +27,11 @@ export function DataStamp({ kind, at, staleAfterSeconds = 300, scope, now = Date
 
   const label = kind === 'demo' ? 'Demo data' : kind === 'historical' ? 'Historical' : stale ? 'Stale' : 'Live';
   return (
-    <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[0.7rem] text-ink-3" title={exact}>
+    <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-xs text-ink-3" title={exact}>
       {kind === 'live' && <StatusDot tone={stale ? 'warn' : 'ok'} pulse={!stale} />}
       {kind === 'historical' && <Icon name="clock" className="size-3" />}
       {kind === 'demo' && <Icon name="flask" className="size-3 text-demo" />}
-      <span className={`font-semibold uppercase tracking-wide ${stale ? 'text-warn-ink' : kind === 'demo' ? 'text-demo-ink' : 'text-ink-2'}`}>
+      <span className={`font-medium ${stale ? 'text-warn-ink' : kind === 'demo' ? 'text-demo-ink' : 'text-ink-2'}`}>
         {label}
       </span>
       {scope && <span>· {scope}</span>}

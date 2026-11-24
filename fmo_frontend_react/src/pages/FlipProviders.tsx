@@ -36,7 +36,7 @@ function AttesterPolicies({ policies }: { policies: FlipProvider['accepted_attes
     <div className="space-y-3">
       {[...groups].map(([requirement, keys]) => (
         <div key={requirement}>
-          <p className="mb-1.5 text-ink-2">
+          <p className="mb-2 text-ink-2">
             {REQUIREMENT_LABEL[requirement] ?? requirement}
             <span className="text-ink-3"> · {keys.length} {keys.length === 1 ? 'attester' : 'attesters'}</span>
           </p>
@@ -56,10 +56,10 @@ function ProviderCard({ provider }: { provider: FlipProvider }) {
     <Card as="article" aria-labelledby={`flip-${provider.provider_pubkey}`}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h2 id={`flip-${provider.provider_pubkey}`} className="text-[0.95rem] font-semibold text-ink">
+          <h2 id={`flip-${provider.provider_pubkey}`} className="text-base font-semibold text-ink">
             {name ? <>{name} <span className="text-xs font-normal text-ink-3">(self-described)</span></> : <span className="text-ink-2">Unnamed provider</span>}
           </h2>
-          <div className="mt-1.5"><KeyChip value={provider.provider_pubkey} label="provider public key" head={10} tail={8} /></div>
+          <div className="mt-2"><KeyChip value={provider.provider_pubkey} label="provider public key" head={10} tail={8} /></div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <VerificationBadge state={provider.credential.state} />
@@ -69,7 +69,7 @@ function ProviderCard({ provider }: { provider: FlipProvider }) {
 
       <div className="mt-4 grid gap-4 text-xs md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
         <div>
-          <h3 className="mb-1.5 text-[0.68rem] font-medium uppercase tracking-wide text-ink-3">Capabilities</h3>
+          <h3 className="mb-2 text-xs font-medium text-ink-3">Capabilities</h3>
           {provider.supported_sources.length === 0 && <p className="text-ink-3">None advertised</p>}
           <ul className="space-y-1">
             {provider.supported_sources.map((item) => (
@@ -79,7 +79,7 @@ function ProviderCard({ provider }: { provider: FlipProvider }) {
           <p className="mt-2 text-ink-3">Networks: <span className="text-ink-2">{provider.supported_networks.join(', ') || '—'}</span></p>
         </div>
         <div>
-          <h3 className="mb-1.5 text-[0.68rem] font-medium uppercase tracking-wide text-ink-3">Accepted attesters</h3>
+          <h3 className="mb-2 text-xs font-medium text-ink-3">Accepted attesters</h3>
           <AttesterPolicies policies={provider.accepted_attester_policies} />
         </div>
       </div>
@@ -91,11 +91,11 @@ function ProviderCard({ provider }: { provider: FlipProvider }) {
         </summary>
         <dl className="mt-3 grid grid-cols-1 gap-x-3 gap-y-1 text-xs sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-y-2 [&>dt]:mt-2 sm:[&>dt]:mt-0">
           <dt className="text-ink-3">Endpoints</dt>
-          <dd className="min-w-0">{provider.api_endpoints.length ? provider.api_endpoints.map((url) => <div key={url} className="break-all font-mono text-[0.7rem] text-ink-2">{url}</div>) : <span className="text-ink-3">None</span>}</dd>
+          <dd className="min-w-0">{provider.api_endpoints.length ? provider.api_endpoints.map((url) => <div key={url} className="break-all font-mono text-xs text-ink-2">{url}</div>) : <span className="text-ink-3">None</span>}</dd>
           <dt className="text-ink-3">API versions</dt>
           <dd className="text-ink-2">{provider.api_versions.join(', ') || '—'}</dd>
           <dt className="text-ink-3">Relay hints</dt>
-          <dd className="min-w-0">{provider.relay_hints.length ? provider.relay_hints.map((relay) => <div key={relay} className="break-all font-mono text-[0.7rem] text-ink-2">{relay}</div>) : <span className="text-ink-3">None</span>}</dd>
+          <dd className="min-w-0">{provider.relay_hints.length ? provider.relay_hints.map((relay) => <div key={relay} className="break-all font-mono text-xs text-ink-2">{relay}</div>) : <span className="text-ink-3">None</span>}</dd>
           <dt className="text-ink-3">Advertisement</dt>
           <dd className="min-w-0 break-words text-ink-2">Kind 37702 · signature {provider.signature_valid ? 'valid' : 'invalid'} · {formatUtcDateTime(provider.issued_at * 1000)} → {formatUtcDateTime(provider.expires_at * 1000)}</dd>
           {(provider.display?.website || provider.display?.contact) && <>

@@ -5,7 +5,7 @@ export function StatTile({ label, value, detail }: { label: string; value: strin
   return (
     <div className={`${card} p-4`}>
       <p className={`text-xs ${muted}`}>{label}</p>
-      <p className="mt-2 text-2xl font-bold">{value}</p>
+      <p className="tabular mt-2 text-2xl font-medium">{value}</p>
       <p className={`mt-1 text-xs ${muted}`}>{detail}</p>
     </div>
   );

@@ -23,12 +23,19 @@ interface FederationListProps {
 function FederationListHeader({ secondaryColumn }: { secondaryColumn: 'assets' | 'operational' }) {
   const shutDown = secondaryColumn === 'operational';
   return (
-    <div className={`hidden md:grid bg-surface-2 px-3 sm:px-6 py-3 text-xs text-ink-2 uppercase font-semibold gap-4 border-y border-line ${shutDown ? 'grid-cols-2' : 'grid-cols-3'}`}>
+    <div className={`hidden md:grid bg-surface-2 px-3 sm:px-6 py-3 text-xs text-ink-2 font-medium gap-4 border-y border-line ${shutDown ? 'grid-cols-2' : 'grid-cols-3'}`}>
       <div>Name</div>
       <div title={shutDown ? 'Estimated times of the first and last sessions this observer recorded, not announced start or shutdown dates' : undefined}>
-        {shutDown ? 'Observed session dates (UTC)' : 'Total Assets'}
+        {shutDown ? 'Observed session dates (UTC)' : 'Total assets'}
       </div>
-      {!shutDown && <div>Activity Charts (7d)</div>}
+      {!shutDown && (
+        <div className="flex items-center gap-3">
+          <span>Activity, last 7 days</span>
+          {/* Same colours as the bars in CombinedMiniChart */}
+          <span className="inline-flex items-center gap-1 font-normal"><span aria-hidden="true" className="size-2 rounded-[2px]" style={{ backgroundColor: '#3b82f6' }} />Transactions</span>
+          <span className="inline-flex items-center gap-1 font-normal"><span aria-hidden="true" className="size-2 rounded-[2px] bg-ok" />Volume</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -47,7 +54,7 @@ export function FederationListSkeleton({ rows = 6 }: { rows?: number }) {
   return (
     <div role="status" aria-label="Loading federations">
       <span className="sr-only">Loading federations…</span>
-      {Array.from({ length: rows }, (_, index) => <div key={index} aria-hidden="true" className="grid h-32 grid-cols-2 items-center gap-4 border-t border-line px-3 py-4 sm:px-6 md:h-[88px] md:grid-cols-3 xl:h-24">
+      {Array.from({ length: rows }, (_, index) => <div key={index} aria-hidden="true" className="grid h-32 grid-cols-2 items-center gap-4 border-t border-line px-3 py-4 sm:px-6 md:h-22 md:grid-cols-3 xl:h-24">
         <div className="h-4 w-32 max-w-full rounded-sm bg-surface-3" />
         <div className="h-4 w-24 max-w-full rounded-sm bg-surface-3" />
         <div className="h-10 rounded-sm bg-surface-3 md:h-14 xl:h-16" />

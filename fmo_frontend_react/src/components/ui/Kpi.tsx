@@ -14,12 +14,12 @@ interface KpiProps {
 /** A compact headline figure; several sit in one row */
 export function Kpi({ label, value, detail, indicator, help }: KpiProps) {
   return (
-    <div className="min-w-0 rounded-lg border border-line bg-surface-2 px-3.5 py-3">
-      <div className="flex items-center gap-1 text-[0.7rem] font-medium uppercase tracking-wide text-ink-3">
+    <div className="min-w-0 rounded-lg border border-line bg-surface-2 px-4 py-3">
+      <div className="meta-label flex items-center gap-1">
         <span className="truncate">{label}</span>
         {help && <InfoTip label={`About ${label}`}>{help}</InfoTip>}
       </div>
-      <div className="mt-1.5 flex items-center gap-1.5 text-xl font-semibold tracking-tight text-ink">
+      <div className="tabular mt-2 flex items-center gap-1.5 text-xl font-medium text-ink">
         {indicator}
         <span className="truncate">{value}</span>
       </div>

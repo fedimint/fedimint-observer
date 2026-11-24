@@ -65,13 +65,13 @@ export function GuardianDetail({ row, federation, broadcastKey, history7d, matri
         <dl className="divide-y divide-line">
           <Field label="Fedimint peer id"><span className="font-mono">{row.id}</span></Field>
           <Field label="Name in config">{row.configName ?? <span className="text-ink-3">Not set</span>}</Field>
-          <Field label="API endpoint"><span className="break-all font-mono text-[0.72rem] text-ink-2">{row.url}</span></Field>
+          <Field label="API endpoint"><span className="break-all font-mono text-xs text-ink-2">{row.url}</span></Field>
           <Field label="Guardian key">
             {broadcastKey ? <KeyChip value={broadcastKey} label="guardian broadcast public key" /> : <span className="text-ink-3">Not in config</span>}
           </Field>
           <Field label="Manifold Guardian">
             {row.binding ? (
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 <Link to={`/manifold/guardians/${row.binding.fman_pubkey}`} className="inline-flex items-center gap-1 font-mono text-manifold-ink hover:underline">
                   <Icon name="key" className="size-3" />
                   {row.binding.display_name}
@@ -91,7 +91,7 @@ export function GuardianDetail({ row, federation, broadcastKey, history7d, matri
             </span>
           </Field>
         </dl>
-        {!row.binding && <p className="mt-2 text-[0.7rem] leading-relaxed text-ink-3">{seatBindingsExplanation(seatBindings)}</p>}
+        {!row.binding && <p className="mt-2 text-xs leading-relaxed text-ink-3">{seatBindingsExplanation(seatBindings)}</p>}
       </Section>
 
       <Section title="Block height" meta={<DataStamp kind="live" at={liveAt} staleAfterSeconds={180} />}>

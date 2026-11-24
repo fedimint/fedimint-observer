@@ -85,7 +85,7 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
         <div className="border-b border-line p-4 sm:p-5">
           <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-start">
             <div>
-              <h2 className="text-[0.95rem] font-semibold tracking-tight text-ink">Gateway directory</h2>
+              <h2 className="text-base font-medium text-ink">Gateway directory</h2>
               <p className={`mt-1 text-xs ${muted}`}>{visible.length} of {gateways.length} gateways on this page · {timeWindow.toUpperCase()} observed history · search, sort and filters apply to this page; the counts on the filters cover all pages · select a gateway for its keys, fees and activity</p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">

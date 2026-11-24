@@ -17,7 +17,7 @@ interface GatewayTableRowProps {
 
 /** Labels each cell on phones, where the row is a stacked card without column headings */
 function MobileLabel({ children }: { children: string }) {
-  return <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-3 sm:hidden">{children}</div>;
+  return <div className="mb-1 text-xs font-medium text-ink-3 sm:hidden">{children}</div>;
 }
 
 const cell = 'block px-4 py-2 sm:table-cell sm:px-5 sm:py-4';
@@ -45,7 +45,7 @@ export function GatewayTableRow({ gateway, strip, now, dataWindow, windowMinutes
       </td>
       <td className={cell}>
         <div className="flex items-center justify-between gap-3">
-          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${statusClasses(gateway.status)}`}>
+          <span className={`rounded-md px-2.5 py-1 text-xs font-medium ${statusClasses(gateway.status)}`}>
             {gateway.status}
           </span>
           <span className="whitespace-nowrap text-xs text-ink-3">{gateway.lastSeenDate ? `seen ${formatRelative(gateway.lastSeenDate, now)}` : 'never seen'}</span>

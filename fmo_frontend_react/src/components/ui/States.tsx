@@ -9,7 +9,7 @@ export function Skeleton({ className = 'h-4 w-full' }: { className?: string }) {
 /** A loading block announced once to screen readers */
 export function LoadingBlock({ label, rows = 4, className = '' }: { label: string; rows?: number; className?: string }) {
   return (
-    <div role="status" aria-label={label} className={`space-y-2.5 ${className}`}>
+    <div role="status" aria-label={label} className={`space-y-3 ${className}`}>
       {Array.from({ length: rows }, (_, i) => (
         <Skeleton key={i} className={`h-9 ${i % 3 === 2 ? 'w-4/5' : 'w-full'}`} />
       ))}

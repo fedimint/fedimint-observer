@@ -51,8 +51,8 @@ export function StatusPill({ tone, children, icon, title, size = 'sm' }: StatusP
   return (
     <span
       title={title}
-      className={`inline-flex max-w-full items-center gap-1 whitespace-nowrap rounded-full ring-1 ring-inset font-medium ${
-        size === 'sm' ? 'px-2 py-0.5 text-[0.7rem]' : 'px-2.5 py-1 text-xs'
+      className={`inline-flex max-w-full items-center gap-1 whitespace-nowrap rounded-md ring-1 ring-inset font-medium ${
+        size === 'sm' ? 'px-1.5 py-0.5 text-xs' : 'px-2 py-1 text-xs'
       } ${TONE_CLASSES[tone]}`}
     >
       {iconName && <Icon name={iconName} className={size === 'sm' ? 'size-3' : 'size-3.5'} strokeWidth={2.2} />}
@@ -65,7 +65,7 @@ export function StatusPill({ tone, children, icon, title, size = 'sm' }: StatusP
 export function StatusDot({ tone, pulse = false }: { tone: Tone; pulse?: boolean }) {
   return (
     <span className="relative inline-flex size-2 shrink-0" aria-hidden="true">
-      {pulse && <span className={`absolute inset-0 rounded-full opacity-60 motion-safe:animate-ping ${TONE_DOT[tone]}`} />}
+      {pulse && <span className={`fmo-live-halo absolute inset-0 rounded-full ${TONE_DOT[tone]}`} />}
       <span className={`relative inline-flex size-2 rounded-full ${TONE_DOT[tone]}`} />
     </span>
   );

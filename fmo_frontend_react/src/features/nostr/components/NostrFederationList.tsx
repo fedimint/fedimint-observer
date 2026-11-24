@@ -4,7 +4,7 @@ import { ListMessage } from '../../../components/ui/ListCard';
 import { RetryButton } from '../../../components/ui/RetryButton';
 import type { NostrFederation } from '../lib/federationNames';
 
-const mobileLabel = 'text-[10px] sm:hidden uppercase text-ink-3 block mb-1';
+const mobileLabel = 'text-xs sm:hidden text-ink-3 block mb-1';
 
 interface NostrFederationListProps {
   federations: NostrFederation[];
@@ -20,7 +20,7 @@ interface NostrFederationListProps {
 function ListError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div role="alert" className="px-3 sm:px-6 py-4 text-center text-xs sm:text-sm text-crit-ink bg-crit-soft">
-      <span className="font-bold">Error: </span>{message}{' '}
+      <span className="font-medium">Error: </span>{message}{' '}
       <RetryButton onClick={onRetry} />
     </div>
   );
@@ -29,9 +29,9 @@ function ListError({ message, onRetry }: { message: string; onRetry: () => void 
 /** Column headings over the rows; phones show each row's labels instead */
 export function NostrListColumns({ nameLabel }: { nameLabel: string }) {
   return (
-    <div className="hidden sm:grid bg-surface-2 px-3 sm:px-6 py-3 text-xs text-ink-2 uppercase font-semibold grid-cols-2 gap-2 border-y border-line">
+    <div className="hidden sm:grid bg-surface-2 px-3 sm:px-6 py-3 text-xs text-ink-2 font-medium grid-cols-2 gap-2 border-y border-line">
       <div>{nameLabel}</div>
-      <div>Invite Code</div>
+      <div>Invite code</div>
     </div>
   );
 }
@@ -57,7 +57,7 @@ export function NostrFederationList({ federations, loading, error, onRetry, empt
               {renderName(fed)}
             </div>
             <div className='bg-transparent'>
-              <span className={mobileLabel}>Invite Code</span>
+              <span className={mobileLabel}>Invite code</span>
               <Copyable text={fed.invite} />
             </div>
           </div>

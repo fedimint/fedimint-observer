@@ -79,7 +79,7 @@ export const FederationRow = memo(function FederationRow({
       <div className={`grid grid-cols-[1.5fr_1fr] gap-3 items-start ${shutDown ? 'md:grid-cols-2' : 'md:grid-cols-3'}`}>
         {/* Name */}
         <div className="font-medium text-ink min-w-0">
-          <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">Name</span>
+          <span className="meta-label block mb-1 md:hidden">Name</span>
           <div className="flex items-center gap-1.5 min-w-0">
             <span className="font-medium text-ink wrap-break-word min-w-0">
               {name}
@@ -88,10 +88,10 @@ export const FederationRow = memo(function FederationRow({
           </div>
           {/* Always on its own line under the name, never broken, so every row and screen width shows it the same way */}
           {expiryTimestamp && successorId ? (
-            <span className="mt-1.5 flex items-center gap-1 min-w-0">
+            <span className="mt-2 flex items-center gap-1 min-w-0">
               <span
                 title={`${isShutDown ? 'Moved' : 'Migrating'} to ${successorName ?? 'a new federation'}; ${isShutDown ? 'shut down' : 'shuts down'} on ${formatUtcDateTime(expiryTimestamp * 1000)}`}
-                className={`inline-flex min-w-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset ${
+                className={`inline-flex min-w-0 items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium leading-4 ring-1 ring-inset ${
                   isShutDown
                     ? 'bg-surface-3 text-ink-2 ring-line-strong/60'
                     : 'bg-accent-soft text-accent-ink ring-accent/25'
@@ -115,7 +115,7 @@ export const FederationRow = memo(function FederationRow({
                     event.stopPropagation();
                     window.open(MIGRATION_HELP_URL, '_blank', 'noopener,noreferrer');
                   }}
-                  className="inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-line-strong text-[11px] font-semibold text-ink-2 hover:bg-surface-3"
+                  className="inline-flex size-5 shrink-0 items-center justify-center rounded-full border border-line-strong text-xs font-semibold text-ink-2 hover:bg-surface-3"
                 >
                   ?
                 </button>
@@ -124,7 +124,7 @@ export const FederationRow = memo(function FederationRow({
           ) : expiryTimestamp ? (
             <span
               title={`${isShutDown ? 'Shut down' : 'Shuts down'} on ${formatUtcDateTime(expiryTimestamp * 1000)}`}
-              className={`mt-1.5 inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 ring-1 ring-inset ${
+              className={`mt-2 inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium leading-4 ring-1 ring-inset ${
                 isShutDown
                   ? 'bg-crit-soft text-crit-ink ring-crit/25'
                   : 'bg-warn-soft text-warn-ink ring-warn/30'
@@ -138,11 +138,11 @@ export const FederationRow = memo(function FederationRow({
 
         {/* Assets for live lists; observed operating range for shut-down federations */}
         <div className="text-right md:text-left">
-          <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">
-            {shutDown ? 'Observed session dates (UTC)' : 'Total Assets'}
+          <span className="meta-label block mb-1 md:hidden">
+            {shutDown ? 'Observed session dates (UTC)' : 'Total assets'}
           </span>
           <span
-            className="text-ink whitespace-nowrap md:whitespace-normal"
+            className="tabular text-ink whitespace-nowrap md:whitespace-normal"
             title={shutDown ? sessionSpan.title : undefined}
           >
             {shutDown
@@ -151,9 +151,9 @@ export const FederationRow = memo(function FederationRow({
           </span>
         </div>
 
-        {/* Activity Charts (7d) */}
+        {/* Activity, last 7 days */}
         {!shutDown && <div className="col-span-2 md:col-span-1">
-          <span className="text-[10px] uppercase text-ink-2 block mb-1 md:hidden">Activity (7d)</span>
+          <span className="meta-label block mb-1 md:hidden">Activity, last 7 days</span>
           <CombinedMiniChart
             transactionData={transactionData}
             volumeData={volumeData}

@@ -31,7 +31,7 @@ export function KeyChip({ value, label, head = 8, tail = 6, full = false }: KeyC
 
   return (
     <span className="inline-flex max-w-full items-center gap-1 rounded-md border border-line bg-surface-2 py-0.5 pr-0.5 pl-2 align-middle">
-      <code className={`font-mono text-[0.72rem] text-ink-2 ${full ? 'break-all' : 'truncate'}`} title={value}>
+      <code className={`font-mono text-xs text-ink-2 ${full ? 'break-all' : 'truncate'}`} title={value}>
         {full ? value : shortMiddle(value, head, tail)}
       </code>
       <button

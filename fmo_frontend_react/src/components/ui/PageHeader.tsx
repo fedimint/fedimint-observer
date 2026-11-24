@@ -38,12 +38,12 @@ export function PageHeader({ title, eyebrow, description, badges, actions, bread
       )}
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div className="min-w-0">
-          {eyebrow && <div className="mb-1 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-ink-3">{eyebrow}</div>}
+          {eyebrow && <div className="meta-label mb-2">{eyebrow}</div>}
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="min-w-0 text-xl font-semibold tracking-tight text-ink wrap-break-word sm:text-2xl">{title}</h1>
+            <h1 className="min-w-0 text-xl font-medium tracking-[-0.01em] text-ink wrap-break-word sm:text-[1.75rem] sm:leading-9">{title}</h1>
             {badges}
           </div>
-          {description && <p className="mt-1 max-w-3xl text-sm text-ink-3">{description}</p>}
+          {description && <p className="mt-2 max-w-3xl text-sm text-ink-3">{description}</p>}
         </div>
         {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
       </div>

@@ -30,7 +30,7 @@ export function UtxoNotices({ utxos, overview, overviewFailed }: UtxoNoticesProp
     <>
       {error && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-crit/30 bg-crit-soft px-4 py-3 text-xs text-crit-ink sm:px-6" role="alert">
-          <span><span className="font-bold">Error: </span>Could not load the UTXOs: {error.message}</span>
+          <span><span className="font-medium">Error: </span>Could not load the UTXOs: {error.message}</span>
           {error.retryable && <RetryButton onClick={utxos.retry} />}
         </div>
       )}

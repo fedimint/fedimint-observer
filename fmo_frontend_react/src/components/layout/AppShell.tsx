@@ -42,7 +42,7 @@ function navGroups(): NavGroup[] {
 
 function NavTag({ children }: { children: ReactNode }) {
   return (
-    <span className="ml-auto rounded bg-manifold-soft px-1.5 py-px text-[0.6rem] font-semibold uppercase tracking-wide text-manifold-ink">
+    <span className="ml-auto font-mono text-xs text-manifold-ink">
       {children}
     </span>
   );
@@ -50,14 +50,14 @@ function NavTag({ children }: { children: ReactNode }) {
 
 function SidebarNav({ onNavigate, collapsed = false }: { onNavigate?: () => void; collapsed?: boolean }) {
   return (
-    <nav aria-label="Main" className={`flex-1 space-y-5 overflow-y-auto py-4 scrollbar-thin ${collapsed ? 'px-2' : 'px-3'}`}>
+    <nav aria-label="Main" className={`flex-1 space-y-6 overflow-y-auto py-4 scrollbar-thin ${collapsed ? 'px-2' : 'px-3'}`}>
       {navGroups().map((group) => (
         <div key={group.label}>
           {collapsed ? (
             // Keeps the groups apart without their labels
-            <div className="mx-2 mb-1.5 border-t border-line" aria-hidden="true" />
+            <div className="mx-2 mb-2 border-t border-line" aria-hidden="true" />
           ) : (
-            <div className={`mb-1.5 px-2 text-[0.65rem] font-semibold uppercase tracking-[0.1em] ${
+            <div className={`meta-label mb-2 px-2 ${
               group.label === 'Manifold' ? 'text-manifold-ink' : 'text-ink-3'
             }`}>
               {group.label}
@@ -73,7 +73,7 @@ function SidebarNav({ onNavigate, collapsed = false }: { onNavigate?: () => void
                   title={collapsed ? item.label : undefined}
                   aria-label={collapsed ? item.label : undefined}
                   className={({ isActive }) =>
-                    `group flex items-center gap-2.5 rounded-lg py-1.5 text-sm transition-colors ${collapsed ? 'justify-center px-0' : 'px-2'} ${
+                    `group flex h-8 items-center gap-2.5 rounded-lg text-sm transition-colors ${collapsed ? 'justify-center px-0' : 'px-2'} ${
                       isActive
                         ? `bg-surface-3 font-medium text-ink ${group.label === 'Manifold' ? 'shadow-[inset_2px_0_0_var(--fmo-manifold)]' : 'shadow-[inset_2px_0_0_var(--fmo-accent)]'}`
                         : 'text-ink-2 hover:bg-surface-2 hover:text-ink'
@@ -103,7 +103,7 @@ function SidebarFooter({ theme, onToggleTheme, collapsed = false }: { theme: The
         type="button"
         onClick={onToggleTheme}
         title={collapsed ? `${THEME_LABEL[theme]} theme` : undefined}
-        className={`inline-flex items-center gap-2 rounded-lg py-1.5 text-xs text-ink-2 hover:bg-surface-2 hover:text-ink ${
+        className={`inline-flex h-8 items-center gap-2 rounded-lg text-xs text-ink-2 hover:bg-surface-2 hover:text-ink ${
           collapsed ? 'size-8 justify-center' : 'flex-1 px-2'
         }`}
         aria-label={`Theme: ${THEME_LABEL[theme]}. Switch theme`}
@@ -129,8 +129,8 @@ function Brand() {
     <Link to="/" className="flex items-center gap-2.5">
       <img src="/fedimint.png" width="128" height="125" className="h-7 w-auto" alt="" />
       <span className="leading-tight">
-        <span className="block text-sm font-semibold tracking-tight text-ink">Fedimint Observer</span>
-        <span className="block text-[0.65rem] text-ink-3">Federation observability</span>
+        <span className="block text-sm font-semibold text-ink">Fedimint Observer</span>
+        <span className="block text-xs text-ink-3">Federation observability</span>
       </span>
     </Link>
   );
@@ -197,7 +197,7 @@ export function AppShell({ theme, onToggleTheme, children }: AppShellProps) {
       {/* Desktop sidebar */}
       <aside
         id="desktop-sidebar"
-        className={`fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-line bg-surface transition-[width] duration-200 lg:flex ${
+        className={`fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-line bg-surface lg:flex ${
           collapsed ? 'w-16' : 'w-60'
         }`}
       >
@@ -250,8 +250,8 @@ export function AppShell({ theme, onToggleTheme, children }: AppShellProps) {
         </div>
       )}
 
-      <div className={`transition-[padding] duration-200 ${collapsed ? 'lg:pl-16' : 'lg:pl-60'}`}>
-        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-7xl px-4 pt-5 pb-10 outline-none sm:px-6 sm:pt-7 lg:px-8">
+      <div className={collapsed ? 'lg:pl-16' : 'lg:pl-60'}>
+        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-[1440px] px-4 pt-6 pb-12 outline-none sm:px-6 sm:pt-8 lg:px-8">
           {children}
         </main>
       </div>

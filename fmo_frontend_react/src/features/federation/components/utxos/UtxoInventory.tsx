@@ -26,8 +26,8 @@ export function UtxoInventory({ utxos, overview, overviewFailed, network }: Utxo
       <section className="overflow-hidden rounded-xl border border-line bg-surface shadow-[0_1px_2px_rgba(10,17,34,0.04)]">
         <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line px-4 py-4 sm:px-6">
           <div>
-            <h2 className="text-[0.95rem] font-semibold tracking-tight text-ink">Wallet UTXO inventory</h2>
-            <p className="mt-0.5 text-xs text-ink-3 sm:text-[0.8rem]">
+            <h2 className="text-base font-medium text-ink">Wallet UTXO inventory</h2>
+            <p className="mt-0.5 text-xs text-ink-3 sm:text-sm">
               One row per outpoint. Guardian agreement is shown alongside the reconstructed observer record.
             </p>
           </div>

@@ -63,7 +63,7 @@ export function InfrastructureHealth({ federationId, observability, onSelectGuar
 
       <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
         {loading ? (
-          Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-[86px] w-full rounded-lg" />)
+          Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-22 w-full rounded-lg" />)
         ) : (
           <>
             <Kpi
@@ -97,7 +97,7 @@ export function InfrastructureHealth({ federationId, observability, onSelectGuar
       </div>
 
       <div className="mt-4">
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-3">Attention</h3>
+        <h3 className="mb-2 text-xs font-medium text-ink-3">Attention</h3>
         {loading ? <Skeleton className="h-8 w-full" /> : (
           attentionState.kind === 'clear' ? (
             <p className="flex items-center gap-2 text-xs text-ink-3">

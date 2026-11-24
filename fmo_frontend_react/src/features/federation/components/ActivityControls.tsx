@@ -34,7 +34,7 @@ export function ActivityControls({ activity }: { activity: FederationActivity })
           onChange={(e) => activity.setMovingAverageWindow(Number(e.target.value) as HistogramAverage)}
           aria-label="Moving average"
         >
-          <option value="0">No Average</option>
+          <option value="0">No average</option>
           <option value="7">7-Day Avg</option>
           <option value="30">30-Day Avg</option>
         </Select>
@@ -43,7 +43,7 @@ export function ActivityControls({ activity }: { activity: FederationActivity })
           checked={useLogScale}
           onChange={activity.setUseLogScale}
           title="Use logarithmic scale (base 10) for Y-axis. Zeros are replaced with a small value."
-          label="Log Scale"
+          label="Log scale"
           shortLabel="Log"
         />
       )}
@@ -52,7 +52,7 @@ export function ActivityControls({ activity }: { activity: FederationActivity })
           checked={filterOutliers}
           onChange={activity.setFilterOutliers}
           title="Filter out values that are more than 10 times the 95th percentile"
-          label="Filter Extreme Outliers"
+          label="Filter extreme outliers"
           shortLabel="Filter Outliers"
         />
       )}

@@ -105,7 +105,7 @@ export function HeatmapGrid({ history, rows, compact = false }: HeatmapGridProps
               <div key={row.id} className="flex items-center gap-1.5 sm:gap-2">
                 {!compact && (
                   <div className="flex w-16 shrink-0 items-center gap-1.5 sm:w-36" title={name(row)}>
-                    <span className="font-mono text-[0.68rem] font-semibold text-ink-3">{row.id}</span>
+                    <span className="font-mono text-xs font-semibold text-ink-3">{row.id}</span>
                     <span className="truncate text-xs text-ink-2">{row.configName ?? `Guardian ${row.id}`}</span>
                   </div>
                 )}
@@ -133,7 +133,7 @@ export function HeatmapGrid({ history, rows, compact = false }: HeatmapGridProps
         </div>
 
         {/* Time axis */}
-        <div className="mt-1.5 flex items-center gap-2 text-[0.65rem] text-ink-3">
+        <div className="mt-2 flex items-center gap-2 text-xs text-ink-3">
           {!compact && <div className="w-16 shrink-0 sm:w-36" />}
           <div className="relative h-3.5 min-w-0 flex-1">
             {ticks.map((index, i) => {
@@ -151,7 +151,7 @@ export function HeatmapGrid({ history, rows, compact = false }: HeatmapGridProps
         <div className="relative">
           {active && activeSlot && (
             <div
-              className="pointer-events-none absolute top-1 z-20 w-max max-w-[16rem] rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-[0.7rem] leading-snug text-ink-2 shadow-lg"
+              className="pointer-events-none absolute top-1 z-20 w-max max-w-[16rem] rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-xs leading-snug text-ink-2 shadow-lg"
               style={{ left: `clamp(0px, calc(${tooltipLeft}% - 8rem), calc(100% - 16rem))` }}
             >
               <div className="font-semibold text-ink">{name(grid[active.r].row)}</div>
@@ -171,7 +171,7 @@ export function HeatmapGrid({ history, rows, compact = false }: HeatmapGridProps
 
 export function HeatmapLegend() {
   return (
-    <ul className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.7rem] text-ink-3" aria-label="Legend">
+    <ul className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-3" aria-label="Legend">
       {LEGEND.map(({ level, label }) => (
         <li key={level} className="inline-flex items-center gap-1.5">
           <span className={`inline-block size-2.5 rounded-[2px] ${LEVEL_FILL[level]}`} aria-hidden="true" />
@@ -223,7 +223,7 @@ export function AvailabilityHeatmap({ federationId, rows, initialWindow = '7d', 
           </div>
           <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3 sm:flex-row sm:items-center sm:justify-between">
             <HeatmapLegend />
-            <p className="text-[0.7rem] text-ink-3">
+            <p className="text-xs text-ink-3">
               Offline means the guardian did not answer the observer; it is not by itself a federation failure.
             </p>
           </div>

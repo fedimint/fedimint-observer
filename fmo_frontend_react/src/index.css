@@ -4,6 +4,43 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Geist and Geist Mono, self-hosted (OFL, public/fonts/OFL.txt): no third-party font requests */
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('/fonts/geist-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Geist';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('/fonts/geist-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('/fonts/geist-mono-latin-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('/fonts/geist-mono-latin-ext-wght-normal.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 /*
   Design tokens.
 
@@ -13,8 +50,8 @@
   what new components are written against.
 */
 @theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 
   --color-gray-50: #f5f7fb;
   --color-gray-100: #edf0f6;
@@ -100,9 +137,10 @@
   --fmo-accent-ink: #1557b0;
   --fmo-on-accent: #ffffff;
 
-  --fmo-manifold: #9333ea;
-  --fmo-manifold-soft: #f5edfe;
-  --fmo-manifold-ink: #7e22ce;
+  /* Manifold shares the brand blue; no second hue in the UI */
+  --fmo-manifold: var(--fmo-accent);
+  --fmo-manifold-soft: var(--fmo-accent-soft);
+  --fmo-manifold-ink: var(--fmo-accent-ink);
 
   /*
     Status: healthy is cool and every problem warm, darker as it gets worse,
@@ -147,9 +185,9 @@
   --fmo-accent-ink: #7cb8f7;
   --fmo-on-accent: #0a1122;
 
-  --fmo-manifold: #bd7af5;
-  --fmo-manifold-soft: rgba(189, 122, 245, 0.14);
-  --fmo-manifold-ink: #d8b4fe;
+  --fmo-manifold: var(--fmo-accent);
+  --fmo-manifold-soft: var(--fmo-accent-soft);
+  --fmo-manifold-ink: var(--fmo-accent-ink);
 
   --fmo-ok: #14b39b;
   --fmo-ok-soft: rgba(20, 179, 155, 0.16);
@@ -215,6 +253,11 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  /* Figures line up in every table */
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+
   :focus-visible {
     outline: 2px solid var(--fmo-accent);
     outline-offset: 2px;
@@ -224,6 +267,15 @@
 @layer utilities {
   .tabular {
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Small meta labels and column headings: sentence case, never uppercase */
+  .meta-label {
+    font-size: var(--text-xs);
+    line-height: 1rem;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    color: var(--fmo-ink-3);
   }
 
   /* Loading placeholder; still in reduced motion, where only the tone shows */
@@ -250,6 +302,11 @@
   to { background-position: -200% 0; }
 }
 
+/* One easing curve for every transition and entrance */
+:root {
+  --fmo-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 /* A federation section opening under its kept header: short enough never to delay reading */
 @keyframes fmo-section-enter {
   from { opacity: 0; transform: translateY(4px); }
@@ -257,7 +314,7 @@
 }
 
 .fmo-section-enter {
-  animation: fmo-section-enter 180ms ease-out;
+  animation: fmo-section-enter 220ms var(--fmo-ease);
 }
 
 /* Light/dark switch: every surface eases to its new colour together */
@@ -265,11 +322,22 @@
 .theme-switching *,
 .theme-switching *::before,
 .theme-switching *::after {
-  transition: background-color 240ms ease-out, border-color 240ms ease-out, color 240ms ease-out, fill 240ms ease-out, stroke 240ms ease-out !important;
+  transition: background-color 240ms var(--fmo-ease), border-color 240ms var(--fmo-ease), color 240ms var(--fmo-ease), fill 240ms var(--fmo-ease), stroke 240ms var(--fmo-ease) !important;
+}
+
+/* The live dot's halo: slow and faint, only on data that is actually live */
+@keyframes fmo-live {
+  from { opacity: 0.45; transform: scale(1); }
+  to { opacity: 0; transform: scale(2.4); }
+}
+
+.fmo-live-halo {
+  animation: fmo-live 2.4s var(--fmo-ease) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .skeleton,
+  .fmo-live-halo,
   .fmo-section-enter {
     animation: none;
   }
