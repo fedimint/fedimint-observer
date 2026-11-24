@@ -1,3 +1,5 @@
+import { formatUtcDateRange, formatUtcDateTime } from '../../../utils/time.ts';
+
 /** Trims and strips a fedimint: URL scheme */
 export function normalizeSearchInput(input: string): string {
   return input.trim().replace(/^(fedimint|web\+fedimint):\/\//i, '').replace(/^(fedimint|web\+fedimint):/i, '');
@@ -27,4 +29,24 @@ export interface ActivityScale {
   maxTransaction: number;
   /** In msats */
   maxVolume: number;
+}
+
+/** What a shut-down row shows for its observed sessions */
+export interface ObservedSessionSpan {
+  text: string;
+  /** Exact bounds and what they measure, for the hover title */
+  title: string;
+}
+
+const SPAN_NOTE = 'Estimated times of the first and last sessions this observer recorded, not announced start or shutdown dates';
+
+/** Missing or omitted bounds (older servers send neither) read as unavailable */
+export function observedSessionSpan(first: number | null | undefined, last: number | null | undefined): ObservedSessionSpan {
+  const start = first == null ? null : first * 1000;
+  const end = last == null ? null : last * 1000;
+  if (start === null || end === null) return { text: formatUtcDateRange(null, null), title: SPAN_NOTE };
+  return {
+    text: formatUtcDateRange(start, end),
+    title: `${formatUtcDateTime(start)} – ${formatUtcDateTime(end)}. ${SPAN_NOTE}`,
+  };
 }

@@ -25,7 +25,9 @@ function FederationListHeader({ secondaryColumn }: { secondaryColumn: 'assets' |
   return (
     <div className={`hidden md:grid bg-surface-2 px-3 sm:px-6 py-3 text-xs text-ink-2 uppercase font-semibold gap-4 border-y border-line ${shutDown ? 'grid-cols-2' : 'grid-cols-3'}`}>
       <div>Name</div>
-      <div>{shutDown ? 'Observed session dates (UTC)' : 'Total Assets'}</div>
+      <div title={shutDown ? 'Estimated times of the first and last sessions this observer recorded, not announced start or shutdown dates' : undefined}>
+        {shutDown ? 'Observed session dates (UTC)' : 'Total Assets'}
+      </div>
       {!shutDown && <div>Activity Charts (7d)</div>}
     </div>
   );

@@ -90,10 +90,13 @@ export interface FederationSummary {
   name: string | null;
   last_7d_activity: FederationActivity[];
   deposits: number | null;
-  /** First dated session observed, in Unix seconds */
-  first_session_timestamp: number | null;
-  /** Last dated session observed, in Unix seconds */
-  last_session_timestamp: number | null;
+  /**
+   * Estimated time of the first and last sessions this observer dated, in Unix
+   * seconds; not announced start or shutdown dates. Only shut-down rows of a
+   * page carry them, and older servers omit both
+   */
+  first_session_timestamp?: number | null;
+  last_session_timestamp?: number | null;
   invite: string;
   health: FederationHealth;
   expiry_timestamp: number | null;

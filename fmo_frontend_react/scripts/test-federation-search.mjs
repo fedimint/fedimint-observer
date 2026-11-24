@@ -4,6 +4,7 @@ import {
   isInviteCodeQuery,
   lookupForInput,
   normalizeSearchInput,
+  observedSessionSpan,
   searchKey,
 } from '../src/features/federations/lib/federationList.ts';
 
@@ -51,4 +52,18 @@ test('lookupForInput returns a lookup only for the query that started it', () =>
   assert.equal(lookupForInput(loadingA, queryB), null);
   assert.equal(lookupForInput(errorA, queryB), null);
   assert.equal(lookupForInput(errorA, queryA), errorA);
+});
+
+test('observedSessionSpan shows both bounds as a UTC range with an estimate note', () => {
+  const span = observedSessionSpan(1_715_375_314, 1_725_984_472);
+  assert.equal(span.text, 'May 10, 2024 – Sep 10, 2024');
+  assert.match(span.title, /^May 10, 2024, 21:08 UTC – Sep 10, 2024, 16:07 UTC\. /);
+  assert.match(span.title, /not announced start or shutdown dates/);
+});
+
+test('observedSessionSpan reads a missing bound, or an older server omitting both, as unavailable', () => {
+  assert.equal(observedSessionSpan(1_715_375_314, null).text, 'Dates unavailable');
+  assert.equal(observedSessionSpan(null, null).text, 'Dates unavailable');
+  assert.equal(observedSessionSpan(undefined, undefined).text, 'Dates unavailable');
+  assert.doesNotMatch(observedSessionSpan(undefined, undefined).title, /UTC –/);
 });

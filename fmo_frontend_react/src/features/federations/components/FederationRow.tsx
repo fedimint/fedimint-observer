@@ -3,7 +3,8 @@ import { Link } from 'react-router-dom';
 import type { FederationActivity, FederationHealth } from '../../../types/api';
 import { Badge } from '../../../components/ui/Badge';
 import { asBitcoin } from '../../../utils/format';
-import { formatUtcDate, formatUtcDateRange, formatUtcDateTime } from '../../../utils/time';
+import { formatUtcDate, formatUtcDateTime } from '../../../utils/time';
+import { observedSessionSpan } from '../lib/federationList';
 import { CombinedMiniChart } from './MiniChart';
 import { MIGRATION_HELP_URL, showMigrationHelp } from '../../../utils/migration';
 
@@ -11,8 +12,8 @@ interface FederationRowProps {
   id: string;
   name: string;
   totalAssets: number | null;
-  firstSessionTimestamp: number | null;
-  lastSessionTimestamp: number | null;
+  firstSessionTimestamp?: number | null;
+  lastSessionTimestamp?: number | null;
   secondaryColumn: 'assets' | 'operational';
   health: FederationHealth;
   expiryTimestamp?: number | null;
@@ -66,12 +67,7 @@ export const FederationRow = memo(function FederationRow({
   const badgeLevel = health === 'degraded' ? 'warning' : 'error';
   const healthMessage = showWarning ? HEALTH_MESSAGES[health] : '';
   const isShutDown = !!expiryTimestamp && expiryTimestamp * 1000 <= Date.now();
-  const firstSessionTime = firstSessionTimestamp === null || firstSessionTimestamp === undefined ? null : firstSessionTimestamp * 1000;
-  const lastSessionTime = lastSessionTimestamp === null || lastSessionTimestamp === undefined ? null : lastSessionTimestamp * 1000;
-  const operationalRange = formatUtcDateRange(firstSessionTime, lastSessionTime);
-  const operationalRangeTitle = firstSessionTime !== null && lastSessionTime !== null
-    ? `${formatUtcDateTime(firstSessionTime)} – ${formatUtcDateTime(lastSessionTime)}`
-    : undefined;
+  const sessionSpan = observedSessionSpan(firstSessionTimestamp, lastSessionTimestamp);
   const shutDown = secondaryColumn === 'operational';
 
   return (
@@ -147,10 +143,10 @@ export const FederationRow = memo(function FederationRow({
           </span>
           <span
             className="text-ink whitespace-nowrap md:whitespace-normal"
-            title={shutDown ? operationalRangeTitle : undefined}
+            title={shutDown ? sessionSpan.title : undefined}
           >
             {shutDown
-              ? operationalRange
+              ? sessionSpan.text
               : totalAssets === null ? 'Awaiting balance' : asBitcoin(totalAssets, 6)}
           </span>
         </div>
