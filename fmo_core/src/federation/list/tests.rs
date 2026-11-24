@@ -5,9 +5,9 @@ use fmo_api_types::{
 };
 
 use super::{
-    activity_scale, group_of, matches_search, nostr_group_of, nostr_sort_key,
-    rows_needing_session_ranges, sort_key, FederationGroup, FederationSort, NostrGroup,
-    SortDirection,
+    active_assets, activity_scale, group_of, matches_search, nostr_group_of, nostr_sort_key,
+    rows_needing_session_ranges, sort_key, ActiveAssets, FederationGroup, FederationSort,
+    NostrGroup, SortDirection,
 };
 use crate::pagination::keyset_page;
 
@@ -112,6 +112,24 @@ fn only_shut_down_rows_get_session_ranges() {
     );
     assert!(rows_needing_session_ranges(FederationGroup::Active, &mut rows).is_empty());
     assert!(rows_needing_session_ranges(FederationGroup::Offline, &mut rows).is_empty());
+}
+
+#[test]
+fn active_assets_sum_only_the_active_list() {
+    // Bravo and alpha count; the unnamed one has no balance yet; Down and Gone are
+    // not active
+    assert_eq!(
+        active_assets(&list(), 1_000).unwrap(),
+        ActiveAssets {
+            held: Amount::from_msats(1_400),
+            unknown: 1,
+        }
+    );
+    // Before its expiry Gone is active and counts too
+    assert_eq!(
+        active_assets(&list(), 99).unwrap().held,
+        Amount::from_msats(1_410)
+    );
 }
 
 #[test]

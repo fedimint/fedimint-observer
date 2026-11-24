@@ -1922,10 +1922,18 @@ impl FederationObserver {
         )
         .await?;
 
+        // Same rows and grouping as the home page's active list
+        let assets = crate::federation::list::active_assets(
+            &self.list_federation_summaries().await?,
+            crate::federation::list::unix_now(),
+        )?;
+
         Ok(FedimintTotals {
             federations: (totals.federations as u64) - offline_federations,
             tx_count: totals.tx_count as u64,
             tx_volume: Amount::from_msats(totals.tx_volume as u64),
+            active_assets: assets.held,
+            active_assets_unknown: assets.unknown,
         })
     }
 

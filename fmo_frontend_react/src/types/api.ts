@@ -2,6 +2,10 @@ export interface FedimintTotals {
   federations: number;
   tx_volume: number;
   tx_count: number;
+  /** Held by the federations the home page lists as active (msat) */
+  active_assets?: number;
+  /** Active federations with no known balance yet, left out of active_assets */
+  active_assets_unknown?: number;
 }
 
 export interface FederationOverview {

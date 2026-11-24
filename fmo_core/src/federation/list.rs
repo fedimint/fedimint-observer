@@ -8,10 +8,12 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
+use anyhow::Context;
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::Utc;
 use fedimint_core::config::FederationId;
+use fedimint_core::Amount;
 use fmo_api_types::{
     ActivityScale, FederationHealth, FederationPage, FederationSummary, NostrFederationEntry,
     NostrFederationPage,
@@ -210,8 +212,44 @@ pub(crate) fn activity_scale(federations: &[FederationSummary]) -> ActivityScale
         })
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     Utc::now().timestamp().max(0) as u64
+}
+
+/// What the active federations hold together
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveAssets {
+    pub held: Amount,
+    /// Active federations whose balance is not known yet
+    pub unknown: u64,
+}
+
+pub(crate) fn active_assets(
+    federations: &[FederationSummary],
+    now: u64,
+) -> anyhow::Result<ActiveAssets> {
+    federations
+        .iter()
+        .filter(|f| group_of(f, now) == FederationGroup::Active)
+        .try_fold(
+            ActiveAssets {
+                held: Amount::ZERO,
+                unknown: 0,
+            },
+            |total, f| match f.deposits {
+                Some(amount) => Ok(ActiveAssets {
+                    held: total
+                        .held
+                        .checked_add(amount)
+                        .context("Active federation asset total overflow")?,
+                    ..total
+                }),
+                None => Ok(ActiveAssets {
+                    unknown: total.unknown + 1,
+                    ..total
+                }),
+            },
+        )
 }
 
 pub(crate) async fn list_federation_page(
