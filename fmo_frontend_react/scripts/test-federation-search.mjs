@@ -7,6 +7,7 @@ import {
   observedSessionSpan,
   searchKey,
 } from '../src/features/federations/lib/federationList.ts';
+import { activeAssetsStat } from '../src/features/federations/lib/activeAssets.ts';
 
 test('normalizeSearchInput cleans whitespace and protocol schemes', () => {
   assert.equal(normalizeSearchInput('  fed1example  '), 'fed1example');
@@ -66,4 +67,33 @@ test('observedSessionSpan reads a missing bound, or an older server omitting bot
   assert.equal(observedSessionSpan(null, null).text, 'Dates unavailable');
   assert.equal(observedSessionSpan(undefined, undefined).text, 'Dates unavailable');
   assert.doesNotMatch(observedSessionSpan(undefined, undefined).title, /UTC –/);
+});
+
+test('activeAssetsStat never shows unknown balances as zero', () => {
+  const base = { federations: 3, tx_count: 1, tx_volume: 0 };
+  const none = activeAssetsStat({ ...base, active_assets: null, active_assets_unknown: 2, active_assets_reporting: 0 });
+  assert.equal(none.kind, 'unavailable');
+  assert.match(none.title, /no active federation has reported/);
+  assert.equal(activeAssetsStat({ ...base, active_assets: null }).kind, 'unavailable');
+  assert.equal(activeAssetsStat(base).kind, 'unavailable');
+  assert.deepEqual(
+    activeAssetsStat({ ...base, active_assets: 0, active_assets_unknown: 0, active_assets_reporting: 1 }),
+    { kind: 'held', msat: 0, title: 'Bitcoin held by all active federations, whatever the search or page below.', coverage: null },
+  );
+});
+
+test('activeAssetsStat shows partial coverage next to the subtotal', () => {
+  const stat = activeAssetsStat({
+    federations: 3,
+    tx_count: 1,
+    tx_volume: 0,
+    active_assets: 1400,
+    active_assets_unknown: 2,
+    active_assets_reporting: 12,
+  });
+  assert.equal(stat.kind, 'held');
+  assert.equal(stat.coverage, '12 of 14 counted');
+  assert.match(stat.title, /all active federations, whatever the search or page/);
+  const older = activeAssetsStat({ federations: 3, tx_count: 1, tx_volume: 0, active_assets: 1400, active_assets_unknown: 2 });
+  assert.equal(older.coverage, '2 not counted');
 });

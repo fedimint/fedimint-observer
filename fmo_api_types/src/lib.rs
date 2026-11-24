@@ -11,12 +11,11 @@ pub struct FedimintTotals {
     pub federations: u64,
     pub tx_volume: Amount,
     pub tx_count: u64,
-    /// Held by the federations the home page lists as active; `None` when
-    /// asset data is unavailable, which leaves the other totals served
+    /// All active federations; `None` if unavailable or none reports a balance
     pub active_assets: Option<Amount>,
-    /// Active federations with no known balance yet, left out of
-    /// `active_assets`
+    /// Active federations with no known balance, left out of `active_assets`
     pub active_assets_unknown: Option<u64>,
+    pub active_assets_reporting: Option<u64>,
 }
 
 /// `GET /federations/:federation_id`

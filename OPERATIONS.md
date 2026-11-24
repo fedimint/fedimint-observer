@@ -69,7 +69,10 @@ CA; the driver accepts `disable`, `prefer`, and `require`, not libpq's
 `verify-full` spelling.
 
 Application requests have a 30 second deadline. Overload returns `503` with
-`Retry-After`; a request deadline returns `504`. `/health`, `/live`, `/ready`,
+`Retry-After`; a request deadline returns `504`. Inside it,
+`/federations/totals` waits at most 5 seconds for its asset sum; past that, or
+if the sum fails, it serves the counters with `active_assets: null` and logs
+"Active asset total unavailable". `/health`, `/live`, `/ready`,
 and `/metrics` bypass admission. Put public TLS termination, per-client rate
 limits, and access controls for `/metrics` and administrative paths at the
 reverse proxy.

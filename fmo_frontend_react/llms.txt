@@ -11,7 +11,7 @@
 ## Public data (%API_BASE%)
 
 - [Federation summaries](%API_BASE%/federations): Observed federation identifiers, health and recent activity.
-- [Aggregate statistics](%API_BASE%/federations/totals): Federation count, transactions, public volume and bitcoin held by active federations.
+- [Aggregate statistics](%API_BASE%/federations/totals): Federation count, transactions, public volume and bitcoin held by all active federations (not just one search or page), with how many report a balance.
 
 Federation pages use /federations/{id}. Lightning v2 gateway pages use
 /federations/{id}/gateways/v2.
