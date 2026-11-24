@@ -51,19 +51,15 @@ pub(super) async fn transaction(
         .into())
 }
 
-/// `?average=0|7|30&outliers=include|exclude`
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct HistogramParams {
     average: Option<String>,
     outliers: Option<String>,
 }
 
-/// What a histogram request asked for
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HistogramOptions {
-    /// Days the moving averages span; 0 for none
     average_days: usize,
-    /// Flag outlier days and leave them out of averages and totals
     exclude_outliers: bool,
 }
 
@@ -113,8 +109,6 @@ impl FederationObserver {
     ) -> anyhow::Result<Vec<TransactionId>> {
         self.ensure_observed(federation_id).await?;
 
-        // Only the ids: decoding every transaction blob of a large federation
-        // (hundreds of MB) just to drop it was most of this endpoint's cost
         self.connection()
             .await?
             .query(
@@ -175,7 +169,6 @@ impl FederationObserver {
                 ClientError::not_found(format!("Transaction {transaction_id} not found"))
             })?
             .get::<_, Vec<u8>>(0);
-        // Items of modules this build doesn't include decode as `DynUnknown`
         let tx = fedimint_core::transaction::Transaction::consensus_decode_whole(
             &data,
             &self.modules().decoders_for_config(&cfg),
@@ -213,17 +206,11 @@ impl FederationObserver {
         Ok(DebugTransaction { inputs, outputs })
     }
 
-    /// Funded transactions and volume per UTC day, with the averages and
-    /// outliers asked for. The stored days with activity are few (one row
-    /// per day), so filling in the others and averaging happens here.
     pub async fn transaction_histogram(
         &self,
         federation_id: FederationId,
         options: HistogramOptions,
     ) -> anyhow::Result<TransactionHistogram> {
-        // Days with only output-only transactions (Lightning offers and
-        // such) are not shown, as before the daily activity table existed
-        // language=postgresql
         const QUERY: &str = "
             SELECT day AS date, funded_tx_count AS count, volume_msat AS amount
             FROM federation_daily_activity
@@ -248,15 +235,6 @@ impl FederationObserver {
     }
 }
 
-/// Every day from the first in `active_days` through `today` (or the last
-/// active day, if later), with averages and outliers as asked for.
-///
-/// Ports what the frontend did: a day is an outlier if its volume is at least
-/// 10 times the 95th percentile of the days with activity (the element at
-/// `floor(n * 0.95)` of their sorted volumes); days without activity never are.
-/// A moving average over `n` days averages the day and the `n - 1` before it,
-/// over fewer days at the start of the range, and leaves excluded outliers out
-/// of both the sum and the number of days.
 fn build_histogram(
     active_days: &[HistogramEntry],
     today: NaiveDate,

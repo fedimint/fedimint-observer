@@ -6,9 +6,9 @@ interface SearchInputProps {
   value: string;
   onChange: (value: string) => void;
   placeholder: string;
-  /** Accessible name of the field */
+
   label: string;
-  /** Accessible name of the button that clears the field */
+
   clearLabel?: string;
   onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
   size?: ControlSize;

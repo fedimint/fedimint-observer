@@ -1,11 +1,8 @@
-// Pure helpers for the Lightning v1 gateway page: status rules, per-row figures,
-// the uptime strip, and filtering and sorting. No React, so they can be tested alone.
 import type { GatewayInfo, GatewayStatus, GatewayUptimeBucket, GatewayWindow } from '../../../types/api';
 
 export type UptimeStripStatus = 'online' | 'degraded' | 'offline' | 'unknown';
 
 export const GATEWAY_WINDOWS: readonly GatewayWindow[] = ['24h', '7d', '30d', '90d'];
-// 'all' means every active gateway; retired ones have their own filter
 export const GATEWAY_FILTERS = ['all', 'online', 'degraded', 'offline', 'unknown', 'retired'] as const;
 export type GatewayFilter = (typeof GATEWAY_FILTERS)[number];
 export const GATEWAY_SORTS = ['freshness', 'status', 'uptime', 'activity'] as const;
@@ -21,7 +18,7 @@ export const WINDOW_MINUTES: Record<GatewayWindow, number> = {
   '90d': 90 * 24 * 60,
 };
 export const UPTIME_SEGMENTS = 30;
-/** Rows rendered at first, and added by each "Show more" */
+
 const RETIRED_AFTER_MINUTES = 7 * 24 * 60;
 
 export interface GatewayWithStatus extends GatewayInfo {
@@ -51,11 +48,8 @@ function parseTimestamp(value?: string): Date | null {
 export function getGatewayStatus(lastSeen: Date | null, now: number): GatewayStatus {
   if (!lastSeen) return 'unknown';
   const minutes = (now - lastSeen.getTime()) / (1000 * 60);
-  // Gateways are polled every 5 minutes and the overview is rebuilt every 5, so allow
-  // up to three polls before a healthy gateway stops counting as online
   if (minutes <= 15) return 'online';
   if (minutes <= 30) return 'degraded';
-  // Gone from the registry for a week: it has left the federation (same rule as the backend)
   if (minutes > RETIRED_AFTER_MINUTES) return 'retired';
   return 'offline';
 }
@@ -120,8 +114,6 @@ function bucketStatus(bucket: GatewayUptimeBucket): UptimeStripStatus {
 }
 
 export function buildUptimeStrip(gateway: GatewayInfo): UptimeStripStatus[] {
-  // Each segment shows the polls recorded in its own slot of the window; without
-  // them (a live registry lookup) nothing was observed
   const buckets = uptimeBuckets(gateway);
   return buckets ? buckets.map(bucketStatus) : Array.from({ length: UPTIME_SEGMENTS }, () => 'unknown');
 }
@@ -180,14 +172,10 @@ export function defaultDirection(sort: GatewaySort): SortDirection {
 export function toGatewayRow(gateway: GatewayInfo, now: number, windowMinutes: number): GatewayWithStatus {
   const firstSeenDate = parseTimestamp(gateway.first_seen);
   const lastSeenDate = parseTimestamp(gateway.last_seen);
-  // Re-derived from last_seen against the current clock, so it stays fresh between
-  // refreshes; the server's status is the fallback without a last_seen
   const status = lastSeenDate ? getGatewayStatus(lastSeenDate, now) : gateway.status ?? 'unknown';
   const minutesSinceLastSeen = lastSeenDate
     ? (now - lastSeenDate.getTime()) / (1000 * 60)
     : null;
-  // Availability over the window is computed on the server; gateways from a live
-  // registry lookup have none, so their whole window is unobserved
   const estimatedOnlineMinutes = gateway.estimated_online_minutes ?? 0;
   const estimatedOfflineMinutes = gateway.estimated_offline_minutes ?? 0;
   const estimatedUnknownMinutes = gateway.estimated_unknown_minutes ?? windowMinutes;

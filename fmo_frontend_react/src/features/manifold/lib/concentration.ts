@@ -2,11 +2,7 @@ import { guardianThreshold } from '../../../utils/config.ts';
 
 export type ConcentrationTone = 'ok' | 'warn' | 'crit';
 
-/**
- * What holding `held` of `total` seats lets one Manifold Guardian identity do
- * on its own. Several identities may share one operator, so a low share is not
- * proof of independence.
- */
+
 export function concentration(held: number, total: number): { tone: ConcentrationTone; label: string; detail: string } {
   const threshold = guardianThreshold(total);
   const tolerance = total - threshold;

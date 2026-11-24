@@ -6,18 +6,15 @@ import type { LiveLookup } from '../lib/gatewaySelection';
 const LIVE_LOOKUP_TIMEOUT_MS = 10_000;
 
 interface LiveGatewayLookupOptions {
-  /** The federation's invite code, once known */
+
   invite: string | undefined;
-  /** An offline federation's guardians can't answer; the lookup would hang for a minute */
+
   offline: boolean;
-  /** Whether the federation, and so its invite, is still loading */
+
   federationPending: boolean;
 }
 
-/**
- * The gateways in the federation's own registry, asked of its guardians through
- * the observer. It only adds details, so it never holds up the page.
- */
+
 export function useLiveGatewayLookup({ invite, offline, federationPending }: LiveGatewayLookupOptions) {
   const [live, setLive] = useState<LiveLookup>({ status: 'pending' });
   const [attempt, setAttempt] = useState(0);
@@ -59,7 +56,7 @@ export function useLiveGatewayLookup({ invite, offline, federationPending }: Liv
 
   return {
     lookup,
-    /** Repeats a lookup that failed; a pending or successful one is left alone */
+
     retryIfFailed: () => {
       if (live.status === 'done' && live.error) setAttempt((count) => count + 1);
     },

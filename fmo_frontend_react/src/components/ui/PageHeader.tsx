@@ -4,13 +4,13 @@ import { Icon } from './Icon';
 
 interface PageHeaderProps {
   title: ReactNode;
-  /** Small label above the title, e.g. the section */
+
   eyebrow?: ReactNode;
   description?: ReactNode;
-  /** Badges after the title */
+
   badges?: ReactNode;
   actions?: ReactNode;
-  /** Where the page sits, e.g. Manifold › Guardian directory › name; the last is this page */
+
   breadcrumbs?: { label: ReactNode; to?: string }[];
 }
 

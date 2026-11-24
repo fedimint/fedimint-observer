@@ -136,5 +136,3 @@ export function LatencyTrendChart({ history, row }: { history: GuardianHealthHis
     />
   );
 }
-
-/** Latest session per answering guardian and how far each trails the furthest one */

@@ -1,6 +1,4 @@
-// Which gateways the page shows, and which banner, given its two sources: the
-// observer's recorded history and the federation's own live registry. Pure, so
-// every combination of loading, failure and empty data can be tested alone.
+// Combines recorded gateway history with the federation's live registry.
 import type { GatewayInfo, GatewayWindow } from '../../../types/api';
 
 export type GatewayWarningLevel = 'info' | 'warning' | 'error';
@@ -36,16 +34,11 @@ interface GatewaySources {
   federationFailed: boolean;
   federationOffline: boolean;
   dataWindow: GatewayWindow;
-  /** A search, a status filter or a later page: an empty answer means no match, not no gateways */
+
   listNarrowed?: boolean;
 }
 
-/**
- * The live registry's fresher details over the recorded page of gateways,
- * which keeps its own timings and activity. The live registry lists every
- * gateway, so it only refreshes rows of the page; it stands in for the list
- * only when nothing was recorded at all.
- */
+/** Refreshes live details while preserving recorded timing and activity. */
 export function mergeGatewayData(observedGateways: GatewayInfo[], liveGateways: GatewayInfo[], fallbackToLive = true): GatewayInfo[] {
   if (observedGateways.length === 0) return fallbackToLive ? liveGateways : observedGateways;
   if (liveGateways.length === 0) return observedGateways;
@@ -54,10 +47,7 @@ export function mergeGatewayData(observedGateways: GatewayInfo[], liveGateways: 
   return observedGateways.map((observedGateway) => {
     const liveGateway = liveById.get(observedGateway.gateway_id);
     if (!liveGateway) return observedGateway;
-    // Everything the observer recorded and computed (timings, activity, uptime,
-    // coverage and the online/offline/unknown minutes) comes from the recorded row;
-    // the live registry only refreshes the gateway's own details. Copying a subset
-    // of the recorded fields left a green strip beside "No samples, Unknown 1d".
+    // Recorded metrics win; live data only refreshes gateway-owned details.
     return {
       ...liveGateway,
       ...observedGateway,
@@ -66,7 +56,6 @@ export function mergeGatewayData(observedGateways: GatewayInfo[], liveGateways: 
       node_pub_key: liveGateway.node_pub_key || observedGateway.node_pub_key,
       vetted: liveGateway.vetted || observedGateway.vetted,
       raw: liveGateway.raw ?? observedGateway.raw,
-      // A recorded row without these keeps the live registry's
       first_seen: observedGateway.first_seen ?? liveGateway.first_seen,
       last_seen: observedGateway.last_seen ?? liveGateway.last_seen,
       activity_7d: observedGateway.activity_7d ?? liveGateway.activity_7d,
@@ -157,7 +146,6 @@ export function selectGatewayData({
     };
   }
 
-  // Registry-only rows stand in for the history only once loading it has failed
   if (observedError && liveGateways.length > 0) {
     return {
       gateways: liveGateways,

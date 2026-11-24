@@ -1,18 +1,10 @@
 #!/usr/bin/env bash
-# Compares the PeerBadge issuers the observer trusts by default
-# (MANIFOLD_PRODUCTION_ISSUERS in fmo_core/src/manifold/collector.rs) and their
-# pinned authority documents (fmo_core/src/manifold/fixtures) with Manifold's
-# production roster at the revision the Fedi app pins today.
-#
-# Exits 0 when they match, 1 when they differ (printing what changed), and 2
-# when either source cannot be read. Needs curl and jq.
 set -euo pipefail
 
 collector="${1:-fmo_core/src/manifold/collector.rs}"
 fedi_lock_url="https://raw.githubusercontent.com/fedixyz/fedi/master/flake.lock"
 
-# The 64-hex strings, outside comments, from the line containing $2 (a literal
-# string) to the next "];"
+# The 64-hex strings, outside comments, from the line containing $2 (a literal string) to the next "];"
 issuers_in() {
   awk -v start="$2" 'index($0, start) { inside = 1; next } inside && /^\];/ { exit } inside' "$1" |
     grep -v '^[[:space:]]*//' | grep -oE '"[0-9a-f]{64}"' | tr -d '"' || true
@@ -43,7 +35,6 @@ if [ -z "$theirs" ]; then
   exit 2
 fi
 
-# Each roster issuer's pinned authority document, compared as JSON
 fixtures="$(dirname "$collector")/fixtures"
 authority_drift=""
 for issuer in $theirs; do

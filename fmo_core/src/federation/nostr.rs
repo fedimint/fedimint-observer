@@ -30,13 +30,8 @@ use crate::AppState;
 const FEDERATION_ANNOUNCEMENT_EVENT_KIND: Kind = Kind::Custom(38173);
 const RECOMMENDATION_EVENT_KIND: Kind = Kind::Custom(38000);
 
-/// How often relays are asked for events published since the last sync
 const NOSTR_SYNC_INTERVAL: Duration = Duration::from_secs(60);
-/// How often everything is fetched again, for events that reached relays
-/// later than their timestamp says
 const NOSTR_FULL_SYNC_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-/// A sync asks for events from this long before the previous one started, for
-/// publishers whose clocks are a bit off
 const NOSTR_SYNC_OVERLAP: Duration = Duration::from_secs(10 * 60);
 const NOSTR_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -51,12 +46,6 @@ struct NostrRelay {
 }
 
 impl FederationObserver {
-    /// Syncs federation announcements, and the votes on observed federations.
-    ///
-    /// Most minutes nothing new was published, so each sync asks only for
-    /// events since the previous one, in one request for all federations.
-    /// Every few hours, and after a restart, everything is fetched again per
-    /// federation, the way every sync used to.
     pub async fn sync_nostr_events(self) -> anyhow::Result<()> {
         let client = self.nostr_relay_client().await?;
         let mut interval = interval(NOSTR_SYNC_INTERVAL);
@@ -91,8 +80,6 @@ impl FederationObserver {
                     self.store_new_events::<ParsedRecommendationEvent>(votes)
                         .await?;
                 }
-                // One request per federation, so a relay's cap on results per
-                // request applies to each federation separately
                 None => {
                     for federation_id in federations {
                         let votes =
@@ -108,9 +95,6 @@ impl FederationObserver {
         }
     }
 
-    /// The relay pool shared by the sync task and the publish endpoints,
-    /// connected on first use. A pool keeps reconnecting to its relays until
-    /// it is shut down, so one per request leaked ten connections each time.
     async fn nostr_relay_client(&self) -> anyhow::Result<RelayPool> {
         self.nostr_pool()
             .get_or_try_init(|| self.connect_nostr_relays())
@@ -139,10 +123,6 @@ impl FederationObserver {
         Ok(client)
     }
 
-    /// The federations whose votes are synced: only observed ones, since a
-    /// stored vote references its federation. Votes on a federation that is
-    /// only announced could never be stored, and would be fetched, verified
-    /// and rejected again on every sync.
     async fn voted_federation_ids(&self) -> anyhow::Result<Vec<FederationId>> {
         self.connection()
             .await?
@@ -153,9 +133,6 @@ impl FederationObserver {
             .collect()
     }
 
-    /// Stores the events not stored yet. Relays return every matching event
-    /// on each request, so this skips the signature check and insert for the
-    /// ones already known.
     async fn store_new_events<T: StoredEvent>(&self, events: Vec<Event>) -> anyhow::Result<()> {
         let mut conn = self.connection().await?;
         let event_ids = events
@@ -178,8 +155,6 @@ impl FederationObserver {
             if known.contains(&event_id) {
                 continue;
             }
-            // A failed statement aborts the whole transaction, so each event
-            // gets a savepoint to fail alone
             let savepoint = dbtx.savepoint("nostr_event").await?;
             match async { T::parse(event)?.insert(&savepoint, event).await }.await {
                 Ok(()) => {
@@ -211,7 +186,6 @@ impl FederationObserver {
 
         query::<RawNostrFederation>(
             &self.connection().await?,
-            // language=postgresql
             "select federation_id, MIN(invite_code) as invite_code from nostr_federations group by federation_id",
             &[],
         )
@@ -232,8 +206,7 @@ impl FederationObserver {
         .collect()
     }
 
-    /// Number and average of star votes of every federation that has votes,
-    /// counting each rater's current vote only
+    /// Number and average of star votes of every federation that has votes.
     pub async fn federation_ratings(
         &self,
     ) -> anyhow::Result<HashMap<FederationId, FederationRating>> {
@@ -254,9 +227,6 @@ impl FederationObserver {
             .collect()
     }
 
-    /// Checks a vote, sends it to the relays and stores it. A vote on a
-    /// federation that isn't observed can't be stored, so it is rejected
-    /// before anything is relayed.
     pub async fn submit_rating(&self, nostr_event: Event) -> anyhow::Result<()> {
         let parsed = parse_submitted::<ParsedRecommendationEvent>(&nostr_event)?;
         self.ensure_observed(parsed.federation_id).await?;
@@ -288,10 +258,6 @@ impl FederationObserver {
     }
 }
 
-/// Kind 38000 is parameterized replaceable: a rater's newest vote on a
-/// federation replaces the earlier ones, which may still be stored. Per
-/// NIP-01 the newest is the one created last, and of those the lowest id.
-// language=postgresql
 const FEDERATION_RATINGS_SQL: &str = "
     SELECT federation_id, COUNT(star_vote)::bigint, AVG(star_vote)::DOUBLE PRECISION
     FROM (
@@ -302,21 +268,15 @@ const FEDERATION_RATINGS_SQL: &str = "
     GROUP BY federation_id
 ";
 
-/// Checks an event someone submitted: one that isn't of the kind, isn't
-/// signed by its author or lacks its tags is the client's mistake
+/// Checks an event someone submitted: one that isn't of the kind.
 fn parse_submitted<T: StoredEvent>(event: &Event) -> anyhow::Result<T> {
     T::parse(event).map_err(|error| ClientError::bad_request(format!("{error:#}")).into())
 }
 
-/// A kind of Nostr event the observer stores
 trait StoredEvent: Sized {
     const LABEL: &'static str;
-    /// Table with an `event_id` column holding the stored events
     const TABLE: &'static str;
 
-    /// Checks the event, including its signature: deserializing an event
-    /// doesn't, so unchecked events could be stored and relayed in anyone's
-    /// name
     fn parse(event: &Event) -> anyhow::Result<Self>;
 
     async fn insert(&self, client: &impl GenericClient, event: &Event) -> anyhow::Result<()>;
@@ -381,7 +341,6 @@ impl StoredEvent for ParsedFederationEvent {
 
         let now = chrono::Utc::now().naive_utc();
         client.execute(
-            // language=postgresql
             "INSERT INTO nostr_federations (event_id, federation_id, invite_code, event, fetch_time) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
             &[
                 &self.event_id.to_vec(),
@@ -435,7 +394,6 @@ impl StoredEvent for ParsedRecommendationEvent {
 
         let now = chrono::Utc::now().naive_utc();
         client.execute(
-            // language=postgresql
             "INSERT INTO nostr_votes (event_id, federation_id, star_vote, event, fetch_time) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
             &[
                 &self.event_id.to_vec(),

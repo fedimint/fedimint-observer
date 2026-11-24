@@ -1,6 +1,3 @@
-//! Observes Fedi's stability pool v1 module. Its items have no amounts core
-//! can store, only their JSON details.
-
 use async_trait::async_trait;
 use fedimint_core::core::{Decoder, DynInput, DynModuleConsensusItem, DynOutput, ModuleKind};
 use fedimint_core::module::CommonModuleInit;

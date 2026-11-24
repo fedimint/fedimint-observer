@@ -1,11 +1,9 @@
--- Run against a freshly migrated disposable database.
 \ir repair_worker.sql
 INSERT INTO federations VALUES ('\x01', '\x00');
 INSERT INTO sessions VALUES ('\x01', 0, '\x00'), ('\x01', 1, '\x00');
 INSERT INTO transactions VALUES ('\x01', '\x01', 0, 0, '\x00'), ('\x02', '\x01', 1, 0, '\x00');
 INSERT INTO transaction_inputs (federation_id, txid, in_index, kind, amount_msat)
 VALUES ('\x01', '\x01', 0, 'mint', 100), ('\x01', '\x02', 0, 'mint', 200);
--- Both sessions exist before their selected block timestamp.
 INSERT INTO block_height_votes VALUES ('\x01', 0, 0, 0, 12345);
 SELECT record_new_session('\x01', 0);
 SELECT record_new_session('\x01', 1);
@@ -19,7 +17,6 @@ DO $$ BEGIN
     END IF;
 END $$;
 INSERT INTO block_times VALUES (12345, '2024-01-02 12:00:00');
--- An interrupted repair rolls back both its changes and removal of the job.
 SAVEPOINT before_repair;
 SELECT pg_temp.process_session_time_repair();
 ROLLBACK TO SAVEPOINT before_repair;

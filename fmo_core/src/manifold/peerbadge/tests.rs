@@ -13,7 +13,6 @@ fn pinned_authorities_are_manifolds_production_roster() {
     let mut roster: Vec<&str> = MANIFOLD_PRODUCTION_ISSUERS.to_vec();
     roster.sort_unstable();
     assert_eq!(pinned, roster);
-    // A changed document no longer verifies
     let tampered = AUTHORITY_DOCUMENTS[0].replace("relay.dev.fedibtc.com", "relay.example.com");
     assert!(load_authorities(&[&tampered]).is_err());
     assert!(load_authorities(&[AUTHORITY_DOCUMENTS[0], AUTHORITY_DOCUMENTS[0]]).is_err());
@@ -40,7 +39,6 @@ fn revocations_are_read_where_the_pinned_authorities_say() {
         ["wss://relay.dev.fedibtc.com/"]
     );
     assert_eq!(targets.values().next().unwrap().len(), roster.len());
-    // Trusted issuers without a pinned authority have nowhere to read from
     assert!(revocation_targets(&["00".repeat(32)]).unwrap().is_empty());
 }
 
@@ -87,7 +85,6 @@ fn revocations_are_admitted_as_manifold_admits_them() {
     let digest = digest_of("credential");
     let wire = digest_wire(&digest).unwrap();
     let d_tag = format!("credential-revocation:{wire}");
-    // The SDK accepts the hand-made revocation as the issuer's
     assert!(
         serde_json::from_str::<SignedRevocation>(&signed_revocation(&issuer, &digest))
             .unwrap()
@@ -110,8 +107,7 @@ fn revocations_are_admitted_as_manifold_admits_them() {
         })
     );
 
-    // Issuer events for this credential that do not revoke it are invalid,
-    // which keeps the credential unverified rather than unrevoked
+    // Issuer events for this credential that do not revoke it are invalid.
     let other_digest = revocation_event(
         &issuer,
         std::slice::from_ref(&d_tag),
@@ -131,7 +127,6 @@ fn revocations_are_admitted_as_manifold_admits_them() {
         );
     }
 
-    // Not about a credential, or not from a trusted issuer: ignored
     let untrusted = revocation_event(
         &someone_else,
         std::slice::from_ref(&d_tag),

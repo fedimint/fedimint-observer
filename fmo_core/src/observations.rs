@@ -1,5 +1,4 @@
-//! Persisted, last-known-good snapshots. A failed poll never replaces good
-//! data.
+// Persisted, last-known-good snapshots.
 
 use std::time::Duration;
 
@@ -89,9 +88,6 @@ impl FederationObserver {
                                 })
                                 .await
                             {
-                                // Kept apart from the parsed fields: verification
-                                // needs the exact signed string, and an override
-                                // URL must never be able to supply it
                                 crate::manifold::save_seat_bindings_observation(
                                     &services,
                                     federation.federation_id,

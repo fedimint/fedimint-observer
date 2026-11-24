@@ -18,7 +18,6 @@ export function FederationSortControl({ sortKey, sortDirection, onChange }: Fede
       <Select
         id="federation-sort"
         value={sortKey}
-        // A new metric starts "best first"; the button then reverses it
         onChange={(e) => {
           const key = e.target.value as SortKey;
           onChange(key, defaultDirectionFor(key));

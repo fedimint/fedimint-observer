@@ -5,8 +5,6 @@ use serde_json::json;
 use super::*;
 use crate::manifold::peerbadge::{revocation_locations, IssuerRevocationCheck, RevocationState};
 
-/// Real kind 37701, 37709 and 37702 events captured from Manifold's
-/// production relays, signed by their publishers
 const RELAY_EVENTS: &str = include_str!("../fixtures/relay-events.json");
 
 fn real_events() -> Vec<Event> {
@@ -60,7 +58,6 @@ fn real_manifold_events_verify() {
         assert!(ad.expires_at >= ad.issued_at);
         assert!(ad.payload.is_object());
     }
-    // The same guardian published both MG formats from one snapshot
     let legacy = verify_event(&events[0]).unwrap();
     let v2 = verify_event(&events[1]).unwrap();
     assert_eq!(legacy.author, v2.author);
@@ -73,8 +70,6 @@ fn real_manifold_events_verify() {
 
 #[test]
 fn a_changed_payload_no_longer_verifies() {
-    // Re-signing the outer event keeps it valid, so only the inner proof can catch
-    // this
     let keys = Keys::generate();
     let legacy: Value = serde_json::from_str(real_events()[0].content()).unwrap();
     let mut changed = legacy.clone();
@@ -89,7 +84,6 @@ fn a_changed_payload_no_longer_verifies() {
         )),
         Err(DiscoveryError::InvalidSignature)
     );
-    // Republishing someone else's signed document under another author
     assert_eq!(
         verify_event(&signed(
             &keys,
@@ -114,7 +108,6 @@ fn v2_envelopes_bind_the_exact_payload_bytes_to_the_author() {
     .unwrap();
     assert_eq!((ad.issued_at, ad.expires_at), (10, 20));
 
-    // Whitespace changes the signed bytes
     let mut reformatted: Value = serde_json::from_str(&envelope(&keys, payload)).unwrap();
     reformatted["payload"] = json!(payload.replace(",\"", ", \""));
     assert_eq!(
@@ -127,7 +120,6 @@ fn v2_envelopes_bind_the_exact_payload_bytes_to_the_author() {
         Err(DiscoveryError::InvalidSignature)
     );
 
-    // Signed by one key, published by another
     let other = Keys::generate();
     assert_eq!(
         verify_event(&signed(
@@ -139,7 +131,6 @@ fn v2_envelopes_bind_the_exact_payload_bytes_to_the_author() {
         Err(DiscoveryError::AuthorMismatch)
     );
 
-    // An extra envelope field is not the specified shape
     let mut extra: Value = serde_json::from_str(&envelope(&keys, payload)).unwrap();
     extra["note"] = json!("x");
     assert_eq!(
@@ -167,8 +158,6 @@ fn signed_but_unstorable_advertisements_are_rejected() {
         )
     };
 
-    // One past i64::MAX: cast to BIGINT it became i64::MIN, and the presence
-    // query's `now - issued_at` overflowed and rolled back the whole sync
     assert_eq!(
         verify_event(&signed_v2(&keys, &with("9223372036854775808", "a"))),
         Err(DiscoveryError::Unstorable)
@@ -180,7 +169,6 @@ fn signed_but_unstorable_advertisements_are_rejected() {
         )),
         Err(DiscoveryError::Unstorable)
     );
-    // The last storable second is still a valid advertisement
     let ad = verify_event(&signed_v2(&keys, &with(&MAX_TIMESTAMP.to_string(), "a"))).unwrap();
     assert_eq!(ad.issued_at, MAX_TIMESTAMP);
 
@@ -195,14 +183,12 @@ fn signed_but_unstorable_advertisements_are_rejected() {
         verify_event(&signed_v2(&keys, nul_key)),
         Err(DiscoveryError::Unstorable)
     );
-    // An escaped backslash before "u0000" is ordinary text, not a NUL
     assert!(verify_event(&signed_v2(&keys, &with("10", "a\\\\u0000b"))).is_ok());
 }
 
 #[test]
 fn only_manifold_tagged_events_are_advertisements() {
     let keys = Keys::generate();
-    // Other applications publish credentials and probes under kind 37702
     let probe = signed(
         &keys,
         FLIP_KIND,
@@ -231,7 +217,6 @@ fn freshness_follows_the_fa_rule() {
     assert_eq!(freshness(now - 7200, now + 1, now), AdFreshness::Fresh);
     assert_eq!(freshness(now - 7201, now + 1, now), AdFreshness::Stale);
     assert_eq!(freshness(now - 10, now, now), AdFreshness::Expired);
-    // A withdrawal republishes with expires_at == issued_at
     assert_eq!(freshness(now - 10, now - 10, now), AdFreshness::Expired);
     assert_eq!(
         freshness(now + 5, now + 3600, now),
@@ -303,8 +288,7 @@ fn real_credentials() -> Vec<(VerifiedAdvertisement, String)> {
         .collect()
 }
 
-/// Badges production guardians publish verify with Fedi's PeerBadge SDK,
-/// against the pinned authorities of Manifold's production issuers
+/// Badges production guardians publish verify with Fedi's PeerBadge SDK.
 #[test]
 fn real_production_credentials_verify() {
     let credentials = real_credentials();
@@ -373,7 +357,6 @@ fn without_current_revocation_state_nothing_verifies() {
     let unread = credential(&ad.payload, &ad.author, now, &never_read);
     assert_eq!(unread.state, CredentialState::Unavailable);
     assert_eq!(result(&unread, "revocation"), None);
-    // Everything else did verify
     assert_eq!(result(&unread, "issuance_proof"), Some(true));
     assert!(unread
         .reason
@@ -384,7 +367,6 @@ fn without_current_revocation_state_nothing_verifies() {
     let old = credential(&ad.payload, &ad.author, now, &stale);
     assert_eq!(old.state, CredentialState::Unavailable);
     assert_eq!(result(&old, "revocation"), None);
-    // Fifteen minutes old still counts
     let recent = trust_at(now - 15 * 60, default_issuers());
     assert_eq!(
         credential(&ad.payload, &ad.author, now, &recent).state,
@@ -392,16 +374,13 @@ fn without_current_revocation_state_nothing_verifies() {
     );
 }
 
-/// Completeness is per issuer: a complete read of other issuers' revocations,
-/// however recent, says nothing about an issuer added to the trusted set since
+/// Completeness is per issuer.
 #[test]
 fn another_issuers_revocation_read_does_not_vouch_for_this_one() {
     let (ad, _) = real_credentials().remove(0);
     let now = ad.issued_at;
     let issuer = credential_issuer(&ad);
 
-    // Read in full for every production issuer except this credential's, as
-    // when the collector ran with a subset and the trusted set grew since
     let mut subset = trust_at(now, default_issuers());
     subset.revocations.checks.remove(&issuer);
     assert!(!subset.revocations.checks.is_empty());
@@ -410,7 +389,6 @@ fn another_issuers_revocation_read_does_not_vouch_for_this_one() {
     assert_eq!(result(&expanded, "revocation"), None);
     assert_eq!(result(&expanded, "issuer_root"), Some(true));
 
-    // Read in full, but from other locations than the pinned authority names
     let mut elsewhere = trust_at(now, default_issuers());
     elsewhere
         .revocations
@@ -429,13 +407,11 @@ fn only_trusted_issuers_with_a_pinned_authority_verify() {
     let (ad, _) = real_credentials().remove(0);
     let now = ad.issued_at;
 
-    // No trust roots: nothing to compare with, so not run
     let none = credential(&ad.payload, &ad.author, now, &trust_at(now, Vec::new()));
     assert_eq!(none.state, CredentialState::Unavailable);
     assert_eq!(result(&none, "issuer_root"), None);
     assert_eq!(result(&none, "issuance_proof"), None);
 
-    // Another root: a checked mismatch, still not a failed credential
     let other = credential(
         &ad.payload,
         &ad.author,
@@ -445,7 +421,6 @@ fn only_trusted_issuers_with_a_pinned_authority_verify() {
     assert_eq!(other.state, CredentialState::Unavailable);
     assert_eq!(result(&other, "issuer_root"), Some(false));
 
-    // A trusted issuer outside Manifold's roster has no pinned authority
     let mut unrooted = ad.payload.clone();
     unrooted["holder_authorizations"][0]["signed_credential"]["credential"]["issuer_id_pubkey"] =
         json!("11".repeat(32));
@@ -471,7 +446,6 @@ fn tampered_credentials_fail() {
         credential(&payload, &ad.author, now, &trust)
     };
 
-    // The issuer signed the trust level: raising it breaks the issuance proof
     let level = "/holder_authorizations/0/signed_credential/credential/info/trust_level";
     let raised = tampered(level, json!(12));
     assert_eq!(raised.state, CredentialState::Failed);
@@ -480,7 +454,6 @@ fn tampered_credentials_fail() {
     assert_eq!(lowered.state, CredentialState::Failed);
     assert_eq!(result(&lowered, "trust_level"), Some(false));
 
-    // The holder signed the subject: another subject breaks the authorization
     let resubjected = tampered(
         "/holder_authorizations/0/holder_authorization/authorization/subject_pubkey",
         json!("22".repeat(32)),
@@ -488,7 +461,6 @@ fn tampered_credentials_fail() {
     assert_eq!(resubjected.state, CredentialState::Failed);
     assert_eq!(result(&resubjected, "holder_authorization"), Some(false));
 
-    // A badge presented by another advertiser
     let borrowed = credential(&ad.payload, &"00".repeat(32), now, &trust);
     assert_eq!(borrowed.state, CredentialState::Failed);
     assert_eq!(result(&borrowed, "subject"), Some(false));
@@ -502,8 +474,7 @@ fn tampered_credentials_fail() {
     assert_eq!(none.state, CredentialState::None);
 }
 
-/// The collector stores a credential's evidence as JSON, and requests assess
-/// it: the outcome must be exactly that of verifying the payload then
+/// The collector stores a credential's evidence as JSON.
 fn assessed_from_storage(ad: &VerifiedAdvertisement, now: u64, trust: &TrustContext) -> Value {
     let stored = serde_json::to_value(evaluate_credential(&ad.payload)).unwrap();
     let evidence: CredentialEvidence = serde_json::from_value(stored).unwrap();
@@ -537,9 +508,6 @@ fn stored_evidence_assesses_as_the_payload_verifies() {
     }
 }
 
-/// Evidence worked out once still applies each request's time: the
-/// authorization must not be dated after it, and revocation state must be
-/// recent then
 #[test]
 fn stored_evidence_is_checked_against_the_time_of_each_request() {
     let (ad, _) = real_credentials().remove(0);
@@ -556,16 +524,13 @@ fn stored_evidence_is_checked_against_the_time_of_each_request() {
     assert_eq!(result(&later, "revocation"), None);
 }
 
-/// Soundness is what the collector protects guardians by: everything but
-/// trust, revocation and time
+/// Soundness is what the collector protects guardians by.
 #[test]
 fn only_genuine_credentials_for_their_advertiser_are_sound() {
     let (ad, _) = real_credentials().remove(0);
     let evidence = evaluate_credential(&ad.payload);
     assert!(evidence.sound_for(&ad.author));
-    // Presented by another advertiser
     assert!(!evidence.sound_for(&"00".repeat(32)));
-    // Tampered, or from an issuer without a pinned authority
     let mut raised = ad.payload.clone();
     raised["holder_authorizations"][0]["signed_credential"]["credential"]["info"]["trust_level"] =
         json!(12);

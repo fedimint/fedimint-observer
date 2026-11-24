@@ -31,8 +31,6 @@ function WalletInstance({ id, instance, network, active }: { id: string; instanc
     (before: number | undefined, signal: AbortSignal) => api.getWalletV2OnChain(id, instance, pageSize, before, signal),
     [id, instance, pageSize],
   );
-  // Keep an older page stable while it is read; going back to page 1 resumes
-  // automatic updates.
   const pages = useCursorPages({ fetchPage, nextCursor: nextBefore, refreshMs: REFRESH_MS, enabled: active, clearErrorOnRestart: true });
   const { page, latest } = pages;
   const error: HistoryError | null = pages.error && (pages.error.kind === 'refresh' ? 'refresh' : 'older');

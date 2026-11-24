@@ -21,7 +21,6 @@ async fn restarts_after_errors_and_panics() {
         .await
     });
 
-    // Paused time auto-advances through both 30 s restart delays
     while runs.load(Ordering::SeqCst) < 3 {
         tokio::task::yield_now().await;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;

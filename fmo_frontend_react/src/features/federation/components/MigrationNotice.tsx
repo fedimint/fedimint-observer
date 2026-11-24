@@ -7,9 +7,9 @@ import { formatUtcDate, formatUtcDateTime } from '../../../utils/time';
 
 interface MigrationNoticeProps {
   expiry: Date;
-  /** The successor's invite code, as its guardians published it */
+
   successorInvite: string;
-  /** The successor, when the observer tracks it */
+
   successor: { id: string; name: string } | null;
 }
 

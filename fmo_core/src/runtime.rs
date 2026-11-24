@@ -1,5 +1,4 @@
-//! Deployment limits and database ownership. API replicas never start
-//! collectors.
+// Deployment limits and database ownership.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -23,10 +22,8 @@ pub struct RuntimeOptions {
     pub external_concurrency: usize,
     #[arg(long, env = "FO_HTTP_CONCURRENCY", default_value_t = 128)]
     pub http_concurrency: usize,
-    /// Zero retains raw health indefinitely. Otherwise keep at least 31 days.
     #[arg(long, env = "FO_HEALTH_RETENTION_DAYS", default_value_t = 90)]
     pub health_retention_days: u32,
-    /// How often processes reload guardian routes from the database
     #[arg(long, env = "FO_REPLICA_ENDPOINT_REFRESH_SECS", default_value_t = 60)]
     pub replica_endpoint_refresh_secs: u64,
 }
@@ -82,27 +79,19 @@ pub(crate) fn pool(
     Ok(config.create_pool(Some(Runtime::Tokio1), tls()?)?)
 }
 
-/// Set when the worker lease was lost, which stops the workers
 static WORKER_LEASE_LOST: AtomicBool = AtomicBool::new(false);
 
-/// Whether the process stopped its workers because it lost the worker lease.
-/// It must then exit with an error, so a process manager restarts it.
 pub(crate) fn worker_lease_lost() -> bool {
     WORKER_LEASE_LOST.load(Ordering::SeqCst)
 }
 
 fn lose_worker_lease(tasks: &fedimint_core::task::TaskGroup) {
-    // The lease connection also closes once a graceful shutdown has dropped
-    // its client, which is not a loss
     if !tasks.is_shutting_down() {
         WORKER_LEASE_LOST.store(true, Ordering::SeqCst);
     }
     tasks.shutdown();
 }
 
-/// This dedicated connection is never returned to a pool. If it is lost,
-/// cancel workers immediately rather than continue without ownership.
-/// Advisory lock keys of the worker lease
 pub(crate) const WORKER_LOCK: (i32, i32) = (1_718_447_973, 1);
 
 pub(crate) async fn worker_lease(

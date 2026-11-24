@@ -16,7 +16,6 @@ fn config_downloads_fail_with_gateway_statuses() {
 
     let unreachable = download_outcome::<()>(Some(Err(anyhow!("connection refused")))).unwrap_err();
     assert_eq!(status(&unreachable), StatusCode::BAD_GATEWAY);
-    // The cause stays in the chain for the log
     assert!(format!("{unreachable:#}").contains("connection refused"));
 
     let busy =
@@ -36,7 +35,6 @@ fn failed_invites_are_not_retried_right_away() {
     assert_eq!(failure.status(), StatusCode::BAD_GATEWAY);
     assert!(cache.recent_failure("other").is_none());
 
-    // Once the delay has passed, the invite is tried again
     cache.failures.lock().unwrap().get_mut("invite").unwrap().0 =
         Instant::now() - FAILED_INVITE_RETRY_DELAY;
     assert!(cache.recent_failure("invite").is_none());
@@ -54,7 +52,6 @@ async fn concurrent_downloads_of_an_invite_share_a_slot() {
     assert!(second.try_lock().is_err());
     drop(guard);
     drop(first);
-    // Still claimed by the second request
     assert_eq!(slots.lock().unwrap().len(), 1);
     drop(second);
     assert!(slots.lock().unwrap().is_empty());

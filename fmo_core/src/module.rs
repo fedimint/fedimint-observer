@@ -1,27 +1,3 @@
-//! The interface a Fedimint module implements to be observed, and the registry
-//! of modules an observer build includes.
-//!
-//! Core fetches sessions and writes the module-agnostic rows (`transactions`,
-//! `transaction_inputs`/`_outputs`, their `_details` and `consensus_items`),
-//! asking the owning module for a summary of every item (amount and JSON
-//! details). Items of modules this build doesn't include are stored with their
-//! kind and no amount or details.
-//!
-//! A module's own tables are derived from the stored sessions afterwards, by
-//! the module's projector (`federation/projector.rs`): one per module and
-//! federation, it runs the module's `process_*` on the items of its kind,
-//! batches of sessions at a time, each batch in one transaction with the move
-//! of the module's cursor in `module_cursors`. A module added to a build later
-//! starts at session 0 and also completes the core rows of its items from its
-//! summaries, a module's bug is fixed by resetting its cursor, and a module
-//! that fails holds back only itself. Rows a module writes may lag a moment
-//! behind the core rows of the same session.
-//!
-//! A module's tables live in its own schema, `fmo_<kind>` (see
-//! [`schema_name`]), created by core at startup. Core's tables stay in
-//! `public`. Module SQL names its tables schema-qualified; only the module's
-//! own migrations run with its schema first on the search path.
-
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -45,23 +21,18 @@ use crate::federation::observer::FederationObserver;
 pub use crate::pagination::{key_text, keyset_page, KeysetPage, Page};
 pub use crate::util::{module_instance_id, query, query_one, query_opt, query_value};
 
-/// The database transaction a session is processed in
 pub type DbTransaction<'a> = deadpool_postgres::Transaction<'a>;
 
-/// Where a transaction input or output sits
 #[derive(Debug, Clone, Copy)]
 pub struct ItemMeta {
     pub federation_id: FederationId,
-    /// Federations can run several instances of the same module kind
     pub module_instance_id: ModuleInstanceId,
     pub txid: TransactionId,
     pub session_index: u64,
     pub item_index: u64,
-    /// Index of the input or output within its transaction
     pub index: u64,
 }
 
-/// Where a module consensus item sits, and who proposed it
 #[derive(Debug, Clone, Copy)]
 pub struct CiMeta {
     pub federation_id: FederationId,
@@ -71,67 +42,45 @@ pub struct CiMeta {
     pub peer: PeerId,
 }
 
-/// What core stores about an input in `transaction_inputs` and
-/// `transaction_input_details`
 #[derive(Debug, Default, Clone)]
 pub struct InputSummary {
     pub amount_msat: Option<u64>,
-    /// Consensus-encoded Lightning contract id for cross-module input
-    /// resolution.
     pub ln_contract_id: Option<Vec<u8>>,
-    /// The federation output this input claims, for inputs that don't carry
-    /// their amount but take that of the output, such as Lightning v2 contract
-    /// claims. Without `amount_msat` core stores the output's amount, which it
-    /// stored with an earlier transaction.
     pub claimed_output: Option<OutPoint>,
     pub details: Option<serde_json::Value>,
 }
 
-/// What core stores about an output in `transaction_outputs` and
-/// `transaction_output_details`
 #[derive(Debug, Default, Clone)]
 pub struct OutputSummary {
     pub amount_msat: Option<u64>,
-    /// How the output interacts with a Lightning contract (`fund`, `offer`,
-    /// `cancel`) and the consensus-encoded contract id for input resolution.
     pub ln_contract: Option<(&'static str, Vec<u8>)>,
     pub details: Option<serde_json::Value>,
 }
 
-/// Access a module gets while processing a batch of sessions
 pub struct ProcessCtx<'a> {
-    /// The batch's transaction, committed with the move of the module's cursor
     pub dbtx: &'a DbTransaction<'a>,
     pub config: &'a ClientConfig,
 }
 
-/// What core offers a module's endpoints and background tasks
 #[derive(Clone)]
 pub struct Services(FederationObserver);
 
 impl Services {
-    /// Subscribe before reading durable work. Mark the generation with
-    /// `borrow_and_update` before each query, then await `changed` or the next
-    /// database retry deadline. Notifications committed during the query
-    /// persist.
+    /// Subscribe before reading work. Call `borrow_and_update` before each
+    /// query, then wait for `changed` or the next database retry deadline.
     pub fn work_notifications(&self, topic: &str) -> tokio::sync::watch::Receiver<u64> {
         self.0.work_notifications.subscribe(topic)
     }
-    /// How long to wait for a deadline `seconds` away by the database clock,
-    /// as `EXTRACT(EPOCH FROM deadline-now())` returns it. Clamp here, not
-    /// with SQL `GREATEST(0, ...)`, which ignores NULL and turns an empty queue
-    /// (no deadline: wait for a notification) into a zero wait. Past deadlines
-    /// wait zero; a value that is not a duration falls back to a minute.
+    /// Clamps past deadlines to zero. Preserve SQL NULL and wait for a
+    /// notification when there is no deadline.
     pub fn wait_for_deadline(seconds: f64) -> std::time::Duration {
         std::time::Duration::try_from_secs_f64(seconds.max(0.0))
             .unwrap_or(std::time::Duration::from_secs(60))
     }
-    /// Days of health history to keep (`FO_HEALTH_RETENTION_DAYS`), or `None`
-    /// when retention is disabled and history is kept indefinitely
+    /// Days of health history to keep (`FO_HEALTH_RETENTION_DAYS`).
     pub fn health_retention_days(&self) -> Option<u32> {
         Some(self.0.health_retention_days).filter(|days| *days > 0)
     }
-    /// A process-wide budget for bounded background calls to external services.
     pub async fn external_io_permit(&self) -> anyhow::Result<tokio::sync::OwnedSemaphorePermit> {
         Ok(self.0.external_io.clone().acquire_owned().await?)
     }
@@ -149,9 +98,6 @@ impl Services {
         self.0.connectors()
     }
 
-    /// The shared client for the API of the guardians in `global`. Use this
-    /// instead of building a client per request, which leaks connections: see
-    /// [`FederationObserver::federation_api`].
     pub fn federation_api(
         &self,
         global: &fedimint_core::config::GlobalClientConfig,
@@ -159,9 +105,6 @@ impl Services {
         self.0.federation_api(global)
     }
 
-    /// The shared client for guardians named by an invite code, of a
-    /// federation that may not be observed: see
-    /// [`FederationObserver::lookup_api`]
     pub fn lookup_api(
         &self,
         global: &fedimint_core::config::GlobalClientConfig,
@@ -188,14 +131,12 @@ impl Services {
         self.0.get_federation(federation_id).await
     }
 
-    /// Fails unless the federation is observed. For ids from request paths,
-    /// before anything is cached for them.
+    /// Fails unless the federation is observed.
     pub async fn ensure_observed(&self, federation_id: FederationId) -> anyhow::Result<()> {
         self.0.ensure_observed(federation_id).await
     }
 
-    /// The config behind an invite code, downloaded from its guardians once.
-    /// For federations that aren't observed.
+    /// The config behind an invite code.
     pub async fn config_for_invite(&self, invite: &InviteCode) -> anyhow::Result<JsonClientConfig> {
         self.0
             .federation_config_cache()
@@ -204,7 +145,6 @@ impl Services {
     }
 }
 
-/// A module's background task
 pub type Task = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
 
 /// The schema a module's tables live in, `fmo_<kind>`
@@ -219,14 +159,8 @@ pub fn schema_name(kind: &str) -> anyhow::Result<String> {
     Ok(format!("fmo_{kind}"))
 }
 
-/// A Fedimint module the observer can decode and process.
-///
-/// `summarize_*` and the `*_vote` methods must not do I/O: core calls them
-/// while storing a session, before writing its own rows. `process_*` run in
-/// the module's projector, after the session and its core rows are committed,
-/// so a module's tables may reference the core rows of the item. Return errors
-/// rather than panicking: an error stalls only this module's projector for
-/// this federation, which retries the batch 30 s later.
+/// A module decoder and projector.
+/// Summary methods avoid I/O; projector failures retry in isolation.
 #[async_trait]
 pub trait ObserverModule: Send + Sync + 'static {
     /// The module kind as it appears in client configs, e.g. `wallet`
@@ -234,37 +168,25 @@ pub trait ObserverModule: Send + Sync + 'static {
 
     fn decoder(&self) -> Decoder;
 
-    /// Migrations of the module's own schema, appended to over time and never
-    /// changed: core runs the ones a database hasn't seen, in order, each with
-    /// the module's schema first on the search path so table names can be
-    /// unqualified. The tables core's v12 moved into the schema are what the
-    /// first one builds on.
     fn migrations(&self) -> &'static [&'static str] {
         &[]
     }
 
-    /// Materialized views in the module's schema, schema-qualified, that core
-    /// refreshes every minute
+    /// Materialized views in the module's schema.
     fn materialized_views(&self) -> &'static [&'static str] {
         &[]
     }
 
-    /// Endpoints under `/federations/:federation_id`, whose handlers get the
-    /// id as a `Path<FederationId>` and [`Services`] as their state
+    /// Endpoints under `/federations/:federation_id`.
     fn federation_routes(&self) -> Option<Router<Services>> {
         None
     }
 
-    /// Endpoints under `/config/:invite`, for federations known by invite code
-    /// only
+    /// Endpoints under `/config/:invite`.
     fn config_routes(&self) -> Option<Router<Services>> {
         None
     }
 
-    /// The module's background task for one federation, if it has one for it.
-    /// Core runs it supervised: 30 s after it ends or fails, it asks for the
-    /// task again and runs that, so this must answer the same for a federation
-    /// every time.
     fn federation_task(
         &self,
         _services: &Services,
@@ -274,14 +196,12 @@ pub trait ObserverModule: Send + Sync + 'static {
         None
     }
 
-    /// The module's background task for all federations, if it has one,
-    /// supervised the same way
+    /// The module's background task for all federations.
     fn task(&self, _services: &Services) -> Option<Task> {
         None
     }
 
-    /// Called after a projector batch commits, so module tasks can observe
-    /// durable work created in that transaction.
+    /// Called after a projector batch commits.
     fn projection_committed(&self) {}
 
     fn summarize_input(&self, input: &DynInput) -> anyhow::Result<InputSummary>;
@@ -291,30 +211,21 @@ pub trait ObserverModule: Send + Sync + 'static {
     /// JSON stored in `consensus_items`, or `None` to store nothing
     fn summarize_ci(&self, ci: &DynModuleConsensusItem) -> Option<serde_json::Value>;
 
-    /// The block height this consensus item votes for, if it is a vote. The
-    /// votes date the session, so core records them in `block_height_votes`
-    /// while storing it: `session_times`, a core read model, is built from
-    /// them.
     fn block_height_vote(&self, _ci: &DynModuleConsensusItem) -> Option<u32> {
         None
     }
 
-    /// The unix time, in seconds, this consensus item votes for, if it is a
-    /// vote. Recorded in `unix_time_votes` like block height votes; where a
-    /// session has some, their median dates it instead of the block time.
     fn unix_time_vote(&self, _ci: &DynModuleConsensusItem) -> Option<u64> {
         None
     }
 
-    /// This module's worker writes an amount (msat JSON integer) to the
-    /// `assets:<kind>` observation. No snapshot means unknown, not zero.
+    /// No snapshot means unknown, not zero.
     fn reports_assets(&self) -> bool {
         false
     }
 
-    /// Deletes everything the module derived from the federation's sessions,
-    /// before a clean replay from session 0 rebuilds it. Tables the module's
-    /// tasks keep, which no session feeds, stay.
+    /// Delete session-derived state for replay from session zero.
+    /// Preserve task-owned data that session replay cannot rebuild.
     async fn reset_federation(
         &self,
         _ctx: &ProcessCtx<'_>,
@@ -353,7 +264,6 @@ pub trait ObserverModule: Send + Sync + 'static {
     }
 }
 
-/// The modules an observer build includes, by kind
 #[derive(Clone)]
 pub struct ModuleRegistry {
     modules: Arc<BTreeMap<String, Arc<dyn ObserverModule>>>,
@@ -392,8 +302,7 @@ impl ModuleRegistry {
         self.modules.values().cloned()
     }
 
-    /// Every module's endpoints under `/federations/:federation_id`, or `None`
-    /// when no module has any
+    /// Every module's endpoints under `/federations/:federation_id`.
     pub(crate) fn federation_routes(&self) -> Option<Router<Services>> {
         self.modules()
             .filter_map(|module| module.federation_routes())
@@ -407,8 +316,7 @@ impl ModuleRegistry {
             .reduce(Router::merge)
     }
 
-    /// Decoders for the given module instances; instances of kinds this build
-    /// doesn't include stay undecoded
+    /// Decoders for the given module instances.
     fn decoders(
         &self,
         modules: impl IntoIterator<Item = (ModuleInstanceId, ModuleKind)>,
@@ -431,8 +339,7 @@ impl ModuleRegistry {
     }
 }
 
-/// JSON details of an item that should be a `T`. Logs and returns `None` if the
-/// decoder registry produced something else.
+/// JSON details of an item that should be a `T`.
 pub fn details_json<T: serde::Serialize + 'static>(
     item: &dyn std::any::Any,
     item_debug: &dyn std::fmt::Debug,

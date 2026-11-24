@@ -3,37 +3,24 @@ import { useCallback, useEffect, useState, type DependencyList } from 'react';
 type Status = 'loading' | 'success' | 'error';
 
 interface ApiResource<T> {
-  /** The last successful answer, or null before one arrived */
   data: T | null;
-  /** What the latest request threw; null unless `failed` */
   error: unknown;
-  /** A request is running, or the first one has not started yet */
   loading: boolean;
-  /** The latest request failed */
   failed: boolean;
-  /** Repeats the request with the same inputs */
   reload: () => void;
 }
 
 interface ApiResourceOptions {
-  /** While false no request is made; the resource stays `loading` until enabled */
   enabled?: boolean;
-  /** Clear the data when a new request starts, instead of keeping it shown while it loads */
   resetOnReload?: boolean;
   /** Clear the data when a request fails, so earlier data never reads as this request's answer */
   resetOnError?: boolean;
-  /** Failures are logged as "Failed to fetch <label>:" */
   label?: string;
 }
 
-/**
- * One API request tied to the component's lifetime: it is made when `deps`
- * change, the previous one is aborted, and answers to aborted requests are
- * ignored, so a slow earlier answer never overwrites a later one.
- *
- * `load` runs with the values of the render in which `deps` last changed, like
- * the body of an effect, so `deps` must list every input it reads.
- */
+
+/** Aborts superseded requests. The identity of `load` is ignored, so
+ * `deps` must include every reactive value it reads. */
 export function useApiResource<T>(
   load: (signal: AbortSignal) => Promise<T>,
   deps: DependencyList,
@@ -62,7 +49,6 @@ export function useApiResource<T>(
       },
     );
     return () => controller.abort();
-    // `deps` stands in for `load`, as documented above
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, reloads, resetOnReload, resetOnError, label, ...deps]);
 

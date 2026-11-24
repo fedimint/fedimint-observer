@@ -10,9 +10,9 @@ const STYLE: Record<WarningTone, { icon: IconName; classes: string; label: strin
 
 interface OperationalWarningsProps {
   warnings: readonly GuardianWarning[];
-  /** Shown when there is nothing to warn about; omit to render nothing */
+
   allClear?: string;
-  /** Warnings shown before "Show all" */
+
   limit?: number;
   onSelectGuardian?: (id: number) => void;
 }

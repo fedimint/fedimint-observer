@@ -2,8 +2,7 @@ import type { NostrEvent, SignedNostrEvent } from '../types/nostr';
 
 type NostrEventTemplate = Omit<NostrEvent, 'created_at' | 'pubkey'>;
 
-// Signs an event with the browser's Nostr extension and hands it to `publish`. The
-// extension is checked before `buildEvent` runs, so a missing one fails before any request.
+// Signs an event with the browser's Nostr extension and hands it to `publish`. The extension is checked before `buildEvent` runs, so a missing one fails before any request.
 export async function publishNostrEvent(
   buildEvent: () => NostrEventTemplate | Promise<NostrEventTemplate>,
   publish: (event: SignedNostrEvent) => Promise<void>,

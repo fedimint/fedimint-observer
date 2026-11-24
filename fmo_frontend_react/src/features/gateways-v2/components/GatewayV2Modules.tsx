@@ -5,7 +5,7 @@ import { GatewayV2Directory } from './GatewayV2Directory';
 
 interface GatewayV2ModulesProps {
   id: string;
-  /** The federation's Lightning v2 module instances; at least one */
+
   instances: number[];
   timeWindow: GatewayWindow;
 }

@@ -1,5 +1,4 @@
-// Browsers throw on any localStorage access when site data is blocked, so
-// preferences must never be able to break a page.
+// Browsers throw on any localStorage access when site data is blocked, so preferences must never be able to break a page.
 
 export function readStorage(key: string): string | null {
   try {
@@ -17,6 +16,6 @@ export function writeStorage(key: string, value: string | null): void {
       window.localStorage.setItem(key, value);
     }
   } catch {
-    // The preference is not remembered; nothing else depends on it
+    // Storage is optional.
   }
 }

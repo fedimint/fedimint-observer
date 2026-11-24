@@ -8,7 +8,6 @@ import { activeAssetsStat } from '../lib/activeAssets';
 export function Totals() {
   const { data: totals, loading, failed } = useApiResource((signal) => api.getTotals(signal), [], { label: 'totals' });
 
-  // Zeros would read as real figures
   if (failed) {
     return <Alert level="error" message="Could not load the totals. Please try again later." />;
   }

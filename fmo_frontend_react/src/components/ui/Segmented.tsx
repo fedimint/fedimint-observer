@@ -5,7 +5,7 @@ export interface SegmentOption<T extends string> {
   value: T;
   label: string;
   disabled?: boolean;
-  /** Why the option is disabled */
+
   title?: string;
 }
 
@@ -14,7 +14,7 @@ interface SegmentedProps<T extends string> {
   options: readonly SegmentOption<T>[];
   value: T;
   onChange: (value: T) => void;
-  /** An option is about to be chosen (hovered or focused), e.g. to start loading it */
+
   onIntent?: (value: T) => void;
   size?: ControlSize;
 }

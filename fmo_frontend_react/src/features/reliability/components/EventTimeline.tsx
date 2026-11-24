@@ -4,14 +4,14 @@ import { formatUtcDateTime } from '../../../utils/time';
 
 export interface TimelineEvent {
   id: string;
-  /** Epoch ms; live events carry the snapshot time */
+
   at: number;
   end?: number;
   ongoing?: boolean;
   tone: 'crit' | 'warn' | 'info' | 'ok' | 'manifold';
   title: string;
   detail?: string;
-  /** Live observation or derived from stored history */
+
   kind: 'live' | 'historical';
 }
 

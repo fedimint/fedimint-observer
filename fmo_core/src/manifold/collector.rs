@@ -1,25 +1,3 @@
-//! The background collector of Manifold discovery events. It is the only
-//! code that talks to relays: API handlers read what it stored.
-//!
-//! Each sync asks the relays for the latest addressable events of the three
-//! advertisement kinds, bounded by a per-request limit, and separately for
-//! those of the guardians the observer knows (bound to a seat, or holding a
-//! sound credential), so a flood of advertisements cannot hide them. It
-//! verifies every event ([`super::discovery::verify_event`]) and keeps the
-//! newest per kind and author. It also records, per Manifold Guardian and
-//! UTC day, how many syncs found a fresh advertisement, and each new version
-//! it advertised.
-//!
-//! What requests show of an advertisement is worked out here, once per
-//! event: its bounded listing ([`super::listing`]) and its credential's
-//! signature checks ([`super::discovery::evaluate_credential`]), so requests
-//! neither read payloads nor verify signatures.
-//!
-//! Each sync also reads the trusted PeerBadge issuers' credential revocations
-//! from the revocation locations their pinned authorities name
-//! ([`super::peerbadge`]), page by page until a relay has nothing more, so
-//! credentials can be verified without relay I/O per request.
-
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::time::Duration;
@@ -46,29 +24,16 @@ use super::peerbadge::{
 };
 use crate::federation::observer::FederationObserver;
 
-/// Manifold's production relays (`manifold-environment`,
-/// `PRODUCTION_NOSTR_RELAYS`)
 pub const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.dev.fedibtc.com",
     "wss://relay.primal.net",
     "wss://relay.damus.io/",
 ];
-/// Comma-separated relay URLs; empty turns the collector off
 pub const RELAYS_ENV: &str = "FO_MANIFOLD_RELAYS";
-/// Comma-separated PeerBadge issuer keys (x-only hex) trusted as roots, in
-/// place of [`MANIFOLD_PRODUCTION_ISSUERS`]; set empty, no issuer is trusted
 pub const TRUSTED_ISSUERS_ENV: &str = "FO_MANIFOLD_TRUSTED_ISSUERS";
 
-/// The `fedibtc/manifold` revision [`MANIFOLD_PRODUCTION_ISSUERS`] was copied
-/// from: the one the Fedi app (`fedixyz/fedi`, `flake.lock`, `manifold-src`)
-/// pins, so the observer trusts exactly the issuers Fedi's app does. The
-/// `manifold-issuers` workflow flags a newer revision whose list differs.
 pub const MANIFOLD_ISSUERS_REVISION: &str = "141d6b95ccf8ebaeec6788bdf0ae2a6f9d8543d0";
 
-/// Manifold's production PeerBadge issuers, copied in roster order from
-/// `PRODUCTION_ISSUERS` in `crates/manifold-environment/src/lib.rs` at
-/// [`MANIFOLD_ISSUERS_REVISION`] (MIT). Each is a personal issuer key whose
-/// secret its owner holds; Manifold's release process vets every entry.
 pub const MANIFOLD_PRODUCTION_ISSUERS: &[&str] = &[
     "ac9647df59ada5c432ce7ff9a6afbac4507d29cdf6ed9e9dd26010e641ff9aeb",
     "db37f7c6399b2eba7a5ec0cf8258c556406bf881db35e8fd0fe1499755f4850b",
@@ -80,60 +45,28 @@ pub const MANIFOLD_PRODUCTION_ISSUERS: &[&str] = &[
     "5546e9caca6b8a474da9da8799f9f8f988888018b42429ebe00dd4b9cd2f6a31",
 ];
 
-/// Advertisements are republished every 30 minutes and expire after 60
 const SYNC_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
-/// Per request; relays cap results, and one event per author and kind is kept
 const FETCH_LIMIT: usize = 2000;
-/// Events older than this are not fetched, and stored ones are dropped once
-/// created this long ago, whatever expiry they claim
 const RETENTION_DAYS: i64 = 30;
 const PRESENCE_RETENTION_DAYS: i64 = 90;
-/// How far ahead of the observer's clock an advertisement may be dated.
-/// Retention keeps the newest, so a larger allowance would let throwaway keys
-/// outrank every real guardian with advertisements dated ahead.
 pub(crate) const MAX_CLOCK_SKEW_SECONDS: u64 = 5 * 60;
-/// Known guardians (seat-bound or credentialed) fetched by author per sync,
-/// and per request
 const MAX_FETCHED_AUTHORS: usize = 2000;
 const AUTHORS_PER_FETCH: usize = 100;
-/// Addressable events one author can have under the three kinds and their
-/// `d` tags is small; this bounds an authors request
 const EVENTS_PER_FETCHED_AUTHOR: usize = 4;
-/// Revocations asked for per page. A relay may answer with fewer, so a short
-/// page never ends a read; only a page that brings nothing new does.
+/// Revocations asked for per page.
 const REVOCATION_PAGE_LIMIT: usize = 500;
-/// Pages per revocation location and sync; a read that needs more is
-/// incomplete
 const MAX_REVOCATION_PAGES: usize = 40;
-/// Stored advertisements derived again per step, when the derivation changed
 const DERIVE_BATCH: i64 = 200;
 const MAX_DERIVE_BATCHES: usize = 100;
-/// Bump when the stored listing or credential evidence changes shape or
-/// meaning: rows derived otherwise are derived again, and not listed until
+/// Bump when persisted listing or credential evidence changes shape or meaning.
 const DERIVATION_VERSION: u32 = 1;
 
-/// How much discovery data the observer keeps. Anyone can publish a
-/// self-signed advertisement under a new key, so neither what an
-/// advertisement claims nor how many keys publish may decide how much is
-/// stored, or how much a request reads.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Retention {
-    /// Advertisements are dropped once created this long ago. Creation times
-    /// cannot be set in the future (the collector refuses any more than
-    /// [`MAX_CLOCK_SKEW_SECONDS`] ahead), so a far-future expiry does not
-    /// keep one.
     pub max_age_seconds: i64,
-    /// Per kind, the newest anonymous advertisements by creation time are
-    /// kept. Manifold Guardians republish every 30 minutes, so a real one is
-    /// among the newest unless keys flood the relays.
     pub max_per_kind: i64,
-    /// Per kind, the newest advertisements of protected guardians (bound to
-    /// a seat of an observed federation, or holding a sound credential from a
-    /// trusted issuer that it has not revoked) are kept apart from the
-    /// anonymous ones, so a flood of those never evicts them
     pub max_protected_per_kind: i64,
-    /// Version history kept per guardian, newest first
     pub max_versions_per_author: i64,
 }
 
@@ -264,9 +197,6 @@ pub fn configured_relays() -> Vec<String> {
     }
 }
 
-/// The trusted issuers for `setting`, the value of [`TRUSTED_ISSUERS_ENV`]:
-/// Manifold's production issuers when it is unset. A key that is not 64 hex
-/// characters is an error, not skipped, so a typo cannot pass unnoticed.
 pub fn parse_trusted_issuers(setting: Option<&str>) -> anyhow::Result<Vec<String>> {
     let Some(setting) = setting else {
         return Ok(MANIFOLD_PRODUCTION_ISSUERS
@@ -288,8 +218,7 @@ pub fn parse_trusted_issuers(setting: Option<&str>) -> anyhow::Result<Vec<String
         .collect()
 }
 
-/// Checked when the observer starts, so a bad setting stops it right away,
-/// and logged, so the trust roots in use are on record
+/// Checked when the observer starts.
 pub fn check_trusted_issuers() -> anyhow::Result<()> {
     check_pinned_authorities()?;
     let setting = std::env::var(TRUSTED_ISSUERS_ENV).ok();
@@ -308,9 +237,6 @@ pub fn check_trusted_issuers() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The issuers credentials are checked against. An invalid setting stops the
-/// observer at startup ([`check_trusted_issuers`]); should it change after,
-/// no issuer is trusted, failing closed.
 pub fn trusted_issuers() -> Vec<String> {
     parse_trusted_issuers(std::env::var(TRUSTED_ISSUERS_ENV).ok().as_deref()).unwrap_or_default()
 }
@@ -319,15 +245,11 @@ fn unix_now() -> u64 {
     chrono::Utc::now().timestamp().max(0) as u64
 }
 
-/// What stored derivations were worked out with: rows with another stamp are
-/// derived again, and not listed until then
+/// What stored derivations were worked out with.
 pub(crate) fn derivation_stamp() -> String {
     format!("v{DERIVATION_VERSION}-{}", pinned_authorities_fingerprint())
 }
 
-/// An API-only replica never migrates, so it starts only once the worker has
-/// run exactly the Manifold migrations this binary knows; otherwise every
-/// `/manifold/*` request would fail on a missing table or column
 pub(crate) async fn check_manifold_schema(client: &tokio_postgres::Client) -> anyhow::Result<()> {
     let applied = client
         .query_opt(
@@ -344,26 +266,19 @@ pub(crate) async fn check_manifold_schema(client: &tokio_postgres::Client) -> an
     Ok(())
 }
 
-/// A verified advertisement with what requests show of it
 #[derive(Debug, Clone)]
 pub(crate) struct Collected {
     pub ad: VerifiedAdvertisement,
     pub derived: Derived,
 }
 
-/// What the collector works out of an advertisement for requests
 #[derive(Debug, Clone)]
 pub(crate) struct Derived {
-    /// [`super::listing::listing`]; null should it not serialize
     pub listing: Value,
     pub evidence: CredentialEvidence,
-    /// [`credential_key`]
     pub credential_key: Option<String>,
 }
 
-/// Identifies the credential an advertisement presents together with its
-/// advertiser: evidence stored under the same key and derivation stamp is
-/// the same, so it is reused rather than verified again
 pub(crate) fn credential_key(ad: &VerifiedAdvertisement) -> Option<String> {
     let envelope = ad
         .payload
@@ -379,9 +294,6 @@ pub(crate) fn credential_key(ad: &VerifiedAdvertisement) -> Option<String> {
     ))
 }
 
-/// Derives `ad`, with `evidence` already worked out for its credential key,
-/// or verifies its credential. Verification is CPU work: call it off the
-/// async executor.
 pub(crate) fn derive(ad: VerifiedAdvertisement, evidence: Option<CredentialEvidence>) -> Collected {
     let listing = super::listing::listing(&ad).unwrap_or_else(|error| {
         warn!(%error, event = %ad.event_id, "Could not serialize a Manifold listing");
@@ -395,12 +307,8 @@ pub(crate) fn derive(ad: VerifiedAdvertisement, evidence: Option<CredentialEvide
     Collected { ad, derived }
 }
 
-/// The schema Manifold's tables live in
 const SCHEMA: &str = "fmo_manifold";
 
-/// Begins a transaction whose `search_path` leads with `schema`, the
-/// Manifold schema ([`SCHEMA`]; tests use their own). `schema` is a trusted
-/// identifier, never data from outside.
 async fn manifold_transaction<'a>(
     client: &'a mut tokio_postgres::Client,
     schema: &str,
@@ -411,8 +319,7 @@ async fn manifold_transaction<'a>(
     Ok(dbtx)
 }
 
-/// Derives `ads`, reusing the evidence stored for their credentials, and
-/// verifying the rest on a blocking thread
+/// Derives `ads`.
 pub(crate) async fn derive_all(
     client: &mut tokio_postgres::Client,
     schema: &str,
@@ -446,8 +353,7 @@ pub(crate) async fn derive_all(
     .context("Deriving Manifold advertisements panicked")
 }
 
-/// Derives again the stored advertisements derived with another stamp (or
-/// before migration 4), in bounded steps. Returns how many were updated.
+/// Returns how many were updated.
 pub(crate) async fn rederive_stale(
     client: &mut tokio_postgres::Client,
     schema: &str,
@@ -502,7 +408,6 @@ pub(crate) async fn rederive_stale(
     Ok(updated)
 }
 
-/// The derived columns of one advertisement, as SQL parameters
 struct DerivedParams {
     kind: i32,
     author: String,
@@ -550,18 +455,12 @@ fn derived_params(item: &Collected, stamp: &str) -> anyhow::Result<DerivedParams
     })
 }
 
-/// Guardians whose advertisements retention keeps apart from anonymous ones
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Protection {
-    /// Bound to a seat of an observed federation, by its verified directory
     pub seat_bound: Vec<String>,
-    /// Issuers whose sound, unrevoked credentials protect their holders
     pub trusted: Vec<String>,
 }
 
-/// Advertisers holding a sound credential from a trusted issuer that it has
-/// not revoked, at most `limit`. Runs with the Manifold schema first on the
-/// `search_path`.
 pub(crate) async fn credentialed_authors(
     dbtx: &tokio_postgres::Transaction<'_>,
     trusted: &[String],
@@ -585,8 +484,7 @@ pub(crate) async fn credentialed_authors(
 }
 
 impl FederationObserver {
-    /// Creates `fmo_manifold` and runs its migrations, tracked like a
-    /// module's in `module_schema_versions`
+    /// Creates `fmo_manifold` and runs its migrations.
     pub(crate) async fn setup_manifold_schema(&self) -> anyhow::Result<()> {
         let mut connection = self.connection().await?;
         connection
@@ -631,8 +529,6 @@ impl FederationObserver {
                 .await?;
         }
         pool.connect(Some(Duration::from_secs(5))).await;
-        // Revocations are read where each issuer's pinned authority says,
-        // whatever relays discovery uses
         let trusted = trusted_issuers();
         let revocation_targets = revocation_targets(&trusted)?;
         let revocation_pool = RelayPool::new(RelayPoolOptions::default());
@@ -658,7 +554,7 @@ impl FederationObserver {
                 .sync_manifold_once(&pool, &relays, &revocations, &trusted)
                 .await
             {
-                // One failed sync waits for the next; it never stops the task
+                // One failed sync waits for the next.
                 warn!(%error, "Manifold discovery sync failed");
             }
         }
@@ -678,7 +574,6 @@ impl FederationObserver {
         let credentialed =
             credentialed_authors(&dbtx, trusted, i64::try_from(MAX_FETCHED_AUTHORS)?).await?;
         dbtx.commit().await?;
-        // Seat-bound guardians first: the observer verified them itself
         let mut fetched = seat_bound.clone();
         fetched.extend(credentialed);
         let mut seen = std::collections::HashSet::new();
@@ -724,11 +619,7 @@ impl FederationObserver {
             )
             .await?;
         let latest = events.len();
-        // The newest events of any kind may all be a flood's: the known
-        // guardians' own are asked for by author
         events.extend(fetch_by_authors(pool, &known_authors, since).await);
-        // An empty answer means the relays could not be reached, not that
-        // every guardian vanished; presence is only counted from real answers
         ensure!(!events.is_empty(), "No relay returned any Manifold event");
 
         let now = unix_now();
@@ -765,10 +656,6 @@ impl FederationObserver {
     }
 }
 
-/// The newest valid advertisement per kind and author among `events`, and
-/// how many events were rejected. Ties go to the lowest id (NIP-01). An
-/// advertisement dated more than [`MAX_CLOCK_SKEW_SECONDS`] after `now` is
-/// rejected: retention keeps the newest, so it would outrank real ones.
 pub(crate) fn select_newest(events: &[Event], now: u64) -> (Vec<VerifiedAdvertisement>, usize) {
     let mut newest = HashMap::new();
     let mut rejected = 0usize;
@@ -791,7 +678,6 @@ pub(crate) fn select_newest(events: &[Event], now: u64) -> (Vec<VerifiedAdvertis
                 rejected += 1;
             }
             Err(error) => {
-                // Other applications use the same kinds, so most rejects are not Manifold's
                 debug!(?error, id = %event.id(), "Ignoring discovery event");
                 rejected += 1;
             }
@@ -800,8 +686,7 @@ pub(crate) fn select_newest(events: &[Event], now: u64) -> (Vec<VerifiedAdvertis
     (newest.into_values().collect(), rejected)
 }
 
-/// The advertisements of `authors`, in bounded requests. A request that fails
-/// only costs this sync those authors' events.
+/// The advertisements of `authors`, in bounded requests.
 async fn fetch_by_authors(pool: &RelayPool, authors: &[String], since: Timestamp) -> Vec<Event> {
     let identifiers: Vec<&str> = [MG_LEGACY_KIND, MG_V2_KIND, FLIP_KIND]
         .into_iter()
@@ -837,22 +722,12 @@ async fn fetch_by_authors(pool: &RelayPool, authors: &[String], since: Timestamp
     events
 }
 
-/// What one sync wrote
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct StoreOutcome {
     pub stored: usize,
-    /// Advertisements the database refused; each was skipped alone
     pub refused: usize,
 }
 
-/// Writes one sync: its advertisements, their versions, the day's presence,
-/// retention and the sync state. Runs in `dbtx`, whose `search_path` must
-/// lead with the Manifold schema.
-///
-/// [`verify_event`] already rejects what the database cannot store, but each
-/// advertisement still goes in under a savepoint of its own: should the
-/// database refuse one anyway, only that one is skipped, and the rest of the
-/// sync commits.
 pub(crate) async fn store_sync(
     dbtx: &mut tokio_postgres::Transaction<'_>,
     ads: &[Collected],
@@ -914,8 +789,6 @@ pub(crate) async fn store_sync(
         .iter()
         .map(|row| row.get(0))
         .collect();
-    // Per kind, the newest anonymous advertisements and, apart from them, the
-    // newest of protected guardians: a flood of new keys evicts only its own
     gone.extend(
         dbtx.query(
             "DELETE FROM advertisements a USING (
@@ -953,8 +826,6 @@ pub(crate) async fn store_sync(
     );
     gone.sort();
     gone.dedup();
-    // Presence is kept for guardians that still advertise or hold a seat;
-    // that of keys that stopped goes with their last advertisement
     dbtx.execute(
         "DELETE FROM presence_daily p
          WHERE p.author = ANY($1) AND NOT p.author = ANY($2)
@@ -962,8 +833,6 @@ pub(crate) async fn store_sync(
         &[&gone, &protection.seat_bound],
     )
     .await?;
-    // Version history lives as long as the guardian still advertises, and
-    // only its newest versions are kept
     dbtx.execute(
         "DELETE FROM version_changes v
          WHERE NOT EXISTS (SELECT 1 FROM advertisements a WHERE a.author = v.author)",
@@ -993,21 +862,12 @@ pub(crate) async fn store_sync(
     Ok(outcome)
 }
 
-/// One sync's revocation lookup
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RevocationLookup {
-    /// One per (issuer, credential); a valid revocation wins over invalid ones
     pub records: Vec<RevocationRecord>,
-    /// The issuers all of whose revocation locations answered in full, each
-    /// with those locations
     pub complete: Vec<(String, Vec<String>)>,
 }
 
-/// Reads the trusted issuers' revocations from each location. An issuer's
-/// read is complete only when every location its pinned authority names was
-/// read to its end ([`read_all_pages`]); one that fails, times out, loses
-/// messages or does not end within the page bound leaves the issuers it
-/// serves incomplete, so their state is not refreshed.
 async fn fetch_revocations(
     pool: &RelayPool,
     targets: &BTreeMap<String, Vec<String>>,
@@ -1065,19 +925,8 @@ async fn fetch_revocations(
     }
 }
 
-/// Every event a relay holds for a filter, read newest first, page by page:
-/// `fetch_page` asks for the events created at or before its argument (all,
-/// for `None`). Relays cap each answer below what was asked (by their own
-/// limits, which differ), so no answer's length says the read is complete;
-/// it is complete when a page brings no event not already read, and fails
-/// when it needs more than [`MAX_REVOCATION_PAGES`] pages.
-///
-/// Paging continues from the oldest second read, inclusive, so events
-/// sharing it are not skipped. Should more events share one second than the
-/// relay returns per page, paging cannot get past it: the relay's page size,
-/// learned from pages that turned out cut short (else what was asked), says
-/// when that may be so, and the read then fails rather than claim it is
-/// complete.
+/// Reads relay events newest-first until a page adds nothing new.
+/// Inclusive timestamps prevent skips; ambiguous capped pages fail closed.
 pub(crate) async fn read_all_pages<F, Fut>(mut fetch_page: F) -> anyhow::Result<Vec<Event>>
 where
     F: FnMut(Option<Timestamp>) -> Fut,
@@ -1106,7 +955,6 @@ where
             );
             return Ok(read.into_values().collect());
         }
-        // The previous page left events out, so the relay cut it short
         if let Some(previous) = previous_page {
             page_size = page_size.min(previous);
         }
@@ -1116,16 +964,11 @@ where
     bail!("The relay did not run out of events within {MAX_REVOCATION_PAGES} pages")
 }
 
-/// One relay's answer to `filter`, provided it was complete: it ends with
-/// the relay's end of stored events. Unlike `Relay::get_events_of`, a lost
-/// notification (a lagging receiver), a closed subscription, a disconnect or
-/// a timeout is an error, never a silently shorter answer.
 async fn fetch_to_eose(
     relay: &Relay,
     filter: Filter,
     timeout: Duration,
 ) -> anyhow::Result<Vec<Event>> {
-    // Listen before asking, so nothing the relay sends is missed
     let mut notifications = relay.notifications();
     let id = SubscriptionId::generate();
     relay
@@ -1194,8 +1037,7 @@ fn complete_issuers(
         .collect()
 }
 
-/// Stores what a lookup found, and for each issuer it read in full, when and
-/// from which locations. Runs after [`store_sync`], in its transaction.
+/// Runs after [`store_sync`], in its transaction.
 pub(crate) async fn store_revocations(
     dbtx: &tokio_postgres::Transaction<'_>,
     lookup: &RevocationLookup,
@@ -1287,7 +1129,6 @@ async fn store_advertisement(
             .payload
             .pointer("/availability/fedimintd_version")
             .and_then(|v| v.as_str());
-        // Legacy payloads carry an integer `version`; only v2 names the MG release
         let mg = ad
             .payload
             .pointer("/version/mg_version")

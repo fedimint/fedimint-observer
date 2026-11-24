@@ -61,7 +61,6 @@ fn histogram_days_are_contiguous_through_today() {
         .iter()
         .map(|day| (day.date.to_string(), day.count, day.volume_msat))
         .collect::<Vec<_>>();
-    // 2024 is a leap year
     assert_eq!(
         days,
         [
@@ -103,7 +102,6 @@ fn moving_averages_include_empty_days_and_shrink_at_the_start() {
         .iter()
         .map(|day| (day.avg_count.unwrap(), day.avg_volume_msat.unwrap()))
         .collect::<Vec<_>>();
-    // 3/1, 3/2, 9/3, 6/3, 6/3
     assert_eq!(
         averages,
         [
@@ -118,13 +116,10 @@ fn moving_averages_include_empty_days_and_shrink_at_the_start() {
 
 #[test]
 fn excluded_outliers_leave_averages_and_totals() {
-    // 20 regular days and one huge one
     let mut entries = (1..=20)
         .map(|day| entry(&format!("2024-01-{day:02}"), 1, 100))
         .collect::<Vec<_>>();
     entries.push(entry("2024-01-21", 1, 1_000_000));
-    // Of 21 sorted volumes, index floor(21 * 0.95) = 19 is a regular 100: the
-    // threshold is 1000
     let histogram = build_histogram(&entries, date("2024-01-22"), options(7, true));
     let outliers = histogram
         .days
@@ -137,13 +132,11 @@ fn excluded_outliers_leave_averages_and_totals() {
         (histogram.total_count, histogram.total_volume_msat),
         (20, 2000)
     );
-    // The empty last day averages the 5 regular days and itself
     let last = histogram.days.last().unwrap();
     assert_eq!(last.date, date("2024-01-22"));
     assert!(!last.outlier);
     assert_eq!(last.avg_volume_msat, Some(500.0 / 6.0));
 
-    // Included, nothing is flagged and everything counts
     let histogram = build_histogram(&entries, date("2024-01-22"), options(0, false));
     assert!(histogram.days.iter().all(|day| !day.outlier));
     assert_eq!(histogram.total_volume_msat, 1_002_000);
@@ -151,14 +144,11 @@ fn excluded_outliers_leave_averages_and_totals() {
 
 #[test]
 fn outlier_threshold_is_inclusive_and_ignores_empty_days() {
-    // As in the frontend, which kept volumes below the threshold: a day at it
-    // is an outlier
     let histogram = build_histogram(
         &[entry("2024-01-01", 1, 0)],
         date("2024-01-03"),
         options(0, true),
     );
-    // A threshold of 0 flags the zero-volume active day, not the empty days
     let flags = histogram
         .days
         .iter()

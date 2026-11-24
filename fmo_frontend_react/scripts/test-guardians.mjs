@@ -42,7 +42,6 @@ test('a guardian is online within 5 minutes of its last answer, offline when pol
   assert.equal(at(ago(4), ago(1)), 'online');
   assert.equal(at(ago(6), ago(1)), 'offline');
   assert.equal(at(null, ago(20)), 'offline');
-  // The collector backs off to 30-minute polls; beyond that it is not watching
   assert.equal(at(null, ago(40)), 'unknown');
   assert.equal(guardianState(undefined, NOW), 'unknown');
   assert.equal(guardianState({ answered_at: ago(1), polled_at: ago(1) }, null), 'unknown');
@@ -98,18 +97,15 @@ test('only verified seat bindings attach a Manifold identity', () => {
 
 test('peer views reveal flags, splits and guardians isolated from their peers', () => {
   const disconnectedFrom = (target) => (id) => ({ peers: live().guardians[id].peers.map((p) => (p.peer_id === target ? { ...p, connected: false } : p)) });
-  // Everyone reports guardian 3 disconnected while the observer reaches it
   const isolated = rows(live({ 0: disconnectedFrom(3)(0), 1: disconnectedFrom(3)(1), 2: disconnectedFrom(3)(2) }));
   const matrix = connectivityMatrix(isolated);
   assert.equal(matrix.cell(0, 3), 'disconnected');
   assert.equal(matrix.cell(3, 3), 'self');
   assert.deepEqual(connectivityIssues(isolated, matrix).map((i) => [i.peerId, i.kind]), [[3, 'isolated']]);
 
-  // One guardian disagrees about guardian 1
   const split = rows(live({ 0: disconnectedFrom(1)(0) }));
   assert.deepEqual(connectivityIssues(split, connectivityMatrix(split)).map((i) => [i.peerId, i.kind]), [[1, 'split']]);
 
-  // A flag outranks connection state
   const flagged = rows(live({ 2: { peers: live().guardians[2].peers.map((p) => (p.peer_id === 0 ? { ...p, flagged: true } : p)) } }));
   assert.deepEqual(connectivityIssues(flagged, connectivityMatrix(flagged)).map((i) => [i.peerId, i.kind]), [[0, 'flagged']]);
 
@@ -118,7 +114,6 @@ test('peer views reveal flags, splits and guardians isolated from their peers', 
   assert.ok(!connectivityMatrix(quiet).reporters.includes(0));
 });
 
-// Six hourly buckets from 06:00; guardian 1 misses 08:00-10:59, 11:00 not polled
 const history = {
   window: '24h',
   bucket_seconds: 3600,
@@ -139,7 +134,6 @@ test('history slots fill unpolled buckets and merge groups', () => {
   assert.equal(merged.length, 2);
   assert.equal(merged[0].polledS, 4 * 3600);
   assert.equal(merged[1].end - merged[1].start, 2 * 3600_000);
-  // Latency is weighted by answered polls
   assert.equal(merged[0].latencyMs, 115);
   assert.equal(guardianSlots(history, 7).every((slot) => slot.polledS === 0), true);
 });
@@ -158,7 +152,6 @@ test('reachability sums each guardian online share per slot', () => {
   const series = reachabilitySeries(history, [0, 1]);
   assert.equal(series[0].answering, 2);
   assert.equal(series[3].answering, 1);
-  // Only guardian 0 was polled in the last hour
   assert.equal(series[5].answering, 1);
   assert.equal(series[5].polledGuardians, 1);
 });
@@ -223,20 +216,17 @@ test('the observer and the peers speak in one message per guardian', () => {
   };
   const flagFrom = (target) => (id) => ({ peers: live().guardians[id].peers.map((p) => (p.peer_id === target ? { ...p, connected: false, flagged: true } : p)) });
 
-  // Silent to the observer and flagged by its peers: one confirmed outage
   const down = rows(live({ 3: { answered_at: ago(30) }, 0: flagFrom(3)(0), 1: flagFrom(3)(1), 2: flagFrom(3)(2) }));
   const confirmed = warningsFor(down).filter((w) => w.guardianId === 3);
   assert.equal(confirmed.length, 1);
   assert.equal(confirmed[0].id, 'offline-3');
   assert.match(confirmed[0].message, /is down: it does not answer the observer, and 3 of 3 reporting guardians flag it/);
 
-  // Silent to the observer while every peer still connects: likely the observer's path
   const unreachable = rows(live({ 3: { answered_at: ago(30) } }));
   const pathOnly = warningsFor(unreachable).filter((w) => w.guardianId === 3);
   assert.equal(pathOnly.length, 1);
   assert.match(pathOnly[0].message, /all 3 reporting guardians still connect to it, so the fault may be between the observer/);
 
-  // Answers the observer but its peers flag it: the peers' message stands alone
   const flaggedOnly = rows(live({ 0: flagFrom(3)(0) }));
   const peersOnly = warningsFor(flaggedOnly).filter((w) => w.guardianId === 3);
   assert.deepEqual(peersOnly.map((w) => w.id), ['p2p-3-flagged']);

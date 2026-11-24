@@ -125,7 +125,6 @@ fn every_order_reverses_with_its_direction() {
         ),
         ["b", "a", "c"]
     );
-    // Status ascending: online first, the most recently seen online first
     assert_eq!(
         ids(
             GatewayFilter::All,
@@ -135,7 +134,6 @@ fn every_order_reverses_with_its_direction() {
         ),
         ["c", "a", "b"]
     );
-    // Activity: no recorded activity ranks below any score
     assert_eq!(
         ids(
             GatewayFilter::All,
@@ -154,7 +152,6 @@ fn activity_score_matches_the_page_formula() {
     activity.settle_count = 1;
     activity.cancel_count = 75;
     activity.total_volume_msat = 23_700_000;
-    // 76 + 3 − 112.5 + 0.5·ln(24.7) < 0, so clamped to zero
     assert_eq!(activity_score(&g), Some(0));
     assert_eq!(
         activity_score(&gateway("y", GatewayStatus::Online, 0, 0.0, None)),

@@ -45,21 +45,16 @@ export function Home() {
     lookupError,
   } = useFederationSearch();
   const [pageSize, setPageSize] = usePageSize('federations', 25);
-  // An invite resolved to its federation is searched by that federation's ID
   const wanted = resolvedFederationId ?? searchQuery;
-  // The backend searches; it is asked once typing pauses, not on every key
   const search = useDebouncedValue(wanted);
-  // Each group is its own paged list; the backend groups, searches and orders
   const active = useFederationGroup('active', search, sortKey, sortDirection, pageSize);
   const offline = useFederationGroup('offline', search, sortKey, sortDirection, pageSize);
   const shutDown = useFederationGroup('shut_down', search, sortKey, sortDirection, pageSize);
   const pagerProps = { pageSize, onPageSizeChange: setPageSize };
 
-  // Every group loaded for the current search, and none has a match
   const groups = [active, offline, shutDown];
   const noMatches =
     search === wanted && groups.every((g) => g.page !== null && g.error === null && g.total === 0);
-  // Only a loaded, empty result proves a federation is unobserved
   const unobservedFederationId = resolvedFederationId && noMatches ? resolvedFederationId : null;
 
   return (

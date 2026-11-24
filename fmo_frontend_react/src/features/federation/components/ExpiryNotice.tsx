@@ -5,9 +5,9 @@ import { MigrationNotice } from './MigrationNotice';
 
 interface ExpiryNoticeProps {
   federation: FederationSummary;
-  /** When the federation's guardians said it shuts down */
+
   expiry: Date;
-  /** The successor, when the observer tracks it */
+
   successor: { id: string; name: string } | null;
 }
 

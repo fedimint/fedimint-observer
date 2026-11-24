@@ -5,8 +5,6 @@ export type Theme = 'light' | 'dark' | 'auto';
 
 type ThemeContextValue = {
   theme: Theme;
-  // Whether the page is dark, with 'auto' following the system; for charts and
-  // anything else the dark: classes can't reach
   isDark: boolean;
   toggleTheme: () => void;
 };
@@ -36,17 +34,14 @@ const getInitialTheme = (): Theme => {
   if (stored) {
     return stored;
   }
-  // Default to 'auto' if no preference is stored
   return 'auto';
 };
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
-  // Re-renders when the system switches between light and dark, for the 'auto' theme
   const prefersDark = useSyncExternalStore(subscribeToColorScheme, prefersDarkMode);
   const isDark = theme === 'dark' || (theme === 'auto' && prefersDark);
 
-  // Apply theme class whenever the effective theme changes
   const firstApply = useRef(true);
   useEffect(() => {
     const root = document.documentElement;
@@ -63,13 +58,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     };
   }, [isDark]);
 
-  // Listen for storage changes from other tabs/windows
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === 'theme' && (event.newValue === 'light' || event.newValue === 'dark' || event.newValue === 'auto')) {
         setTheme(event.newValue);
       } else if (event.key === 'theme' && event.newValue === null) {
-        // Theme was cleared, default to auto
         setTheme('auto');
       }
     };
@@ -79,7 +72,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const toggleTheme = useCallback(() => {
     setTheme(prev => {
-      // Cycle through: light -> dark -> auto -> light
       let newTheme: Theme;
       if (prev === 'light') {
         newTheme = 'dark';
@@ -89,7 +81,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         newTheme = 'light';
       }
 
-      // Save to localStorage, or clear it for auto mode
       writeStorage('theme', newTheme === 'auto' ? null : newTheme);
       return newTheme;
     });

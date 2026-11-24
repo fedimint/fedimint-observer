@@ -97,9 +97,7 @@ fn names(sort: FederationSort, dir: SortDirection) -> Vec<Option<String>> {
 fn groups_follow_the_home_page_rules() {
     let groups: Vec<_> = list().iter().map(|f| group_of(f, 1_000)).collect();
     use FederationGroup::*;
-    // An expired federation is shut down whatever its health
     assert_eq!(groups, [Active, Active, Active, Offline, ShutDown]);
-    // Before its expiry it is just active
     assert_eq!(group_of(&list()[4], 99), Active);
 }
 
@@ -206,7 +204,6 @@ fn search_matches_name_or_invite_and_scale_spans_every_federation() {
     assert!(matches_search(&all[1], Some(" ALPHA ")));
     assert!(matches_search(&all[2], Some("invite3")));
     assert!(!matches_search(&all[0], Some("alpha")));
-    // Invite links carry a scheme the stored invite doesn't
     assert!(matches_search(&all[2], Some("fedimint://fed1invite3")));
     assert!(matches_search(&all[2], Some("WEB+FEDIMINT:fed1invite3")));
     let scale = activity_scale(&all);
@@ -223,10 +220,8 @@ fn search_matches_federation_id_prefix_or_long_fragment() {
     assert!(matches_search(&fed, Some("245806")));
     assert!(matches_search(&fed, Some("2458")));
     assert!(matches_search(&fed, Some("A9412E")));
-    // Short fragments only match at the start
     assert!(!matches_search(&fed, Some("a941")));
     assert!(!matches_search(&fed, Some("ffffff")));
-    // A bare scheme matches nothing rather than everything
     assert!(!matches_search(&fed, Some("fedimint://")));
 }
 
@@ -261,8 +256,7 @@ fn nostr_groups_split_like_the_home_page_and_named_ones_come_first() {
     assert_eq!(names, ["Alpha", "zeta"]);
 }
 
-/// Every row of `rows`, read one page at a time through the cursors the
-/// server hands out
+/// Every row of `rows`.
 fn walk<T: Clone, K>(rows: &[T], key: impl Fn(&T) -> K + Copy) -> Vec<T>
 where
     K: Ord + serde::Serialize + serde::de::DeserializeOwned,
@@ -280,15 +274,13 @@ where
     }
 }
 
-/// Names of any length: a 400-character name once produced a cursor the
-/// server then refused, so paging stopped at that row
+/// Names of any length.
 #[test]
 fn long_names_page_through_every_order() {
     let long = |fill: &str, n: usize| fill.repeat(n);
     let names = [
         long("a", 400),
         long("a", 399) + "b",
-        // JSON escapes control characters to six bytes each
         long("\u{1}", 400),
         long("ü", 400),
         long("𝔽", 400),

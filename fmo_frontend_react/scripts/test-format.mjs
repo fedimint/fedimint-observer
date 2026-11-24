@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-// West of UTC, where a UTC midnight is still the previous local day
 process.env.TZ = 'America/Los_Angeles';
 
 const { formatMsatsCompact } = await import('../src/utils/format.ts');

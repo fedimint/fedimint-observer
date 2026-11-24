@@ -1,4 +1,3 @@
-//! Guardian API clients over a shared Fedimint connection pool
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
@@ -21,10 +20,8 @@ use serde_json::Value;
 #[cfg(test)]
 mod tests;
 
-/// Guardian API URLs by peer
 pub(crate) type ApiPeers = BTreeMap<PeerId, SafeUrl>;
 
-/// A pool for one credential; Fedimint keys pools by URL only
 #[derive(Clone)]
 pub(crate) struct ScopedPool {
     pool: ConnectionPool<dyn IGuardianConnection>,

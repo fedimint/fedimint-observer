@@ -14,8 +14,7 @@ pub(crate) const SAVE_PROBE_SQL:&str =
      routing_observed_at=CASE WHEN $7::jsonb IS NOT NULL THEN now() ELSE routing_observed_at END
      WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3 AND registered";
 
-/// Module keys an endpoint may hold for activity attribution. Keys are
-/// self-reported, so an endpoint must not accumulate every key it ever named.
+/// Module keys an endpoint may hold for activity attribution.
 pub(crate) const MAX_KEYS_PER_ENDPOINT: i64 = 8;
 
 pub(crate) const PRUNE_KEYS_SQL: &str = "DELETE FROM fmo_lnv2.gateway_keys
@@ -25,9 +24,6 @@ pub(crate) const PRUNE_KEYS_SQL: &str = "DELETE FROM fmo_lnv2.gateway_keys
          WHERE federation_id=$1 AND module_instance_id=$2 AND api_endpoint=$3
          ORDER BY last_claimed DESC,module_public_key LIMIT $4)";
 
-/// When a gateway is next due: never probed is due now, otherwise five
-/// minutes after its last probe, or ten when that probe got no answer, so dead
-/// endpoints a guardian announces cost half as much.
 macro_rules! next_due {
     () => {
         "COALESCE(probed_at+CASE WHEN reachable IS FALSE THEN interval '10 minutes' ELSE interval '5 minutes' END,now())"
@@ -41,9 +37,6 @@ pub(crate) const DUE_PROBES_SQL: &str = concat!(
     "<=now() ORDER BY probed_at NULLS FIRST,api_endpoint LIMIT 100"
 );
 
-/// Seconds until this federation instance's next probe, by the database
-/// clock; negative when overdue, NULL when it has no registered gateways (wait
-/// for a notification). Health retention is global, in `retention`.
 pub(crate) const NEXT_PROBE_SQL: &str = concat!(
     "SELECT EXTRACT(EPOCH FROM min(",
     next_due!(),
@@ -51,24 +44,15 @@ pub(crate) const NEXT_PROBE_SQL: &str = concat!(
      FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND registered"
 );
 
-/// Probes have their own process-wide budget instead of
-/// `Services::external_io_permit`: guardians choose which endpoints are
-/// probed, so slow or dead gateways must not starve wallet, metadata and
-/// registry collection.
 const PROBE_CONCURRENCY: usize = 8;
 static PROBE_SLOTS: LazyLock<tokio::sync::Semaphore> =
     LazyLock::new(|| tokio::sync::Semaphore::new(PROBE_CONCURRENCY));
 
-/// Why a probe produced no routing info. Only a probe the gateway never
-/// answered is evidence of downtime.
+/// Why a probe produced no routing info.
 #[derive(Debug)]
 pub(crate) enum ProbeError {
-    /// Nothing was sent: an invalid or non-public address, DNS, or a local
-    /// failure. The gateway's state is unknown.
     NotProbed(anyhow::Error),
-    /// No answer: connection, handshake or timeout.
     Unreachable(anyhow::Error),
-    /// The gateway answered, but not with usable routing info.
     BadResponse(anyhow::Error),
 }
 
@@ -82,8 +66,7 @@ impl ProbeError {
     pub(crate) fn bad_response(error: impl Into<anyhow::Error>) -> Self {
         Self::BadResponse(error.into())
     }
-    /// Of two failed attempts at one gateway, the one that got furthest: an
-    /// answer from either transport means the gateway is reachable.
+    /// Of two failed attempts at one gateway.
     pub(crate) fn furthest(self, other: Self) -> Self {
         let rank = |error: &Self| match error {
             Self::NotProbed(_) => 0,
@@ -110,15 +93,8 @@ impl std::fmt::Display for ProbeError {
 
 impl std::error::Error for ProbeError {}
 
-/// Characters of a gateway's self-reported alias that are stored and served.
-/// A Lightning node alias is at most 32 bytes; the reply may carry up to the
-/// response limit, which the public API would otherwise return for every
-/// gateway.
 pub(crate) const MAX_ALIAS_CHARS: usize = 64;
 
-/// The routing info to store: every other field has a fixed size, and the
-/// alias is cut to `MAX_ALIAS_CHARS` without control characters (PostgreSQL
-/// JSONB rejects NUL, which would fail the probe's write on every attempt).
 pub(crate) fn bounded_routing(
     mut info: fedimint_lnv2_common::gateway_api::RoutingInfo,
 ) -> serde_json::Result<serde_json::Value> {
@@ -134,7 +110,6 @@ pub(crate) fn bounded_routing(
 
 pub(crate) enum Observation {
     Unreachable,
-    /// Answered without usable routing info: reachable, support unknown
     BadResponse,
     Reachable {
         latency: i32,
@@ -177,8 +152,6 @@ pub(crate) async fn save(
             .and_then(serde_json::Value::as_str)
         {
             tx.execute(
-                // clock_timestamp, not now(): claims order correctly even
-                // within one transaction.
                 "INSERT INTO fmo_lnv2.gateway_keys(federation_id,module_instance_id,api_endpoint,module_public_key,last_claimed)
                  VALUES($1,$2,$3,$4,clock_timestamp())
                  ON CONFLICT(federation_id,module_instance_id,api_endpoint,module_public_key)
@@ -186,8 +159,6 @@ pub(crate) async fn save(
                 &[&fed, &i32::from(instance), &url, &key],
             )
             .await?;
-            // Rotation keeps the most recently claimed keys: the current one
-            // always stays attributed and the least recently claimed drops off.
             tx.execute(
                 PRUNE_KEYS_SQL,
                 &[&fed, &i32::from(instance), &url, &MAX_KEYS_PER_ENDPOINT],
@@ -238,8 +209,6 @@ pub(crate) async fn run(
             tokio::time::sleep(Duration::from_secs(10)).await;
             continue;
         }
-        // The wait is measured against the database clock that the due-work
-        // queries use; an app clock ahead of it would otherwise wake early and spin.
         let wait: Option<f64> = services
             .connection()
             .await?
@@ -264,13 +233,10 @@ async fn probe(
     instance: u16,
     url: &str,
 ) -> anyhow::Result<()> {
-    // Queue overload is unknown observation coverage, not evidence of gateway
-    // downtime: it returns an error and the probe runs again.
+    // Queue overload is unknown observation coverage.
     let permit = tokio::time::timeout(Duration::from_secs(5), PROBE_SLOTS.acquire())
         .await
         .context("Gateway probe queue is full")??;
-    // Latency starts at the request on both transports: DNS for HTTPS and
-    // local endpoint setup for Iroh happen before it. Connection handshakes count.
     let result = async {
         let endpoint: SafeUrl = url.parse().map_err(ProbeError::not_probed)?;
         if endpoint.scheme() == "iroh" {
@@ -299,8 +265,6 @@ async fn probe(
             Observation::Unreachable
         }
         Err(ProbeError::NotProbed(error)) => {
-            // No remote sample: record an unknown state and a retry timestamp
-            // without claiming downtime or adding a health sample.
             tracing::info!(%fed, instance, %url, error = %format!("{error:#}"), "Gateway not probed; its state is unknown");
             services.connection().await?.execute(
                 "UPDATE fmo_lnv2.gateways SET probed_at=now(),reachable=NULL,federation_supported=NULL,latency_ms=NULL

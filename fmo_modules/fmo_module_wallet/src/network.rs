@@ -1,7 +1,3 @@
-//! The Bitcoin network a federation's wallet runs on, for rendering addresses.
-//! Addresses rendered for the wrong network (`bc1…` on a signet federation)
-//! point at the right script but are useless to anyone copying them.
-
 use std::str::FromStr;
 
 use anyhow::Context;
@@ -15,9 +11,6 @@ use fedimint_core::module::CommonModuleInit;
 use fedimint_wallet_common::config::WalletClientConfig;
 use fedimint_wallet_common::WalletCommonInit;
 
-/// The network in a wallet module's client config. Stored configs may not have
-/// been decoded with the module's decoder, so this decodes raw ones itself
-/// rather than relying on `ClientModuleConfig::cast`, which panics on them.
 fn wallet_network(module: &ClientModuleConfig) -> anyhow::Result<Network> {
     anyhow::ensure!(
         module.kind == WalletCommonInit::KIND,
@@ -58,10 +51,6 @@ pub(crate) fn script_address(script: &Script, network: Network) -> anyhow::Resul
     Address::from_script(script, network).context("Output script has no address form")
 }
 
-/// A stored address rendered for `network`. Rows written before addresses
-/// followed the federation's network hold mainnet renderings; the script they
-/// encode is the same on every network, so this serves them correctly without
-/// rewriting them.
 pub(crate) fn address_on_network(
     stored: &str,
     network: Network,
@@ -145,7 +134,6 @@ mod tests {
 
     #[test]
     fn addresses_follow_the_federation_network() {
-        // A mainnet rendering, as rows written before this fix hold
         let stored = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
         let script = Address::from_str(stored)
             .unwrap()

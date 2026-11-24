@@ -12,7 +12,6 @@ import { useTheme } from '../../../hooks/useTheme';
 import { chartTheme } from '../../reliability/lib/chartTheme';
 import type { HistogramEntry } from '../../../utils/histogram';
 
-// Register only the components we need
 echarts.use([
   LineChart,
   GridComponent,
@@ -21,7 +20,6 @@ echarts.use([
   CanvasRenderer,
 ]);
 
-// Dark is what the chart always used; light matches the app's other charts
 
 interface TransactionChartProps {
   data: HistogramEntry[];
@@ -48,7 +46,6 @@ export function TransactionChart({
     return { label: theme.ink3, axis: theme.axis, grid: theme.grid, tooltip: theme.surface, tooltipBorder: theme.axis, tooltipText: theme.ink2, ok: theme.ok };
   }, [isDark]);
 
-  // Separate the base chart option from zoom state
   const baseChartOption = useMemo(() => {
     const dates = data.map(d => d.date);
     const values = data.map(d => chartMetric === 'volume' ? d.volume : d.count);
@@ -62,8 +59,6 @@ export function TransactionChart({
         right: '4%',
         bottom: '15%',
         top: '10%',
-        // ECharts 6 form of `containLabel: true`, which it lays out the same
-        // way but warns about unless the legacy layout is registered
         outerBoundsMode: 'same',
         outerBoundsContain: 'axisLabel'
       },
@@ -167,7 +162,6 @@ export function TransactionChart({
     };
   }, [data, chartMetric, movingAverageWindow, useLogScale, colors]);
 
-  // Create the final chart option with zoom state
   const chartOption = useMemo(() => ({
     ...baseChartOption,
     dataZoom: [
@@ -198,7 +192,6 @@ export function TransactionChart({
       opts={{ renderer: 'canvas' }}
       onEvents={{
         dataZoom: (params: { batch?: { start: number; end: number }[]; start?: number; end?: number }) => {
-          // Handle both batch and direct dataZoom events
           if (params.batch && params.batch[0]) {
             const start = params.batch[0].start;
             const end = params.batch[0].end;

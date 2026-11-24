@@ -15,7 +15,6 @@ export function GatewaysV2Panel({ id, modules }: { id: string; modules: ClientCo
     next.set('window', window);
     return next;
   }, { replace: true });
-  // The federation's Lightning v2 module instances
   const instances = Object.entries(modules ?? {}).filter(([, module]) => module.kind === 'lnv2').map(([instance]) => Number(instance));
 
   return (

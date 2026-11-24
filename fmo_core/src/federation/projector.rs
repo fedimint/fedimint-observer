@@ -1,21 +1,4 @@
-//! Each module processes a federation's stored sessions on its own cursor.
-//!
-//! Core's ingest stores a session and the module-agnostic rows in one
-//! transaction. The module tables are derived from the stored sessions after
-//! that: one projector per module and federation reads the sessions after the
-//! module's cursor in batches, runs the module's `process_*` on the items of
-//! its kind, and moves the cursor in `module_cursors`, all in one transaction
-//! per batch. So a module added to a build later fills its own tables from
-//! session 0, a module's bug is fixed by resetting its cursor, and a module
-//! that fails or stalls holds back only itself.
-//!
-//! A module added later also completes the core rows of its items, which
-//! ingest stored without the module's summaries: amounts and Lightning
-//! contracts, details, consensus items and block height votes. Triggers keep
-//! `federation_totals` right as amounts are filled in; the session times and
-//! daily activity are rebuilt once the projector has caught up, from the first
-//! session it completed (`module_cursors.repair_from`), by the repair worker
-//! ([`FederationObserver::process_session_time_repair`]).
+//! Projects stored sessions in batches using an independent cursor per module.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -41,18 +24,12 @@ use crate::module::{
 };
 use crate::task::supervise;
 
-/// Sessions a projector processes per transaction while it is behind
 const BATCH_SESSIONS: i64 = 100;
-/// How long an idle projector waits before looking for sessions again without
-/// having been woken. Every store and reset wakes it; this is a safety net.
+/// Every store and reset wakes it; this is a safety net.
 const IDLE_POLL: Duration = Duration::from_secs(60);
-/// Sessions whose times a read-model rebuild rewrites per transaction
 const REBUILD_SESSIONS: i32 = 10_000;
-/// Days of activity a read-model rebuild recounts per transaction
 const REBUILD_DAYS: u64 = 31;
 
-/// Wakes a federation's projectors when there is something new for them: a
-/// stored session, or a cursor an admin moved
 #[derive(Clone, Default, Debug)]
 pub(crate) struct ProjectorWakeups(Arc<Mutex<HashMap<FederationId, Arc<Notify>>>>);
 
@@ -97,8 +74,7 @@ impl FederationObserver {
         }
     }
 
-    /// Processes the federation's stored sessions for one module, from its
-    /// cursor on, forever
+    /// Processes the federation's stored sessions for one module.
     async fn project(
         &self,
         module: Arc<dyn ObserverModule>,
@@ -112,7 +88,6 @@ impl FederationObserver {
         let mut progress: Option<SyncProgress> = None;
 
         loop {
-            // Created before reading, so a session stored in between still wakes us
             let woken = wakeup.notified();
             let permit = self.work_budget.acquire().await?;
             let mut connection = self.connection().await?;
@@ -129,9 +104,6 @@ impl FederationObserver {
                 .await?;
             if rows.is_empty() {
                 if let Some(from) = repair_from {
-                    // Caught up: rebuild what the completed core rows feed
-                    // once, instead of after every batch. The repair worker
-                    // rebuilds in steps, without holding this cursor.
                     dbtx.execute(
                         "SELECT schedule_read_model_rebuild($1, $2)",
                         &[&federation_bytes, &(from as i32)],
@@ -147,7 +119,6 @@ impl FederationObserver {
                     info!("Scheduled a rebuild of the session times and daily activity from session {from}, whose core rows this module completed");
                     continue;
                 }
-                // Hand the connection back while waiting
                 drop(dbtx);
                 drop(connection);
                 drop(permit);
@@ -187,8 +158,6 @@ impl FederationObserver {
                 .await?;
             }
 
-            // The cursor row is locked for this batch. Keep the expected-position
-            // check as a defensive assertion against future changes to this path.
             let moved = dbtx
                 .execute(
                     "INSERT INTO module_cursors (module_kind, federation_id, next_session, repair_from)
@@ -217,9 +186,6 @@ impl FederationObserver {
         }
     }
 
-    /// How many sessions each module has processed for the federation, by
-    /// kind, for the modules of this build the federation runs; none for a
-    /// federation that isn't observed
     pub async fn module_positions(
         &self,
         federation_id: FederationId,
@@ -257,10 +223,6 @@ impl FederationObserver {
             .collect())
     }
 
-    /// Moves a module's cursor for the federation to `session_start`, so its
-    /// projector processes the sessions from there again. With `clean` the
-    /// module first deletes what it derived from the federation's sessions, so
-    /// the replay, from 0, rebuilds it.
     pub async fn reset_module_cursor(
         &self,
         federation_id: FederationId,
@@ -301,11 +263,7 @@ impl FederationObserver {
         let reset = async {
             let mut connection = self.connection().await?;
             let dbtx = connection.transaction().await?;
-            // The projector holds the cursor for a whole batch. Wait for a
-            // while, within the request deadline, then let the admin retry.
             dbtx.batch_execute("SET LOCAL lock_timeout = '10s'").await?;
-            // The cursor first: its row lock waits for a batch the projector is
-            // committing, so the delete below also removes that batch's rows.
             dbtx.execute(
                 "INSERT INTO module_cursors (module_kind, federation_id, next_session)
                  VALUES ($1, $2, $3)
@@ -347,12 +305,7 @@ impl FederationObserver {
         Ok(())
     }
 
-    /// Rebuilds the session times and daily activity of the federation whose
-    /// repair jobs are ready and that was attempted least recently, if any.
-    /// Returns whether there was one.
     pub(super) async fn process_session_time_repair(&self) -> anyhow::Result<bool> {
-        // Committed on its own: a rebuild that fails moves the federation to
-        // the back of the queue instead of being claimed again at once
         let claim = self
             .connection()
             .await?
@@ -378,19 +331,9 @@ impl FederationObserver {
         Ok(true)
     }
 
-    /// Rebuilds a federation's session times from session `from` on, and the
-    /// daily activity of the days they touch, in steps of bounded size, each
-    /// in its own transaction. Every step holds the federation's read-model
-    /// lock, which ingest needs for each new session, so a rebuild of a long
-    /// history only ever makes ingest wait for one step. Each step is final
-    /// for what it covers: the last session time step and the last activity
-    /// step have no upper end, so they also cover sessions ingest stored
-    /// meanwhile.
     async fn rebuild_read_models(&self, federation_bytes: &[u8], from: i32) -> anyhow::Result<()> {
         let mut connection = self.connection().await?;
         let first_day_sql = "SELECT session_activity_floor($1, $2)";
-        // Only the days of the sessions from `from` on change: those they
-        // were dated to before, and after
         let old_first_day: Option<NaiveDate> = connection
             .query_one(first_day_sql, &[&federation_bytes, &from])
             .await?
@@ -454,8 +397,7 @@ impl FederationObserver {
     }
 }
 
-/// One step of a read-model rebuild, in its own transaction. It waits for the
-/// read-model lock behind ingest of one session, which is short.
+/// One step of a read-model rebuild, in its own transaction.
 async fn rebuild_step(
     connection: &mut deadpool_postgres::Object,
     sql: &str,
@@ -478,15 +420,12 @@ fn is_lock_timeout(error: &anyhow::Error) -> bool {
     })
 }
 
-/// The next session the module processes for the federation, 0 without a row,
-/// and the first session whose read models wait for a rebuild, if any
+/// The next session the module processes for the federation.
 async fn module_cursor(
     dbtx: &DbTransaction<'_>,
     kind: &str,
     federation_bytes: &[u8],
 ) -> anyhow::Result<(u64, Option<u64>)> {
-    // Serialize resets with the whole batch, including resets to the same
-    // position. Comparing only the numeric cursor after processing misses ABA.
     dbtx.execute(
         "INSERT INTO module_cursors(module_kind, federation_id, next_session)
          VALUES ($1, $2, 0) ON CONFLICT DO NOTHING",
@@ -508,12 +447,6 @@ async fn module_cursor(
         }))
 }
 
-/// Writes the core rows that come from the module's summaries for the items
-/// of these sessions that ingest stored while the build lacked the module:
-/// their amounts and Lightning contracts, details, consensus items and block
-/// height votes. Items whose rows are complete are left alone, so a replay
-/// writes nothing here. Returns the first session whose amounts or votes it
-/// filled in, from which the read models built on them must be rebuilt.
 async fn complete_core_rows(
     module: &dyn ObserverModule,
     dbtx: &DbTransaction<'_>,
@@ -530,8 +463,6 @@ async fn complete_core_rows(
     };
     let session_range = (*first as i32, *last as i32);
 
-    // Ingest stores an item of a kind without its module with no amount; the
-    // module's summary always has one
     let txids = sessions
         .iter()
         .flat_map(|(_, outcome)| &outcome.items)
@@ -592,7 +523,6 @@ async fn complete_core_rows(
             )
         }
     };
-    // Read on the first consensus item of the module's kind
     let mut stored_cis: Option<HashSet<(i32, i32)>> = None;
     let mut stored_votes: Option<HashSet<(i32, i32)>> = None;
 
@@ -715,8 +645,7 @@ async fn complete_core_rows(
     Ok(completed_from)
 }
 
-/// Runs the module's `process_*` on the items of its kind in one session. The
-/// core rows of the items exist: the session was stored with them.
+/// Runs the module's `process_*` on the items of its kind in one session.
 async fn process_module_items(
     module: &dyn ObserverModule,
     ctx: &ProcessCtx<'_>,
@@ -775,9 +704,7 @@ async fn process_module_items(
                 };
                 module.process_ci(ctx, &meta, &ci).await?;
             }
-            _ => {
-                // Unknown consensus items belong to no module
-            }
+            _ => {}
         }
     }
     Ok(())

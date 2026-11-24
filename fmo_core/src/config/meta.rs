@@ -22,10 +22,7 @@ use crate::AppState;
 pub type MetaFields = BTreeMap<String, serde_json::Value>;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// Override URLs and consensus metas come from federation configs anyone can
-/// make the observer download, so both caches are bounded
 const MAX_CACHED_METAS: usize = 256;
-/// Meta files are small JSON documents
 const MAX_META_OVERRIDE_BYTES: usize = 1024 * 1024;
 const CONSENSUS_META_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -50,8 +47,6 @@ pub struct MetaOverrideCache {
 impl Default for MetaOverrideCache {
     fn default() -> Self {
         Self {
-            // The URL comes from a federation's config: bound how long a fetch
-            // can hang and how far it can be redirected
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::limited(3))
@@ -137,17 +132,12 @@ impl ConsensusMetaCache {
                     {
                         let mut metas = self.metas.write().await;
 
-                        // Another request may have started a refresh since we
-                        // read the entry
                         if metas.get(&federation_id).is_some_and(|(_, started)| {
                             now.duration_since(*started).unwrap_or_default() <= REFRESH_INTERVAL
                         }) {
                             return meta;
                         }
 
-                        // Since this process is about to start a background refresh, we update the
-                        // timestamp. No crash tolerance needed since it's an in-memory cache that
-                        // gets reset on crash anyway.
                         metas
                             .entry(federation_id)
                             .and_modify(|(_val, timestamp)| *timestamp = SystemTime::now());
@@ -163,7 +153,7 @@ impl ConsensusMetaCache {
                 meta
             }
             None => {
-                // TODO: deduplicate efforts by making the content of the map subscribable
+                // TODO: Coalesce concurrent cache misses for the same federation.
                 Self::update_meta_cache(&self.metas, config, observer).await
             }
         }
@@ -176,7 +166,7 @@ impl ConsensusMetaCache {
     ) -> Option<MetaFields> {
         let federation_id = config.global.calculate_federation_id();
         let meta = tokio::time::timeout(CONSENSUS_META_TIMEOUT, async {
-            // Unobserved: a lookup client, which never uses trusted capacity
+            // Unobserved federations use lookup capacity, separate from trusted calls.
             let api = observer.lookup_api(&config.global, None)?;
             Self::try_fetch_meta_inner(config, &api).await
         })
@@ -204,10 +194,8 @@ impl ConsensusMetaCache {
             .map(parse_meta_lenient))
     }
 
-    /// The meta module's consensus value as the guardians agreed on it, each
-    /// field still the exact string they signed off on. Signed values such as
-    /// `fedi:fman_seat_bindings` must be verified against these bytes, which
-    /// `parse_meta_lenient` does not keep.
+    /// Returns the original consensus field strings for seat-binding signature
+    /// verification, before lenient parsing can change the signed bytes.
     pub(crate) async fn try_fetch_consensus_meta_raw(
         config: &JsonClientConfig,
         api_client: &DynGlobalApi,

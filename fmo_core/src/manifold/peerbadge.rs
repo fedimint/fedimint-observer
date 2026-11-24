@@ -1,19 +1,5 @@
-//! PeerBadge trust credentials, verified the way the Fedi app's Manifold
-//! verifier does (`crates/peer-badge-verifier` in fedibtc/manifold), with
-//! Fedi's own PeerBadge SDK:
-//!
-//! 1. The issuer is a trusted root, with the identity-signed authority pinned
-//!    from Manifold's production profile. Authorities are never fetched from
-//!    relays, so a relay cannot rotate an issuer's keys.
-//! 2. The SDK verifies the credential's issuance proof (a PBRSA blind
-//!    signature), the holder authorization, the holder binding and the
-//!    credential digest.
-//! 3. The badge is a `fedi-trust-score-v1.0` badge at the required trust level,
-//!    authorizing this advertiser.
-//! 4. The issuer has published no revocation of it at its revocation locations,
-//!    by the collector's latest complete lookup, which must be recent.
-//!
-//! Whatever cannot complete leaves a credential unverified, never verified.
+//! Verifies PeerBadge credentials against pinned issuers and revocations.
+//! Missing or stale evidence fails closed.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
@@ -24,19 +10,12 @@ use peerbadge_protocol::{CredentialDigest, IssuerAuthority, SignedRevocation};
 
 use super::collector::MANIFOLD_PRODUCTION_ISSUERS;
 
-/// Manifold's credential revocation kind (`CREDENTIAL_REVOCATION_EVENT_KIND`)
 pub const REVOCATION_KIND: u16 = 37704;
-/// A revocation's `d` tag is this prefix, a colon and the credential digest
 const REVOCATION_D_TAG_PREFIX: &str = "credential-revocation";
 const NOSTR_REVOCATION_PROTOCOL: &str = "nostr";
-/// Manifold's `MAX_REVOCATION_LOCATIONS`
 const MAX_REVOCATION_LOCATIONS: usize = 4;
-/// Revocation state older than this no longer verifies anything: Manifold
-/// reads it afresh for every check, and the collector reads it every sync
 pub const REVOCATION_MAX_AGE: TimeDelta = TimeDelta::minutes(15);
 
-/// The identity-signed authorities of [`MANIFOLD_PRODUCTION_ISSUERS`], in the
-/// same order, copied with them from `crates/manifold-environment/fixtures`
 const AUTHORITY_DOCUMENTS: &[&str] = &[
     include_str!("fixtures/issuer-authority-ac9647df.json"),
     include_str!("fixtures/issuer-authority-db37f7c6.json"),
@@ -78,9 +57,6 @@ pub fn pinned_authorities() -> &'static BTreeMap<String, IssuerAuthority> {
     })
 }
 
-/// A digest of the pinned authority documents. Stored credential evidence
-/// records it, so evidence worked out against other authorities (an older
-/// or newer roster) is never used.
 pub fn pinned_authorities_fingerprint() -> &'static str {
     static FINGERPRINT: OnceLock<String> = OnceLock::new();
     FINGERPRINT.get_or_init(|| {
@@ -94,7 +70,7 @@ pub fn pinned_authorities_fingerprint() -> &'static str {
     })
 }
 
-/// Checked at startup, so a bad committed authority stops the observer there
+/// Checked at startup.
 pub fn check_pinned_authorities() -> anyhow::Result<()> {
     let authorities = load_authorities(AUTHORITY_DOCUMENTS)?;
     ensure!(
@@ -122,8 +98,7 @@ pub fn issuer_label(issuer: &str) -> Option<String> {
         })
 }
 
-/// The Nostr revocation locations an authority names, normalized, sorted and
-/// without duplicates: where the issuer's revocations must be read from
+/// The Nostr revocation locations an authority names.
 pub fn revocation_locations(authority: &IssuerAuthority) -> anyhow::Result<Vec<String>> {
     let mut locations = authority
         .issuer
@@ -141,9 +116,6 @@ pub fn revocation_locations(authority: &IssuerAuthority) -> anyhow::Result<Vec<S
     Ok(locations)
 }
 
-/// The relays to read revocations from, each with the trusted issuers whose
-/// pinned authority names it. Trusted issuers without a pinned authority have
-/// none: their credentials cannot verify anyway.
 pub fn revocation_targets(trusted: &[String]) -> anyhow::Result<BTreeMap<String, Vec<String>>> {
     let mut targets: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for issuer in trusted {
@@ -157,13 +129,9 @@ pub fn revocation_targets(trusted: &[String]) -> anyhow::Result<BTreeMap<String,
     Ok(targets)
 }
 
-/// What an issuer published about one credential
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevocationKind {
-    /// A revocation whose issuer signature verifies
     Revoked,
-    /// Only revocation events that do not verify: Manifold then fails the
-    /// check closed rather than call the credential unrevoked
     Invalid,
 }
 
@@ -186,9 +154,7 @@ impl RevocationKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevocationRecord {
-    /// Lowercase hex
     pub issuer: String,
-    /// The digest's wire form (unpadded base64url), as in the `d` tag
     pub credential_digest: String,
     pub kind: RevocationKind,
     pub event_id: String,
@@ -213,10 +179,6 @@ fn exact_d_tag(event: &nostr_sdk::Event) -> Option<String> {
     (tag.len() == 2 && d_tags.next().is_none()).then(|| tag[1].clone())
 }
 
-/// What a relay event says about a credential, admitted the way Manifold's
-/// verifier does: a correctly signed kind-37704 event by a trusted issuer, for
-/// the credential its `d` tag names. A revocation whose issuer proof fails or
-/// names another credential is recorded as invalid, not ignored.
 pub fn admit_revocation(event: &nostr_sdk::Event, trusted: &[String]) -> Option<RevocationRecord> {
     let issuer = event.author().to_hex();
     if event.kind().as_u16() != REVOCATION_KIND
@@ -250,40 +212,27 @@ pub fn admit_revocation(event: &nostr_sdk::Event, trusted: &[String]) -> Option<
     })
 }
 
-/// When one issuer's revocations were last read in full, and from where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IssuerRevocationCheck {
     pub checked_at: DateTime<Utc>,
-    /// Every location read, as [`revocation_locations`] gives them
     pub locations: Vec<String>,
 }
 
 /// Why an issuer's revocation state cannot be relied on
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevocationGap {
-    /// The issuer's revocations have not been read in full, for example
-    /// because it was added to the trusted issuers since
     NeverRead,
-    /// Read from other locations than its pinned authority names now
     OtherLocations,
-    /// Read longer ago than [`REVOCATION_MAX_AGE`]
     Stale,
 }
 
-/// The revocations the collector has read, and per issuer, when its
-/// revocation locations last all answered in full
 #[derive(Debug, Clone, Default)]
 pub struct RevocationState {
-    /// By issuer (lowercase hex)
     pub checks: HashMap<String, IssuerRevocationCheck>,
-    /// By (issuer, credential digest)
     pub entries: HashMap<(String, String), RevocationKind>,
 }
 
 impl RevocationState {
-    /// When `issuer`'s revocations were read in full, provided that was from
-    /// exactly `locations` and is recent. Completeness is per issuer: a
-    /// lookup that covered other issuers says nothing about this one.
     pub fn current_check(
         &self,
         issuer: &str,
@@ -301,10 +250,8 @@ impl RevocationState {
     }
 }
 
-/// What credentials are checked against
 #[derive(Debug, Clone, Default)]
 pub struct TrustContext {
-    /// Trusted issuers, lowercase hex
     pub issuers: Vec<String>,
     pub revocations: RevocationState,
 }

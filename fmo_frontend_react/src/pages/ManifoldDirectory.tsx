@@ -129,7 +129,6 @@ function DirectoryTable({ guardians }: { guardians: readonly ManifoldGuardianSum
 export function ManifoldDirectory() {
   const [query, setQuery] = useState<DirectoryQuery>(DEFAULT_QUERY);
   const [pageSize, setPageSize] = usePageSize('manifold-guardians');
-  // The backend searches; it is asked once typing pauses, not on every key
   const search = useDebouncedValue(query.search);
   const { verification, version, size, freshOnly, sort } = query;
   const sent = useMemo<DirectoryQuery>(
@@ -137,7 +136,6 @@ export function ManifoldDirectory() {
     [search, verification, version, size, freshOnly, sort],
   );
   const pages = useManifoldGuardians(sent, pageSize);
-  // Page 1 carries the provenance and facets; later pages keep showing them
   const head = pages.latest ?? pages.page;
   const rows = pages.page?.data ?? [];
   const facets = head?.facets ?? { guardians: 0, versions: [], sizes: [] };

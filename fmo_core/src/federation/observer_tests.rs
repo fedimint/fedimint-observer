@@ -287,7 +287,6 @@ async fn postgres_guardian_route_migration_fences_revisions() -> anyhow::Result<
             .get::<_, i32>(0),
         13
     );
-    // Other observation kinds keep their unfenced write path.
     first
         .execute(
             "INSERT INTO federation_observations(federation_id, kind, data)
@@ -303,7 +302,6 @@ async fn postgres_guardian_route_migration_fences_revisions() -> anyhow::Result<
         )
         .await?;
 
-    // The second commit waits and gets the next revision.
     let first_transaction = first.transaction().await?;
     let first_revision = fenced_route_write(&first_transaction, &[2]).await?;
 
@@ -387,7 +385,6 @@ async fn lease_session(database: &str, schema: &str) -> anyhow::Result<tokio_pos
         .batch_execute(&format!("SET search_path TO {schema}"))
         .await?;
     let (class_id, object_id) = crate::runtime::WORKER_LOCK;
-    // Waits for any other holder, such as a parallel database test.
     client
         .execute("SELECT pg_advisory_lock($1, $2)", &[&class_id, &object_id])
         .await?;
@@ -420,7 +417,6 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
     let pool = crate::runtime::pool(&database, 1, false)?;
     let (federation_id, config, peer_id, keypair, public_key) = endpoint_test_config();
     const SCHEMA: &str = "fmo_test_guardian_route_rotation";
-    // One pooled connection, so the search path applies to every checkout.
     let connection = pool.get().await?;
     connection.batch_execute(&v12_route_schema(SCHEMA)).await?;
     connection
@@ -485,7 +481,6 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
     let (selected, _) = replica.selected_api(&config.global)?;
     assert_eq!(selected.get(&peer_id), Some(&second_url));
 
-    // Budget spent: the route is stored, but the worker keeps the first.
     assert_eq!(
         worker
             .latest_api_peers(federation_id, &config.global)
@@ -498,7 +493,6 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
 
     let revision_before_stale = stored_route_revision(&pool, federation_id).await?;
 
-    // A worker without the newer row proposes the older route.
     let stale_worker = independent_endpoint_state(&worker);
     stale_worker
         .update_guardian_endpoints(federation_id, &first_routes)
@@ -522,7 +516,6 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
     let (selected, _) = fresh_replica.selected_api(&config.global)?;
     assert_eq!(selected.get(&peer_id), Some(&second_url));
 
-    // Only the session holding the worker lock can claim an epoch.
     let unleased = pool.get().await?;
     assert!(super::claim_worker_epoch(&unleased).await.is_err());
     drop(unleased);

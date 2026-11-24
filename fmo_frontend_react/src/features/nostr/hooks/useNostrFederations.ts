@@ -7,12 +7,7 @@ import { lookUpNames, type NostrFederation } from '../lib/federationNames';
 const REFRESH_MS = 60_000;
 const nextAfter = (page: NostrFederationPage) => page.next_after;
 
-/**
- * One group of the federations announced on Nostr, one backend page at a time.
- * The backend groups them and adds the name and health of those the observer
- * tracks; names it lacks are looked up from each invite code in the
- * background, for this page's rows only.
- */
+
 export function useNostrFederations(group: NostrGroup, limit: number) {
   const fetchPage = useCallback(
     (after: string | undefined, signal: AbortSignal) => api.getNostrFederationsPage(group, limit, after, signal),
@@ -21,8 +16,6 @@ export function useNostrFederations(group: NostrGroup, limit: number) {
   const pages = useCursorPages({ fetchPage, nextCursor: nextAfter, refreshMs: REFRESH_MS });
   const [lookedUpNames, setLookedUpNames] = useState<Map<string, string>>(() => new Map());
   const rows = pages.page?.federations;
-  // The rows without a name, as a value: each refresh of page 1 brings a new
-  // array, but the lookups only start again when the rows to name change.
   const unnamedKey = rows
     ? JSON.stringify(rows.filter((fed) => !fed.name).map(({ id, invite }) => [id, invite]))
     : null;

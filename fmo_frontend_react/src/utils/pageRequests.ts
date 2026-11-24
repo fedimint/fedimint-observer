@@ -1,4 +1,3 @@
-// Invalidate refresh responses as soon as cursor pagination starts.
 export class PageRequests {
   private generation = 0;
   private paging = false;

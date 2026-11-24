@@ -4,9 +4,9 @@ import { InfoTip } from './Tooltip';
 interface KpiProps {
   label: string;
   value: ReactNode;
-  /** One short line under the value */
+
   detail?: ReactNode;
-  /** Marker before the value, e.g. a status icon */
+
   indicator?: ReactNode;
   help?: ReactNode;
 }

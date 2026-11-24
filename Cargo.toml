@@ -10,12 +10,10 @@ members = [
     "fmo_modules/fmo_module_wallet",
     "fmo_server",
 ]
-# Builds only with --features stability_pool_v1, see its Cargo.toml
 exclude = ["fmo_modules/fmo_module_stability_pool"]
 
 resolver = "2"
 
-# Full debug info made target/ grow to 30+ GB; keep only file:line
 [profile.dev]
 debug = "line-tables-only"
 

@@ -1,10 +1,3 @@
-//! `GET /federations/page`, `GET /federations/:id/summary` and
-//! `GET /nostr/federations/page`: the home page's and the Nostr page's lists,
-//! searched, grouped, ordered and paged on the server.
-//!
-//! `GET /federations` and `GET /nostr/federations` keep returning every
-//! federation, unchanged, for existing API clients.
-
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
@@ -28,24 +21,18 @@ use crate::AppState;
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FederationGroup {
-    /// Neither shut down nor offline
     #[default]
     Active,
-    /// Too few guardians answer to reach consensus
     Offline,
-    /// The expiry its guardians published has passed
     ShutDown,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FederationSort {
-    /// Assets under management
     #[default]
     Assets,
-    /// Amount transferred over 7 days
     Volume,
-    /// Transactions over 7 days
     Transactions,
     Name,
 }
@@ -61,11 +48,9 @@ pub(crate) enum SortDirection {
 pub(crate) struct FederationListQuery {
     #[serde(default)]
     pub group: FederationGroup,
-    /// Matches the name, invite code or federation ID
     pub search: Option<String>,
     #[serde(default)]
     pub sort: FederationSort,
-    /// Defaults to the sort's "best first": descending, ascending for names
     pub dir: Option<SortDirection>,
     pub after: Option<String>,
     pub limit: Option<u16>,
@@ -89,7 +74,6 @@ pub(crate) fn group_for(
     }
 }
 
-/// Shortest federation ID fragment matched anywhere, not just as a prefix
 const MIN_ID_SUBSTRING_LEN: usize = 6;
 
 /// Drops a `fedimint:` or `web+fedimint:` scheme, with or without `//`
@@ -106,7 +90,7 @@ fn strip_invite_scheme(input: &str) -> &str {
     input
 }
 
-/// Name, invite code or federation ID (prefix, or any 6+ character fragment)
+/// invite code or federation ID (prefix.
 pub(crate) fn matches_search(federation: &FederationSummary, search: Option<&str>) -> bool {
     let Some(query) = search.map(str::trim).filter(|s| !s.is_empty()) else {
         return true;
@@ -140,9 +124,6 @@ fn transactions(federation: &FederationSummary) -> u64 {
         .sum()
 }
 
-/// The row's position in the chosen order, unique per federation. Unknown
-/// values always sort last; ties go by name, then id, so the order never
-/// depends on the order the rows were loaded in.
 pub(crate) type SortKey = (
     bool,
     i128,
@@ -174,7 +155,6 @@ pub(crate) fn sort_key(
                 SortDirection::Asc => (name, None),
                 SortDirection::Desc => (None, name.map(Reverse)),
             };
-            // The name is already in the key; the tie-breaker is the id alone
             (missing, 0, asc, desc, String::new(), id)
         }
         metric => {
@@ -332,16 +312,12 @@ pub(crate) async fn get_federation_summary(
         .ok_or_else(|| anyhow::Error::from(ClientError::not_found("Federation not found")).into())
 }
 
-/// The Nostr page's groups, as the home page divides federations
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum NostrGroup {
-    /// Observed, and enough guardians answer
     #[default]
     Online,
-    /// Observed, with too few guardians answering
     Offline,
-    /// Announced, but not observed: the observer knows nothing of its health
     Unobserved,
 }
 
@@ -361,7 +337,6 @@ pub(crate) fn nostr_group_of(entry: &NostrFederationEntry) -> NostrGroup {
     }
 }
 
-/// Named federations first, by name, then the rest by id
 pub(crate) type NostrSortKey = (bool, String, String);
 
 pub(crate) fn nostr_sort_key(entry: &NostrFederationEntry) -> NostrSortKey {

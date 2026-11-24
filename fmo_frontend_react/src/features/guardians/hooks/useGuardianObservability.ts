@@ -14,9 +14,9 @@ import {
   versionSummary,
 } from '../lib/guardianModel';
 
-/** The collector polls guardians every minute, so the live view refreshes as often */
+
 const LIVE_REFRESH_MS = 60_000;
-/** History buckets are hourly; reloading a window within this reuses the answer */
+
 const HISTORY_CACHE_MS = 60_000;
 
 const historyCache = new Map<string, { at: number; data: Promise<GuardianHealthHistory> }>();
@@ -25,7 +25,6 @@ function cachedHistory(id: string, window: GuardianHealthWindow, signal: AbortSi
   const key = `${id}:${window}`;
   const cached = historyCache.get(key);
   if (cached && Date.now() - cached.at < HISTORY_CACHE_MS) return cached.data;
-  // Not tied to one component's signal, since another may reuse it; abort only drops the answer
   const data = api.getGuardianHealthHistory(id, window);
   historyCache.set(key, { at: Date.now(), data });
   data.catch(() => historyCache.delete(key));
@@ -38,7 +37,6 @@ function cachedHistory(id: string, window: GuardianHealthWindow, signal: AbortSi
 /** Each guardian's latest polls and peer views, refreshed every minute while the page is visible */
 export function useLiveHealth(id: string) {
   const resource = useApiResource((signal) => api.getGuardianLiveHealth(id, signal), [id], { label: 'live guardian health' });
-  // The first load is already running; count it as fresh so the timer does not repeat it
   const lastSuccess = useRef<number | null>(Date.now());
   useEffect(() => {
     if (resource.data) lastSuccess.current = Date.now();
@@ -56,11 +54,7 @@ export function prefetchGuardianHistory(id: string, window: GuardianHealthWindow
 }
 
 /** Availability buckets for one window; switching windows shows a fresh load, not the old window's grid */
-/**
- * The health history of one window. While another window loads, the shown one
- * stays (each chart labels itself from `data.window`) and `switching` is set,
- * so a range change dims the charts instead of flashing a skeleton.
- */
+
 export function useGuardianHistory(id: string, window: GuardianHealthWindow, enabled = true) {
   const resource = useApiResource((signal) => cachedHistory(id, window, signal), [id, window], {
     enabled,
@@ -75,10 +69,7 @@ export function useSeatBindings(id: string) {
   return useApiResource((signal) => api.getManifoldSeatBindings(id, signal), [id], { label: 'Manifold seat bindings' });
 }
 
-/**
- * Everything the federation's guardian views show, from the observer's stored
- * data only. `config` comes from the page's federation details.
- */
+
 export function useGuardianObservability(id: string, config: FederationConfig | null) {
   const health = useGuardianHealth(id);
   const live = useLiveHealth(id);

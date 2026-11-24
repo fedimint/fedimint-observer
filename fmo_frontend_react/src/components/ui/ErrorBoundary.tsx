@@ -9,7 +9,6 @@ interface ErrorBoundaryState {
   failed: boolean;
 }
 
-// Without a boundary, React unmounts the whole app on a render error, leaving a blank page
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   state: ErrorBoundaryState = { failed: false };
 

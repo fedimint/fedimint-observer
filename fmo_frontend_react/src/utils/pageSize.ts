@@ -1,4 +1,4 @@
-/** Page sizes offered on every paged list; the backend accepts 1 to 500 */
+
 export const PAGE_SIZES = [10, 25, 50, 100] as const;
 export type PageSize = (typeof PAGE_SIZES)[number];
 

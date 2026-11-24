@@ -7,13 +7,13 @@ import { FederationRow } from './FederationRow';
 
 interface FederationListProps {
   federations: FederationSummary[];
-  /** Shown instead of the rows while the list loads */
+
   loading: ReactNode | null;
-  /** Shown instead of the rows when the list failed to load */
+
   failed: boolean;
   emptyText: string;
   scale: ActivityScale;
-  /** Rows per page and previous/next, under the rows */
+
   pager?: ReactNode;
   /** What the middle column represents */
   secondaryColumn?: 'assets' | 'operational';

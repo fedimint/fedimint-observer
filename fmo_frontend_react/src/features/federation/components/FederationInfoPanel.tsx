@@ -7,9 +7,9 @@ import { InviteCode } from './InviteCode';
 interface FederationInfoPanelProps {
   federation: FederationSummary;
   config: FederationConfig | null;
-  /** Whether to offer the invite code; joining fails while every guardian is offline */
+
   showInvite: boolean;
-  /** Whether the guardians could not be checked, so the invite may or may not work */
+
   guardiansUnchecked: boolean;
 }
 
@@ -27,7 +27,6 @@ export function FederationInfoPanel({ federation, config, showInvite, guardiansU
   const shuttingDown = Boolean(federation.expiry_timestamp);
 
   return (
-    // Fills its grid cell, so it matches the availability card beside it
     <Card aria-labelledby="federation-info-title" className="flex h-full flex-col">
       <CardHeader id="federation-info-title" title="Federation" />
       <dl className="space-y-3">

@@ -15,7 +15,6 @@
           inherit system;
         };
         flakeboxPkgs = pkgs // {
-          # convco enables git2's experimental SHA256 support.
           convco = pkgs.convco.overrideAttrs (old: {
             buildInputs = (old.buildInputs or [ ]) ++ [
               (pkgs.libgit2.override { withExperimentalSha256 = true; })
@@ -36,7 +35,6 @@
 
           args = {
             nativeBuildInputs = with pkgs; [
-              # cmake is required for building aws-lc-sys (fedimint dependency)
               cmake
               pkg-config
             ];
@@ -95,9 +93,6 @@
 
         reactPackages =
           let
-            # Get the npm dependencies hash
-            # To update: nix build .#fmo_frontend_react_default --impure
-            # and use the hash from the error message
             npmDepsHash = "sha256-8RhrOvqF5PJ797ZzD57UmvvIEzoVYhJAZ/H55uY+oys=";
           in
           rec {
@@ -111,7 +106,6 @@
                   let
                     baseName = baseNameOf path;
                   in
-                  # Exclude common unnecessary files
                   baseName != "node_modules" &&
                   baseName != "dist" &&
                   baseName != ".git";
@@ -119,22 +113,18 @@
 
               inherit npmDepsHash;
 
-              # Set the API base URL environment variable
               VITE_FMO_API_BASE_URL = api;
 
-              # Build command as defined in package.json
               buildPhase = ''
                 runHook preBuild
                 npm run build
                 runHook postBuild
               '';
 
-              # Install the built artifacts
               installPhase = ''
                 runHook preInstall
                 mkdir -p $out
                 cp -r dist/. $out/
-                # Copy index.html to 404.html for client-side routing (as done in CI)
                 cp $out/index.html $out/404.html
                 runHook postInstall
               '';
@@ -155,7 +145,6 @@
           nativeBuildInputs = [
             pkgs.postgresql
             pkgs.nixpkgs-fmt
-            # cmake is required for building aws-lc-sys (fedimint dependency)
             pkgs.cmake
             pkgs.pkg-config
           ];

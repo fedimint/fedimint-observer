@@ -23,7 +23,6 @@ interface InfrastructureHealthProps {
 /** Compact health of the federation's guardian infrastructure, for the overview */
 export function InfrastructureHealth({ federationId, observability, onSelectGuardian }: InfrastructureHealthProps) {
   const { resilience: res, live, seatBindings, warnings, rows } = observability;
-  // Ages the live status even when no new answer arrives, so stale data stops reading as current
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const clock = setInterval(() => setNow(Date.now()), 30_000);

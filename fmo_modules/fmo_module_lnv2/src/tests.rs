@@ -127,7 +127,6 @@ fn gateway_status_uses_fresh_probes_not_registration_alone() {
 #[test]
 fn gateway_windows_and_outgoing_outcomes_are_explicit() {
     use fedimint_lnv2_common::OutgoingWitness;
-    // Every window covers exactly its length in whole, hour-aligned buckets.
     for (window, hours) in [
         ("24h", 24),
         ("7d", 7 * 24),
@@ -143,7 +142,6 @@ fn gateway_windows_and_outgoing_outcomes_are_explicit() {
         .to_utc();
     let start = gateways::window_start(now, 24, 1);
     assert_eq!(start.to_rfc3339(), "2026-11-05T11:00:00+00:00");
-    // The last bucket holds the current hour.
     assert_eq!(
         start + chrono::Duration::hours(23),
         now - chrono::Duration::seconds(30 * 60 + 15)
@@ -188,8 +186,6 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
     );
     let fed = vec![4u8; 32];
     let url = "iroh://public-gateway";
-    // No registered gateways or health rows: the wait stays NULL, so the probe
-    // worker awaits a notification instead of polling.
     let next_probe = tx
         .query_one(probes::NEXT_PROBE_SQL, &[&fed, &0i32])
         .await?
@@ -209,7 +205,6 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
     for endpoint in bounded.keys() {
         tx.execute("INSERT INTO fmo_lnv2.gateways(federation_id,module_instance_id,api_endpoint,announcing_guardians) VALUES($1,0,$2,'[1,2]'::jsonb)",&[&fed,&endpoint]).await?;
     }
-    // An unprobed registered gateway is due now.
     let next_probe = tx
         .query_one(probes::NEXT_PROBE_SQL, &[&fed, &0i32])
         .await?
@@ -268,7 +263,6 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
         &[&fed, &funding],
     )
     .await?;
-    // Key rotation must not lose activity attributable to an earlier gateway key.
     probes::save(
         &tx,
         &fed,
@@ -306,8 +300,6 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
     assert_eq!(rows[0].get::<_, i64>(13), 2);
     assert_eq!(rows[0].get::<_, i64>(14), 0);
 
-    // Keys are self-reported: another registered endpoint claiming key-one
-    // contests it, and its contracts are credited to neither endpoint.
     let other = "https://other.example/";
     tx.execute("INSERT INTO fmo_lnv2.gateways(federation_id,module_instance_id,api_endpoint,announcing_guardians) VALUES($1,0,$2,'[0]'::jsonb)",&[&fed,&other]).await?;
     probes::save(
@@ -353,7 +345,6 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
         assert_eq!(row.get::<_, i64>(14), 1);
         assert_eq!(gateways::attribution(row.get(13), row.get(14)), "contested");
     }
-    // A retired endpoint no longer contests the key.
     tx.execute(
         "UPDATE fmo_lnv2.gateways SET registered=false WHERE api_endpoint=$1",
         &[&other],
@@ -371,8 +362,6 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
         "self_reported"
     );
 
-    // An endpoint keeps only its most recently claimed keys; key-one, the
-    // least recently claimed, drops off and its contracts are no longer credited.
     for index in 0..probes::MAX_KEYS_PER_ENDPOINT {
         probes::save(
             &tx,
@@ -419,9 +408,6 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
         3 + probes::MAX_KEYS_PER_ENDPOINT
     );
 
-    // Admission: at capacity, a new endpoint announced by more guardians
-    // displaces one announced by fewer that is absent from this poll; one
-    // announced by no more guardians than any registered endpoint is skipped.
     tx.execute("DELETE FROM fmo_lnv2.gateways", &[]).await?;
     tx.execute(
         "INSERT INTO fmo_lnv2.gateways(federation_id,module_instance_id,api_endpoint,announcing_guardians)
@@ -476,15 +462,12 @@ async fn postgres_probe_history_and_activity() -> anyhow::Result<()> {
         .get::<_, i64>(0),
         0
     );
-    // Retired history is capped by count as well as age.
     assert_eq!(
         tx.execute(gateways::PRUNE_RETIRED_SQL, &[&fed, &0i32, &0i64])
             .await?,
         1
     );
 
-    // A valid routing reply can contain NUL. Reproduce PostgreSQL's rejection,
-    // then exercise the production sanitizer, probe write and API read query.
     let key = "0242fb0fe09fcc78a9d25de65837145da2d7828d8789b14f5f53f685c19ae5e0ef";
     let fee = serde_json::json!({"base":1000,"parts_per_million":100});
     let info: fedimint_lnv2_common::gateway_api::RoutingInfo =
@@ -566,9 +549,6 @@ async fn postgres_v2_migration_and_admission_trim_existing_records() -> anyhow::
     )
     .await?;
     let cap = gateways::MAX_ACTIVE_GATEWAYS;
-    // Records stored before the limits: an overfull active registry (cap
-    // endpoints both guardians announce, six only one does), overfull
-    // retired history, and an endpoint with twelve keys.
     tx.execute(
         "INSERT INTO fmo_lnv2.gateways(federation_id,module_instance_id,api_endpoint,announcing_guardians)
          SELECT $1,0,'https://strong'||n||'.example/','[0,1]'::jsonb FROM generate_series(1,$2::bigint) n",
@@ -608,7 +588,6 @@ async fn postgres_v2_migration_and_admission_trim_existing_records() -> anyhow::
 
     tx.batch_execute(include_str!("../schema/v2.sql")).await?;
 
-    // An alias stored before the limit is cut and loses control characters.
     let alias: String = tx
         .query_one(
             "SELECT routing_info->>'lightning_alias' FROM fmo_lnv2.gateways WHERE api_endpoint=$1",
@@ -620,8 +599,6 @@ async fn postgres_v2_migration_and_admission_trim_existing_records() -> anyhow::
         alias,
         format!("a{}", "b".repeat(probes::MAX_ALIAS_CHARS - 1))
     );
-    // Keys: the current key is kept with the first others by key, as the
-    // runtime prune orders ties.
     let keys: Vec<String> = tx
         .query(
             "SELECT module_public_key FROM fmo_lnv2.gateway_keys WHERE api_endpoint=$1 ORDER BY module_public_key",
@@ -640,7 +617,6 @@ async fn postgres_v2_migration_and_admission_trim_existing_records() -> anyhow::
     ) -> Result<i64, tokio_postgres::Error> {
         tx.query_one(sql, &[]).await.map(|row| row.get(0))
     }
-    // Active registry: the weakly agreed endpoints are retired.
     assert_eq!(
         count(
             &tx,
@@ -653,7 +629,6 @@ async fn postgres_v2_migration_and_admission_trim_existing_records() -> anyhow::
         count(&tx, "SELECT count(*) FROM fmo_lnv2.gateways WHERE registered AND api_endpoint LIKE 'https://weak%'").await?,
         0
     );
-    // Retired history keeps the most recent, including those just retired.
     assert_eq!(
         count(
             &tx,
@@ -671,7 +646,6 @@ async fn postgres_v2_migration_and_admission_trim_existing_records() -> anyhow::
         6
     );
 
-    // At runtime, admission also shrinks a registry that is already overfull.
     tx.execute(
         "UPDATE fmo_lnv2.gateways SET registered=true WHERE api_endpoint LIKE 'https://weak%'",
         &[],
@@ -730,7 +704,6 @@ fn public_https_probes_reject_private_and_special_use_addresses() {
         "fd00::1",
         "fe80::1",
         "2001:db8::1",
-        // IANA special-purpose blocks, including ones that embed or tunnel IPv4
         "192.0.0.8",
         "192.0.2.1",
         "192.88.99.1",
@@ -761,7 +734,6 @@ fn public_https_probes_reject_private_and_special_use_addresses() {
             "{address}"
         );
     }
-    // Neighbours of the blocks stay public, so the checks are not over-broad.
     for address in [
         "1.1.1.1",
         "192.0.1.1",
@@ -797,8 +769,6 @@ fn guardian_announcements_are_capped_and_ordered_by_agreement() {
     duplicated.push("https://zz.example/".to_owned());
     let (registrations, complete) =
         gateways::bounded_registrations(vec![(0, many), (1, duplicated)]);
-    // The flooding guardian keeps a deterministic, capped subset and is incomplete;
-    // duplicates don't count against the other guardian's limit.
     assert_eq!(complete, 1);
     assert_eq!(registrations.len(), gateways::MAX_URLS_PER_GUARDIAN + 1);
     assert!(registrations.contains_key("https://gw0255.example/"));
@@ -822,8 +792,7 @@ fn oversized_gateway_identity_keeps_valid_entries_and_incomplete_coverage() {
     assert!(!gateways::complete_registry(complete, 2));
 }
 
-// Use real local QUIC streams, rather than checking a constant after allocating
-// a complete malicious response in the client.
+// Use real local QUIC streams.
 #[tokio::test]
 async fn iroh_read_limit_and_distinct_target_cleanup() -> anyhow::Result<()> {
     use std::time::Duration;
@@ -852,7 +821,6 @@ async fn iroh_read_limit_and_distinct_target_cleanup() -> anyhow::Result<()> {
                     } else {
                         br#"{"status":200,"body":null}"#.to_vec()
                     };
-                    // A capped reader can stop the sender before all bytes arrive.
                     let _ = send.write_all(&response).await;
                     let _ = send.finish();
                     tokio::time::timeout(Duration::from_secs(5), connection.closed()).await?;
@@ -872,8 +840,6 @@ async fn iroh_read_limit_and_distinct_target_cleanup() -> anyhow::Result<()> {
             } else {
                 assert!(response?.is_none());
             }
-            // Each target has a distinct identity. No pool or live endpoint
-            // survives the request, including oversized responses.
             server_task.await??;
             client.close().await;
             assert!(client.is_closed());
@@ -935,7 +901,6 @@ fn registry_instance_selection_is_a_client_error() {
 
     assert_eq!(gateways::select_instance(&[3], None).unwrap(), 3);
     assert_eq!(gateways::select_instance(&[3, 5], Some(5)).unwrap(), 5);
-    // No lnv2 module, or an instance that isn't one: not found
     assert_eq!(
         gateways::select_instance(&[], None).unwrap_err().status(),
         StatusCode::NOT_FOUND

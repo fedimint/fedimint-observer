@@ -28,7 +28,6 @@ function sortRows(rows: readonly GuardianRow[], key: SortKey, ascending: boolean
   return [...rows].sort((a, b) => {
     const va = sortValue(a, key);
     const vb = sortValue(b, key);
-    // Missing values sort last in either direction
     if (va === null || vb === null) return va === vb ? a.id - b.id : va === null ? 1 : -1;
     const order = typeof va === 'string' ? va.localeCompare(String(vb), undefined, { numeric: true }) : va - (vb as number);
     return (ascending ? order : -order) || a.id - b.id;
@@ -104,7 +103,6 @@ export function GuardianTable({ rows, onSelect }: GuardianTableProps) {
     if (key === sortKey) setAscending((value) => !value);
     else {
       setSortKey(key);
-      // Worst first is the useful default for health figures
       setAscending(key === 'id' || key === 'state' || key === 'uptime7d' || key === 'uptime30d' || key === 'session' || key === 'version');
     }
   };
@@ -112,7 +110,7 @@ export function GuardianTable({ rows, onSelect }: GuardianTableProps) {
 
   return (
     <>
-      {/* Tablet and desktop */}
+
       <div className="hidden overflow-x-auto md:block scrollbar-thin">
         <table className="w-full min-w-[900px] text-sm">
           <caption className="sr-only">Guardians of this federation. Select a row for details.</caption>
@@ -155,7 +153,7 @@ export function GuardianTable({ rows, onSelect }: GuardianTableProps) {
         </table>
       </div>
 
-      {/* Phones: stacked cards */}
+
       <ul className="space-y-2 md:hidden">
         {sorted.map((row) => (
           <li key={row.id}>

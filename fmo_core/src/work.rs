@@ -1,4 +1,3 @@
-//! Commit notifications wake workers; durable queue rows remain authoritative.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

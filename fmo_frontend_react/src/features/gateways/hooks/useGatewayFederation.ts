@@ -5,11 +5,7 @@ import type { FederationSummary } from '../../../types/api';
 
 const RETRY_MS = 60_000;
 
-/**
- * The federation's entry in the observer's list: undefined while loading, null
- * when the observer does not track it. Only its name and the live registry
- * lookup need it, so a failure is retried every minute without blocking the page.
- */
+
 export function useGatewayFederation(id: string) {
   const [federation, setFederation] = useState<FederationSummary | null | undefined>(undefined);
   const [failed, setFailed] = useState(false);
@@ -25,8 +21,6 @@ export function useGatewayFederation(id: string) {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        // 404: the observer does not track it; anything else is retried. Only the
-        // name and the live lookup need it; the recorded data still shows
         if (error instanceof ApiError && error.status === 404) {
           setFederation(null);
           setFailed(false);
@@ -39,7 +33,6 @@ export function useGatewayFederation(id: string) {
     };
   }, [id, attempt]);
 
-  // Keep retrying the federation list while it is missing
   useEffect(() => {
     if (!failed) return;
     const timer = setTimeout(() => setAttempt((count) => count + 1), RETRY_MS);

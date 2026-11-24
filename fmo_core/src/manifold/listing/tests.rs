@@ -59,8 +59,6 @@ fn real_advertisements_list_unchanged() {
     }
 }
 
-/// A self-asserted payload cannot make a listing large: lists are capped and
-/// overlong texts left out, never cut
 #[test]
 fn listings_are_bounded() {
     let long = "x".repeat(MAX_LISTED_TEXT + 1);
@@ -87,18 +85,15 @@ fn listings_are_bounded() {
     ));
     assert_eq!(mg.service_pubkey, "");
     assert_eq!(mg.api_endpoints.len(), MAX_LISTED_ITEMS);
-    // The overlong entry was left out, not cut, and the rest kept in order
     assert_eq!(mg.api_endpoints[0].url, "https://0.example");
     assert_eq!(mg.availability.fedimintd_version, fits);
     assert_eq!(mg.availability.federation_sizes.len(), MAX_LISTED_SIZES);
-    // Only the plan whose period fits is listed
     assert_eq!(mg.plans.len(), 1);
     assert_eq!(
         mg.self_reported_uptime_permille.map(|u| u.len()),
         Some(MAX_LISTED_ITEMS)
     );
     assert!(mg.software.is_none());
-    // Legacy advertisements carry neither uptime nor software
     let legacy = mg_listing(&ad(MG_LEGACY_KIND, json!({"uptime_permille": {"1d": 1}})));
     assert!(legacy.self_reported_uptime_permille.is_none());
 

@@ -6,19 +6,16 @@ type Kind = 'live' | 'historical' | 'demo';
 
 interface DataStampProps {
   kind: Kind;
-  /** When the data was observed or generated */
+
   at: string | number | Date | null | undefined;
-  /** Live data older than this many seconds reads as stale */
+
   staleAfterSeconds?: number;
-  /** e.g. "7-day window" for historical data */
+
   scope?: string;
   now?: number;
 }
 
-/**
- * Where a figure comes from and how old it is, so live observations, history
- * and simulated data are never confused. Every metric block carries one.
- */
+
 export function DataStamp({ kind, at, staleAfterSeconds = 300, scope, now = Date.now() }: DataStampProps) {
   const time = at === null || at === undefined ? null : new Date(at);
   const ageSeconds = time ? (now - time.getTime()) / 1000 : null;

@@ -2,11 +2,11 @@ import type { ReactNode } from 'react';
 import { Card } from './Card';
 
 interface PanelProps {
-  /** Shown as the panel's heading */
+
   title?: ReactNode;
-  /** Padding classes, replacing the default */
+
   padding?: string;
-  /** Further classes, e.g. grid placement */
+
   className?: string;
   children: ReactNode;
 }

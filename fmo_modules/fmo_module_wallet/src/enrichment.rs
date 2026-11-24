@@ -1,6 +1,3 @@
-//! Durable Bitcoin transaction enrichment. No database connection is held
-//! during I/O.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,8 +15,6 @@ pub(crate) async fn run(
 ) -> anyhow::Result<()> {
     loop {
         let notified = wakeup.notified();
-        // The lease recovers unfinished work after a crash. The unique job id
-        // also fences a response that arrives after an administrator resets a module.
         let jobs = services
             .connection()
             .await?
@@ -36,8 +31,6 @@ pub(crate) async fn run(
             )
             .await?;
         if jobs.is_empty() {
-            // Register the notification before inspecting the queue. A
-            // committed enqueue between these queries still wakes the worker.
             let delay: Option<f64> = services.connection().await?.query_one(
                 "SELECT EXTRACT(EPOCH FROM (MIN(retry_at) - clock_timestamp()))::double precision FROM fmo_wallet.enrichment_jobs",
                 &[],

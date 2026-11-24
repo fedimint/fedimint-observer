@@ -136,14 +136,12 @@ fn orders_put_unpriced_guardians_last_and_page_through_all() {
         page(&desc, 10),
         vec!["dear-fox", "cheap-owl", "old-cat", "seat-only"]
     );
-    // Freshness: fresh first, newest first, then expired, then no advertisement
     let fresh = DirectoryQuery::default();
     assert_eq!(
         page(&fresh, 10),
         vec!["dear-fox", "cheap-owl", "old-cat", "seat-only"]
     );
 
-    // Two pages of two cover the list exactly once
     let rows = directory();
     let first = keyset_page(rows.clone(), |g| sort_key(g, DirectorySort::Name), None, 2).unwrap();
     let second = keyset_page(
@@ -171,8 +169,7 @@ fn facets_cover_every_guardian_newest_version_first() {
     assert_eq!(facets.sizes, vec![4, 7]);
 }
 
-/// Display names come from advertisements, so they can be as long as a
-/// payload allows; paging must still reach every guardian
+/// Display names come from advertisements.
 #[test]
 fn guardians_with_huge_names_page_through_every_order() {
     let rows: Vec<_> = (0..4u64)

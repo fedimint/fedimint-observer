@@ -1,5 +1,3 @@
-// mempool.space path prefix for each Bitcoin network a federation can run on.
-// Networks it has no explorer for (regtest, unknown) get no links.
 const MEMPOOL_PATHS: Record<string, string> = {
   bitcoin: '',
   mainnet: '',
@@ -25,10 +23,7 @@ export function explorerAddressUrl(address: string, network?: string | null): st
   return base && `${base}/address/${address}`;
 }
 
-/**
- * The `n` tag of NIP-87 events (mainnet, testnet, signet, regtest). Fedimint calls
- * mainnet "bitcoin". Null when the federation's network is unknown.
- */
+
 export function nostrNetworkTag(network?: string | null): string | null {
   const name = network?.trim().toLowerCase();
   if (!name || name === 'unknown') return null;

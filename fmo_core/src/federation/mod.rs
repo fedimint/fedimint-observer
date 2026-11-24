@@ -120,8 +120,7 @@ pub(crate) async fn get_federation_config(
     )
 }
 
-/// The canonical config of an observed federation, decoded with this build's
-/// modules; announced routes apply only when dialing
+/// The canonical config of an observed federation.
 pub(crate) async fn observed_config_json(
     observer: &FederationObserver,
     federation_id: FederationId,
@@ -163,8 +162,7 @@ struct BackfillParams {
     session_end: Option<i32>,
 }
 
-/// Admin: reprocesses stored sessions in the background, answering 202
-/// Accepted with the sessions it covers once it has started
+/// Admin: reprocesses stored sessions in the background.
 async fn backfill_federation(
     Path(federation_id): Path<FederationId>,
     AuthBearer(auth): AuthBearer,
@@ -185,17 +183,12 @@ async fn backfill_federation(
 
 #[derive(Deserialize, Debug)]
 struct ResetModuleParams {
-    /// The session the module processes next; 0 replays everything
     #[serde(default)]
     session_start: u64,
-    /// Delete what the module derived from the federation first, so the replay
-    /// rebuilds it; only from session 0
     #[serde(default)]
     clean: bool,
 }
 
-/// Admin: makes a module process a federation's stored sessions again from
-/// `session_start`, by moving its cursor
 async fn reset_module_cursor(
     Path((federation_id, kind)): Path<(FederationId, String)>,
     AuthBearer(auth): AuthBearer,

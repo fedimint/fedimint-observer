@@ -1,13 +1,4 @@
-/**
- * The guardian view of a federation, derived from what the observer has
- * stored: the config (seats), `/health` (versions, 30-day averages, block
- * heights), `/health/live` (latest polls and peer views) and
- * `/health/history` (availability buckets). Pure functions only.
- *
- * Identity is never conflated: a Fedimint peer id, the name in the config,
- * the Manifold Guardian key that signed a seat binding and that MG's operator
- * are separate things, and each is shown only when its own source has it.
- */
+
 import type {
   FederationLiveHealth,
   GuardianHealth,
@@ -19,9 +10,9 @@ import type {
 } from '../../../types/api';
 import { guardianThreshold, type ConfigGuardian } from '../../../utils/config.ts';
 
-/** A guardian answering within this many seconds of the live snapshot is online, like the federation list's rule */
+
 export const ONLINE_WITHIN_S = 5 * 60;
-/** Polls back off to every 30 minutes for fully offline federations, so a poll within this shows the collector is watching */
+
 export const POLLED_WITHIN_S = 35 * 60;
 
 export type GuardianState = 'online' | 'offline' | 'unknown';
@@ -29,26 +20,26 @@ export type GuardianState = 'online' | 'offline' | 'unknown';
 export interface GuardianRow {
   id: number;
   url: string;
-  /** Name from the federation config, not an operator identity */
+
   configName: string | null;
   state: GuardianState;
   live: GuardianLiveStatus | null;
-  /** Latest answer: the live poll, else the last online hour from history */
+
   lastSeen: string | null;
   lastSeenApproximate: boolean;
   latencyMs: number | null;
   sessionCount: number | null;
-  /** Sessions behind the furthest online guardian */
+
   sessionLag: number | null;
   version: string | null;
   blockHeight: number | null;
   blockOutdated: boolean;
-  /** Rolling 30-day uptime from /health */
+
   uptime30d: number | null;
   avgLatency30d: number | null;
-  /** From the 7-day history, when loaded */
+
   uptime7d: number | null;
-  /** Verified seat binding; null when the directory is absent or invalid */
+
   binding: ManifoldSeatBinding | null;
   warnings: GuardianWarning[];
 }
@@ -65,7 +56,7 @@ export interface GuardianWarning {
 export interface Resilience {
   total: number;
   threshold: number;
-  /** Guardians that may fail with consensus still progressing */
+
   faultTolerance: number;
   online: number;
   offline: number;
@@ -191,7 +182,6 @@ export function resilience(rows: readonly GuardianRow[], liveLoaded: boolean): R
   if (!liveLoaded || total === 0) level = 'unknown';
   else if (online > threshold || (total === 1 && online === 1)) level = 'operational';
   else if (online === threshold) level = 'at_threshold';
-  // Guardians in an unknown state might still answer, so only offline ones count against consensus
   else if (online + unknown >= threshold) level = 'unknown';
   else level = 'below_threshold';
   return { total, threshold, faultTolerance: total - threshold, online, offline, unknown, level };
@@ -215,8 +205,6 @@ export function federationWarnings(rows: readonly GuardianRow[], res: Resilience
       message: `Exactly ${res.threshold} of ${res.total} guardians answer the observer, the number consensus needs. If that is their real state, one more outage would stop consensus.`,
     });
   }
-  // One message per guardian: the observer's poll and its peers' views are two
-  // kinds of evidence about the same outage, not two problems
   const issueOf = new Map(connectivity.map((issue) => [issue.peerId, issue]));
   const merged = new Set<ConnectivityIssue>();
   const perGuardian = rows.flatMap((row) => row.warnings.map((warning) => {
@@ -230,7 +218,6 @@ export function federationWarnings(rows: readonly GuardianRow[], res: Resilience
       merged.add(issue);
       message = `${label(row)} does not answer the observer, but all ${issue.reports} reporting guardians still connect to it, so the fault may be between the observer and this guardian.`;
     }
-    // While the federation still has slack, one guardian offline is a warning, not a failure
     return { ...warning, message, tone: res.level === 'below_threshold' ? 'crit' as const : warning.tone };
   }));
   const connectivityWarnings: GuardianWarning[] = connectivity.filter((issue) => !merged.has(issue)).map((issue) => ({
@@ -255,25 +242,24 @@ export function versionSummary(rows: readonly GuardianRow[]): { version: string;
     .sort((a, b) => b.guardians.length - a.guardians.length || a.version.localeCompare(b.version));
 }
 
-// --- Peer connectivity -------------------------------------------------------
 
 export type PeerCell = 'connected' | 'disconnected' | 'flagged' | 'self' | 'no_report';
 
 export interface ConnectivityMatrix {
-  /** Guardians whose latest answer carried a peer view, within the live window */
+
   reporters: number[];
   peers: number[];
   cell: (reporter: number, peer: number) => PeerCell;
-  /** When each reporter's view was taken */
+
   reportedAt: Map<number, string>;
 }
 
 export interface ConnectivityIssue {
   peerId: number;
-  /** `reachable`: the observer gets no answer, yet every reporting peer still connects to it */
+
   kind: 'flagged' | 'split' | 'isolated' | 'reachable';
   message: string;
-  /** Peers that flag it as not contributing, and peers that reported on it */
+
   flagged: number;
   reports: number;
 }
@@ -300,12 +286,7 @@ export function connectivityMatrix(rows: readonly GuardianRow[]): ConnectivityMa
   };
 }
 
-/**
- * Where guardians' own views of the P2P network say something the observer's
- * polls do not: a guardian others flag as not contributing, guardians that
- * disagree about a peer's connection, or a guardian the observer reaches but
- * no peer does.
- */
+
 export function connectivityIssues(rows: readonly GuardianRow[], matrix: ConnectivityMatrix): ConnectivityIssue[] {
   const issues: ConnectivityIssue[] = [];
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -332,7 +313,6 @@ export function connectivityIssues(rows: readonly GuardianRow[], matrix: Connect
   return issues;
 }
 
-// --- History -----------------------------------------------------------------
 
 export interface HistorySlot {
   start: number;
@@ -340,7 +320,7 @@ export interface HistorySlot {
   samples: number;
   polledS: number;
   onlineS: number;
-  /** Mean latency over the slot's answered, timed polls */
+
   latencyMs: number | null;
 }
 
@@ -349,10 +329,7 @@ export function slotUptime(slot: HistorySlot): number | null {
   return slot.polledS > 0 ? (slot.onlineS / slot.polledS) * 100 : null;
 }
 
-/**
- * Every bucket of the window for one guardian, unpolled ones included, merged
- * `group` at a time (e.g. hourly into 4-hour slots for a 7-day heatmap).
- */
+
 export function guardianSlots(history: GuardianHealthHistory, guardianId: number, group = 1): HistorySlot[] {
   const start = Date.parse(history.start);
   const bucketMs = history.bucket_seconds * 1000;
@@ -424,14 +401,11 @@ export interface OfflinePeriod {
   guardianId: number;
   start: number;
   end: number;
-  /** Still going at the end of the window */
+
   ongoing: boolean;
 }
 
-/**
- * Runs of polled slots in which the guardian never answered, at least
- * `minSlots` long. Unpolled slots end a run: they are unknown, not offline.
- */
+
 export function offlinePeriods(history: GuardianHealthHistory, guardianId: number, minSlots: number): OfflinePeriod[] {
   const slots = guardianSlots(history, guardianId);
   const periods: OfflinePeriod[] = [];

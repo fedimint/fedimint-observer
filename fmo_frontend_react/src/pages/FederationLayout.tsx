@@ -24,10 +24,7 @@ function SectionLoading() {
   );
 }
 
-/**
- * A federation's header and tabs, loaded once and kept while its sections
- * change below them, so switching tabs swaps only the content
- */
+
 export function FederationLayout() {
   // The router remounts this layout per federation (App.tsx), so id never changes here
   const { id = '' } = useParams<{ id: string }>();
@@ -55,7 +52,7 @@ export function FederationLayout() {
       <FederationHeader id={id} federation={context.federation} config={context.config} />
       <ErrorBoundary key={pathname} fallback={<ReloadMessage message="Something went wrong while showing this section." />}>
         <Suspense fallback={<SectionLoading />}>
-          {/* Keyed by section, so each one fades in once when it opens */}
+
           <div key={pathname} className="fmo-section-enter">
             <Outlet context={context} />
           </div>

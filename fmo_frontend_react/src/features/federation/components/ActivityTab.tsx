@@ -5,7 +5,6 @@ import { Panel } from '../../../components/ui/Panel';
 import type { FederationActivity } from '../hooks/useFederationActivity';
 import { ActivityControls } from './ActivityControls';
 
-// echarts is large, so the chart loads only when shown
 const TransactionChart = lazy(() => import('./TransactionChart').then((module) => ({ default: module.TransactionChart })));
 
 const message = 'text-center text-xs sm:text-sm text-ink-3 py-12';

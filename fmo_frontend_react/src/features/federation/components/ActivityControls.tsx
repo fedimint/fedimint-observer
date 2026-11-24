@@ -10,7 +10,7 @@ interface CheckboxProps {
   onChange: (checked: boolean) => void;
   title: string;
   label: string;
-  /** Shorter label for phones */
+
   shortLabel: string;
 }
 

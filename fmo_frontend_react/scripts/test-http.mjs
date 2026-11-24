@@ -121,7 +121,6 @@ test("a request its caller cancels rejects with the caller's abort, not an ApiEr
   assert.ok(!(err instanceof ApiError));
   assert.equal(err.name, 'AbortError');
 
-  // Already cancelled: nothing is sent
   let sent = false;
   globalThis.fetch = async () => {
     sent = true;

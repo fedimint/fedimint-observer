@@ -8,14 +8,11 @@ import { federationName } from '../lib/federationNames';
 
 export interface FederationInfo extends FederationConfig {
   name: string;
-  /** The invite code this info was fetched for; an announcement is built from it alone */
+
   invite: string;
 }
 
-/**
- * Checks a federation by invite code and announces it on Nostr. A `check`
- * query parameter is filled in and checked on arrival, so pages can deep-link here.
- */
+
 export function useFederationInspector() {
   const [inviteCode, setInviteCode] = useState('');
   const [checking, setChecking] = useState(false);
@@ -23,12 +20,10 @@ export function useFederationInspector() {
   const [error, setError] = useState<string | null>(null);
   const [announcing, setAnnouncing] = useState(false);
   const [announced, setAnnounced] = useState(false);
-  // Announcing is only possible for the invite code that was checked, unchanged
   const checkedInfo = info && info.invite === inviteCode ? info : null;
 
   const changeInviteCode = (value: string) => {
     setInviteCode(value);
-    // What was checked described the previous invite code
     setInfo(null);
     setAnnounced(false);
     setError(null);
@@ -49,8 +44,6 @@ export function useFederationInspector() {
     try {
       const config = await api.getFederationConfigByInvite(invite, signal);
 
-      // The metadata request runs after the config request so the server answers it
-      // from the config it just cached. Without it the name is unknown.
       const meta = await api.getFederationMetaByInvite(invite, signal).catch(() => null);
       if (signal?.aborted) return;
 
@@ -67,7 +60,6 @@ export function useFederationInspector() {
     }
   };
 
-  // Deep link: fill in and check the invite code from the `check` parameter
   useEffect(() => {
     const checkParam = new URLSearchParams(window.location.search).get('check');
     if (!checkParam) return;
@@ -75,7 +67,6 @@ export function useFederationInspector() {
     const controller = new AbortController();
     setInviteCode(checkParam);
     check(checkParam, controller.signal);
-    // Only on arrival; later URL changes don't re-check
     return () => controller.abort();
   }, []);
 
@@ -90,14 +81,11 @@ export function useFederationInspector() {
 
     try {
       await publishNostrEvent(async () => {
-        // The server derives the federation ID from the invite code, since calculating
-        // it client-side would require crypto libraries
         const federationId = await api.getFederationIdByInvite(checked.invite);
 
         if (!checked.invite.trim()) {
           throw new Error('Invite code is required');
         }
-        // Without a known network the tag is left out rather than guessed
         const network = nostrNetworkTag(checked.network);
 
         return {

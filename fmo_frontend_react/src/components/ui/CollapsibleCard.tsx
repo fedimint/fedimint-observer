@@ -6,16 +6,13 @@ interface CollapsibleCardProps {
   id: string;
   title: string;
   description: string;
-  /** Shown after the title, e.g. how many rows the group holds */
+
   count?: number | null;
   className?: string;
   children: ReactNode;
 }
 
-/**
- * A secondary list behind its heading, collapsed until opened. Its content
- * mounts on first open and then stays, so it can slide shut as smoothly as it opened.
- */
+
 export function CollapsibleCard({ id, title, description, count, className = 'mt-6', children }: CollapsibleCardProps) {
   const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState(false);
@@ -39,7 +36,7 @@ export function CollapsibleCard({ id, title, description, count, className = 'mt
           <span className="mt-0.5 block text-xs text-ink-3 sm:text-sm">{description}</span>
         </span>
       </button>
-      {/* Rows animate from 0fr to 1fr: a height transition that needs no measuring */}
+
       <div
         id={id}
         inert={!open}

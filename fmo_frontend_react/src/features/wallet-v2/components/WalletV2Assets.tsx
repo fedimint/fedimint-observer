@@ -16,7 +16,7 @@ type OperationFilter = 'all' | 'deposits' | 'withdrawals';
 interface WalletV2AssetsProps {
   balance: number | null | undefined;
   transactions: WalletV2OnChainTransaction[];
-  /** A history page has loaded; it stays shown through later errors. */
+
   loaded: boolean;
   error: HistoryError | null;
   network?: string;
@@ -24,7 +24,7 @@ interface WalletV2AssetsProps {
   stale?: boolean;
   balanceStale?: boolean;
   balanceObservedAt?: string | null;
-  /** Previous/next page arrows, shown above and below the operations */
+
   pager?: ReactNode;
 }
 

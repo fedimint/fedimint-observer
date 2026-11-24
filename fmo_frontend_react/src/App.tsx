@@ -24,8 +24,7 @@ function PerOperator() {
   return <ManifoldOperator key={pubkey} />;
 }
 
-// The router reuses a page when only :id changes; remount it so it never shows
-// the previous federation's data under the new URL
+// The router reuses a page when only :id changes; remount it so it never shows the previous federation's data under the new URL
 function PerFederation({ page: Page }: { page: ComponentType }) {
   const { id } = useParams<{ id: string }>();
   return <Page key={id} />;
@@ -35,11 +34,10 @@ const NOT_FOUND = <div className="py-10 text-sm text-ink-2">Page not found</div>
 
 function AppRoutes() {
   const { pathname } = useLocation();
-  // A federation's tabs share one boundary, so its header stays while they switch
   const boundary = /^\/federations\/[^/]+/.exec(pathname)?.[0] ?? pathname;
   return (
     <ErrorBoundary key={boundary} fallback={<ReloadMessage message="Something went wrong while showing this page." />}>
-      {/* Remounts with the boundary, so each top-level page fades in; a federation's tabs fade inside its layout */}
+
       <div className="fmo-section-enter">
         <Suspense fallback={<div role="status" className="min-h-[60vh] py-6 text-sm text-ink-3">Loading page…</div>}>
           <Routes>

@@ -5,13 +5,12 @@ import { GridComponent, MarkLineComponent, TooltipComponent } from 'echarts/comp
 import { CanvasRenderer } from 'echarts/renderers';
 import type { EChartsOption } from 'echarts';
 
-// Only what the reliability charts use, instead of all of echarts
 echarts.use([LineChart, BoxplotChart, BarChart, GridComponent, TooltipComponent, MarkLineComponent, CanvasRenderer]);
 
 interface EChartProps {
   option: EChartsOption;
   height: number;
-  /** What the chart shows, for screen readers; the page also has the figures as text */
+
   label: string;
 }
 

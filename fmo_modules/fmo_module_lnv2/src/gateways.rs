@@ -1,6 +1,3 @@
-//! Lightning v2 guardians publish gateway URLs, not Lightning v1 announcements.
-//! Registry membership is deliberately separate from gateway service
-//! reachability.
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -37,8 +34,7 @@ struct HealthTotals {
     latency_samples: u64,
 }
 
-/// Bucket count and whole hours per bucket. Health is stored hourly, so a
-/// bucket narrower than an hour, or not hour-aligned, would show false gaps.
+/// Bucket count and whole hours per bucket.
 pub(crate) fn window_buckets(window: &str) -> Option<(i32, i64)> {
     match window {
         "24h" => Some((24, 1)),
@@ -49,7 +45,7 @@ pub(crate) fn window_buckets(window: &str) -> Option<(i32, i64)> {
     }
 }
 
-/// Start of the first bucket: the window ends with the current, partial hour.
+/// Start of the first bucket.
 pub(crate) fn window_start(now: DateTime<Utc>, buckets: i32, hours: i64) -> DateTime<Utc> {
     let hour = now
         .duration_trunc(chrono::Duration::hours(1))
@@ -59,10 +55,6 @@ pub(crate) fn window_start(now: DateTime<Utc>, buckets: i32, hours: i64) -> Date
 
 pub(crate) const REGISTRY_SQL: &str = include_str!("../schema/gateway_overview.sql");
 
-/// A module instance's gateways summed over all of them (`$1` federation, `$2`
-/// instance, `$3` now, `$4` window start). The status is `probes::status` in
-/// SQL; samples are the window's probes. Health rows go with their gateway
-/// (ON DELETE CASCADE), so these are the probes of the gateways counted.
 pub(crate) const TOTALS_SQL: &str = "WITH g AS (
          SELECT api_endpoint,registered,latency_ms,
              CASE
@@ -91,9 +83,6 @@ pub(crate) const TOTALS_SQL: &str = "WITH g AS (
           WHERE federation_id=$1 AND module_instance_id=$2 AND hour>=$4) AS online_samples
      FROM g";
 
-/// Probes of all a module instance's gateways per bucket of the window (`$1`
-/// federation, `$2` instance, `$3` window start, `$4` seconds per bucket, `$5`
-/// buckets), bucketed as `REGISTRY_SQL` buckets each gateway's
 pub(crate) const AVAILABILITY_TREND_SQL: &str =
     "SELECT LEAST($5::integer-1,GREATEST(0,floor(extract(epoch FROM (hour-$3::timestamptz))/$4::double precision)::integer)) AS bucket,
          SUM(samples)::bigint AS samples,SUM(online_samples)::bigint AS online_samples
@@ -177,7 +166,6 @@ async fn registry(
         })
         .collect();
     for row in trend_rows {
-        // The query clamps the index into range
         if let Some(bucket) = usize::try_from(row.get::<_, i32>("bucket"))
             .ok()
             .and_then(|index| availability_trend.get_mut(index))
@@ -286,8 +274,7 @@ async fn registry(
     }))
 }
 
-/// The lnv2 module instance a request is about: the one asked for, or the
-/// only one
+/// The lnv2 module instance a request is about.
 pub(crate) fn select_instance(
     instances: &[u16],
     requested: Option<u16>,
@@ -321,16 +308,11 @@ pub(crate) fn complete_registry(successful: usize, total: usize) -> bool {
     total > 0 && successful == total
 }
 
-// All gateway foreign/primary keys include this identity. Keep well below
-// PostgreSQL's B-tree tuple limit, including the federation and other columns.
 pub(crate) const MAX_ENDPOINT_BYTES: usize = 1024;
 
-/// Distinct gateways one guardian may announce per poll. Each becomes a stored
-/// row and a recurring outbound probe, so a guardian must not set the volume.
+/// Distinct gateways one guardian may announce per poll.
 pub(crate) const MAX_URLS_PER_GUARDIAN: usize = 256;
-/// Registered endpoints kept per federation module instance; see `admit`.
 pub(crate) const MAX_ACTIVE_GATEWAYS: i64 = 1024;
-/// Retired endpoints kept for history per federation module instance.
 pub(crate) const MAX_RETIRED_GATEWAYS: i64 = 1024;
 
 pub(crate) fn bounded_registrations(
@@ -341,8 +323,6 @@ pub(crate) fn bounded_registrations(
         let original = urls.len();
         urls.retain(|url| url.len() <= MAX_ENDPOINT_BYTES);
         let oversized = original - urls.len();
-        // Deterministic truncation, so a list over the limit keeps the same
-        // subset each poll instead of churning stored endpoints.
         urls.sort_unstable();
         urls.dedup();
         let excess = urls.len().saturating_sub(MAX_URLS_PER_GUARDIAN);
@@ -360,20 +340,15 @@ pub(crate) fn bounded_registrations(
     (merge_registrations(responses), complete)
 }
 
-/// Announced endpoints in admission order: more announcing guardians first, so
-/// one guardian's announcements cannot crowd out gateways others agree on.
+/// Announced endpoints in admission order: more announcing guardians first.
 pub(crate) fn admission_order(
     registrations: BTreeMap<String, Vec<u16>>,
 ) -> Vec<(String, Vec<u16>)> {
     let mut ordered: Vec<_> = registrations.into_iter().collect();
-    // Stable sort keeps URL order among equally announced endpoints.
     ordered.sort_by_key(|(_, peers)| std::cmp::Reverse(peers.len()));
     ordered
 }
 
-/// Frees one active slot for an endpoint announced by `$4` guardians: retires
-/// the registered endpoint with the fewest announcers below that, among those
-/// not announced in this poll (`$3`).
 pub(crate) const EVICT_SQL: &str = "UPDATE fmo_lnv2.gateways SET registered=false
      WHERE (federation_id,module_instance_id,api_endpoint) IN (
          SELECT federation_id,module_instance_id,api_endpoint FROM fmo_lnv2.gateways
@@ -383,8 +358,6 @@ pub(crate) const EVICT_SQL: &str = "UPDATE fmo_lnv2.gateways SET registered=fals
          ORDER BY jsonb_array_length(announcing_guardians),last_seen,api_endpoint
          LIMIT 1)";
 
-/// Retires registered endpoints beyond `$3`, keeping the strongest guardian
-/// agreement, then the most recently announced (as schema v2 does).
 pub(crate) const TRIM_ACTIVE_SQL: &str =
     "UPDATE fmo_lnv2.gateways g SET registered=false FROM (
          SELECT api_endpoint,row_number() OVER (
@@ -401,12 +374,6 @@ pub(crate) const PRUNE_RETIRED_SQL: &str =
          WHERE federation_id=$1 AND module_instance_id=$2 AND NOT registered
          ORDER BY last_seen DESC,api_endpoint LIMIT $3)";
 
-/// Stores this poll's announcements within `MAX_ACTIVE_GATEWAYS`. Endpoints
-/// already registered are always refreshed. Otherwise a guardian that keeps its
-/// polls incomplete, so nothing is retired, could fill the registry with
-/// changing URLs. At capacity, a new endpoint displaces only one announced by
-/// fewer guardians that is absent from this poll. Returns how many were
-/// skipped.
 pub(crate) async fn admit(
     tx: &DbTransaction<'_>,
     fed: &[u8],
@@ -415,8 +382,6 @@ pub(crate) async fn admit(
     registrations: BTreeMap<String, Vec<u16>>,
 ) -> anyhow::Result<usize> {
     let instance = i32::from(instance);
-    // A registry already over capacity (stored before the limit, or under a
-    // larger one) shrinks to it first; admission below only keeps it there.
     tx.execute(TRIM_ACTIVE_SQL, &[&fed, &instance, &MAX_ACTIVE_GATEWAYS])
         .await?;
     let mut active: i64 = tx
@@ -511,7 +476,6 @@ async fn poll_instance(
     let mut failures = 0u32;
     loop {
         let result = tokio::time::timeout(Duration::from_secs(40), async {
-            // Resolved per round for rotations; a failure takes the round backoff.
             let api = services
                 .federation_api(&config.global)
                 .context("No guardian API client for gateway registry poll")?
@@ -554,8 +518,7 @@ async fn poll_instance(
         .await;
         match result {
             Ok(Ok(responses)) => {
-                // Validate before opening a transaction. Truncated guardian
-                // responses cannot prove any previously known gateway retired.
+                // Validate before opening a transaction.
                 let (registrations, successful) = bounded_registrations(responses);
                 let mut connection = services.connection().await?;
                 let tx = connection.transaction().await?;
@@ -565,7 +528,6 @@ async fn poll_instance(
                      DO UPDATE SET observed_at=now(),successful_guardians=$3,total_guardians=$4",
                     &[&bytes,&i32::from(instance),&(successful as i32),&(config.global.api_endpoints.len() as i32)],
                 ).await?;
-                // A partial response cannot establish that an endpoint was removed.
                 let urls = registrations.keys().cloned().collect::<Vec<_>>();
                 if complete_registry(successful, config.global.api_endpoints.len()) {
                     tx.execute("UPDATE fmo_lnv2.gateways SET registered=false WHERE federation_id=$1 AND module_instance_id=$2 AND registered AND NOT(api_endpoint=ANY($3::text[]))",&[&bytes,&i32::from(instance),&urls]).await?;
@@ -574,7 +536,6 @@ async fn poll_instance(
                 if skipped > 0 {
                     tracing::warn!(%fed,instance,skipped,"Gateway registry is at capacity; new endpoints announced by fewer guardians were not stored");
                 }
-                // Bound retired registry storage by age and count; active registrations remain.
                 tx.execute("DELETE FROM fmo_lnv2.gateways WHERE federation_id=$1 AND module_instance_id=$2 AND NOT registered AND last_seen<now()-interval '90 days'",&[&bytes,&i32::from(instance)]).await?;
                 tx.execute(
                     PRUNE_RETIRED_SQL,

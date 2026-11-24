@@ -29,7 +29,7 @@ const LEGEND: { level: AvailabilityLevel; label: string }[] = [
 interface HeatmapGridProps {
   history: GuardianHealthHistory;
   rows: readonly Pick<GuardianRow, 'id' | 'configName'>[];
-  /** Hide the per-row label and summary, for a single guardian's strip */
+
   compact?: boolean;
 }
 
@@ -132,7 +132,6 @@ export function HeatmapGrid({ history, rows, compact = false }: HeatmapGridProps
           })}
         </div>
 
-        {/* Time axis */}
         <div className="mt-2 flex items-center gap-2 text-xs text-ink-3">
           {!compact && <div className="w-16 shrink-0 sm:w-36" />}
           <div className="relative h-3.5 min-w-0 flex-1">
@@ -147,7 +146,7 @@ export function HeatmapGrid({ history, rows, compact = false }: HeatmapGridProps
           {!compact && <div className="w-11 shrink-0 sm:w-14" />}
         </div>
 
-        {/* Tooltip for the active block */}
+
         <div className="relative">
           {active && activeSlot && (
             <div
@@ -186,7 +185,7 @@ interface AvailabilityHeatmapProps {
   federationId: string;
   rows: readonly GuardianRow[];
   initialWindow?: GuardianHealthWindow;
-  /** Extra classes for the card, e.g. h-full to match a neighbour's height */
+
   className?: string;
 }
 

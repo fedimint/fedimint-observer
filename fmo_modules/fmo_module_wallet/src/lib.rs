@@ -1,6 +1,3 @@
-//! Observes the wallet module: peg-ins, peg-outs and the guardians' block
-//! height votes that date every session
-
 use std::sync::Arc;
 
 use anyhow::{bail, Context};
@@ -112,8 +109,7 @@ impl ObserverModule for WalletObserver {
         }
     }
 
-    /// Peg-ins and peg-outs come from sessions; the UTXO view is rebuilt from
-    /// them on its next refresh
+    /// Peg-ins and peg-outs come from sessions.
     async fn reset_federation(
         &self,
         ctx: &ProcessCtx<'_>,
@@ -196,9 +192,6 @@ impl ObserverModule for WalletObserver {
         match v0_output(output)? {
             WalletOutputV0::PegOut(_) => {}
             WalletOutputV0::Rbf(_) => {
-                // Stop the wallet projector of this federation loudly (core
-                // keeps storing sessions): the benefits may outweigh the
-                // annoyance of removing and restarting
                 bail!(
                     r#"
                     You've discovered a terribly unfortunate situation: an RBF wallet output
@@ -234,11 +227,10 @@ impl ObserverModule for WalletObserver {
             .as_any()
             .downcast_ref::<WalletConsensusItem>()
             .context("config says this should be a wallet CI")?;
-        match wallet_ci {
-            WalletConsensusItem::PegOutSignature(peg_out_sig) => {
-                let peg_out_txid_encoded = peg_out_sig.txid.to_byte_array().to_vec();
+        if let WalletConsensusItem::PegOutSignature(peg_out_sig) = wallet_ci {
+            let peg_out_txid_encoded = peg_out_sig.txid.to_byte_array().to_vec();
 
-                dbtx.execute(
+            dbtx.execute(
                     "INSERT INTO fmo_wallet.withdrawal_transactions (on_chain_txid, federation_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                     &[
                         &peg_out_txid_encoded,
@@ -247,7 +239,7 @@ impl ObserverModule for WalletObserver {
                 )
                 .await?;
 
-                dbtx.execute(
+            dbtx.execute(
                     "INSERT INTO fmo_wallet.withdrawal_signatures VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
                     &[
                         &peg_out_txid_encoded,
@@ -258,46 +250,37 @@ impl ObserverModule for WalletObserver {
                 )
                 .await?;
 
-                let num_sigs = dbtx
-                    .query_one(
-                        "
+            let num_sigs = dbtx
+                .query_one(
+                    "
                         SELECT COUNT(peer_id)::INT num_sigs
                         FROM fmo_wallet.withdrawal_signatures
                         WHERE on_chain_txid = $1
                         GROUP BY on_chain_txid
                         ",
-                        &[&peg_out_txid_encoded],
-                    )
-                    .await?
-                    .get::<_, i32>("num_sigs") as usize;
+                    &[&peg_out_txid_encoded],
+                )
+                .await?
+                .get::<_, i32>("num_sigs") as usize;
 
-                let threshold = NumPeers::from(ctx.config.global.api_endpoints.len()).threshold();
+            let threshold = NumPeers::from(ctx.config.global.api_endpoints.len()).threshold();
 
-                if num_sigs < threshold {
-                    return Ok(());
-                }
+            if num_sigs < threshold {
+                return Ok(());
+            }
 
-                // at this point, the transaction reached threshold and should broadcast
-
-                let cached: bool = dbtx.query_one(
+            let cached: bool = dbtx.query_one(
                     "SELECT EXISTS(SELECT 1 FROM fmo_wallet.withdrawal_transaction_outputs WHERE on_chain_txid=$1)",
                     &[&peg_out_txid_encoded],
                 ).await?.get(0);
-                // Every signature after the threshold lands here too; the
-                // transaction only needs fetching once
-                if cached {
-                    return Ok(());
-                }
+            if cached {
+                return Ok(());
+            }
 
-                dbtx.execute(
+            dbtx.execute(
                     "INSERT INTO fmo_wallet.enrichment_jobs (on_chain_txid) VALUES ($1) ON CONFLICT DO NOTHING",
                     &[&peg_out_txid_encoded],
                 ).await?;
-            }
-            _ => {
-                // Block height votes are core's (block_height_vote); other
-                // WalletConsensusItems are not needed yet
-            }
         }
 
         Ok(())

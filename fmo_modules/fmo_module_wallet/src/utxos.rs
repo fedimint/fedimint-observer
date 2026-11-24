@@ -1,7 +1,3 @@
-//! The UTXO endpoint: the federation's outputs as the observer reconstructed
-//! them, judged against what its guardians report and, where they can't
-//! vouch, against the chain
-
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -36,65 +32,37 @@ use tracing::{debug, warn};
 
 use crate::network::{address_on_network, federation_wallet_network};
 
-/// A comparison younger than this is served as is.
 const UTXO_REPORT_FRESH: Duration = Duration::from_secs(60);
-/// A comparison that left something out (a guardian cut off, a chain lookup
-/// unfinished) is replaced in the background after this.
 const UTXO_REPORT_INCOMPLETE_FRESH: Duration = Duration::from_secs(10);
-/// Older comparisons, up to this age, are served while a background refresh
-/// replaces them, so only the first view after a long pause waits for the
-/// guardians and the chain.
 const UTXO_REPORT_MAX_STALE: Duration = Duration::from_secs(15 * 60);
 
-/// How long each guardian gets for its wallet summary and status
 const GUARDIAN_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-/// While a viewer waits: once a threshold of guardians answered, how much
-/// longer the others get. Guardians cut off count as not answering in this
-/// comparison, which is then refreshed in the background with the full timeout.
 const GUARDIAN_QUORUM_GRACE: Duration = Duration::from_secs(2);
 
-/// Unspent and missing results are rechecked after this; spends are final.
 const ONCHAIN_CHECK_TTL: Duration = Duration::from_secs(10 * 60);
-/// While a viewer waits: bound on chain lookups. Results that arrive in time
-/// are cached, and a comparison missing some is refreshed in the background,
-/// which continues where this one stopped.
 const ONCHAIN_CHECK_DEADLINE: Duration = Duration::from_secs(4);
-/// Bound on the chain lookups of a background refresh
 const ONCHAIN_REFRESH_DEADLINE: Duration = Duration::from_secs(60);
 const ONCHAIN_CHECK_CONCURRENCY: usize = 8;
 
-/// Rows per page unless the request says otherwise, as the frontend shows
 const UTXOS_DEFAULT_LIMIT: usize = 25;
 const UTXOS_MAX_LIMIT: usize = 100;
 
-/// State of a transaction output according to the blockchain
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OnChainOutput {
-    /// `amount` is only looked up when the caller asked for it
-    Unspent {
-        amount: Option<bitcoin::Amount>,
-    },
-    Spent {
-        by: Txid,
-    },
-    /// The transaction or the output index does not exist
+    Unspent { amount: Option<bitcoin::Amount> },
+    Spent { by: Txid },
     Missing,
 }
 
-/// Shared between requests, so page views don't each ask every guardian and
-/// the mempool instance again
 #[derive(Default)]
 pub(crate) struct UtxoCaches {
     reports: Mutex<HashMap<FederationId, Arc<ReportSlot>>>,
     onchain: Mutex<HashMap<OutPoint, (Instant, OnChainOutput)>>,
 }
 
-/// One federation's latest comparison
 #[derive(Default)]
 struct ReportSlot {
     latest: Mutex<Option<CachedReport>>,
-    /// Held by whoever computes the comparison, so concurrent misses share one
-    /// computation and at most one background refresh runs at a time
     computing: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -132,8 +100,6 @@ impl ReportSlot {
     }
 }
 
-/// Whether the comparison is computed for a waiting viewer, who gets it
-/// sooner, or refreshed in the background, which waits for everything
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Interactive,
@@ -156,7 +122,6 @@ impl Mode {
     }
 }
 
-/// The federation a comparison is about
 #[derive(Clone)]
 struct Target {
     federation_id: FederationId,
@@ -165,7 +130,6 @@ struct Target {
     network: Network,
 }
 
-/// The endpoint's view of core and the module's caches
 #[derive(Clone)]
 struct Utxos {
     services: Services,
@@ -206,20 +170,16 @@ async fn get_federation_utxos(
     Ok(Json(report.page(&request)))
 }
 
-/// What page of which rows a request asks for
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UtxoPageRequest {
     view: UtxoView,
-    /// Trimmed and lowercased; empty matches everything
     search: String,
-    /// 1-based
     page: usize,
     limit: usize,
 }
 
 impl UtxoPageRequest {
-    /// `view=all|verified|pending|mismatch`, `search`, `page` (from 1) and
-    /// `limit` (1 to 100); anything else is a 400
+    /// `view=all|verified|pending|mismatch`.
     fn parse(params: &HashMap<String, String>) -> ApiResult<Self> {
         let view = match params.get("view").map(String::as_str) {
             None | Some("all") => UtxoView::All,
@@ -260,12 +220,9 @@ impl UtxoPageRequest {
     }
 }
 
-/// A federation's full comparison, computed once per refresh and paged per
-/// request
 struct UtxoReport {
     threshold: usize,
     guardians: Vec<GuardianUtxoReport>,
-    /// Most severe status first, then largest amount first
     rows: Vec<UtxoComparisonRow>,
     counts: UtxoStatusCounts,
 }
@@ -279,7 +236,6 @@ impl UtxoReport {
             .filter(|row| row_matches(row, request.view, &request.search))
             .collect::<Vec<_>>();
         let page_count = matching.len().div_ceil(request.limit).max(1);
-        // Clamped so a refresh that shrinks the list never serves an empty page
         let page = request.page.min(page_count);
         FederationUtxosResponse {
             threshold: self.threshold,
@@ -299,9 +255,6 @@ impl UtxoReport {
     }
 }
 
-/// Whether a row is in `view` and matches `search` (trimmed and lowercased):
-/// its outpoint, address or amount in BTC with 8 decimals (`0.00150000`)
-/// contains it
 fn row_matches(row: &UtxoComparisonRow, view: UtxoView, search: &str) -> bool {
     let in_view = match view {
         UtxoView::All => true,
@@ -322,7 +275,7 @@ fn row_matches(row: &UtxoComparisonRow, view: UtxoView, search: &str) -> bool {
             || btc_amount(row.amount).contains(search))
 }
 
-/// An amount in BTC with 8 decimals, as the frontend shows it (`0.00150000`)
+/// An amount in BTC with 8 decimals.
 fn btc_amount(amount: Amount) -> String {
     let sats = amount.msats.saturating_add(500) / 1000;
     format!("{}.{:08}", sats / 100_000_000, sats % 100_000_000)
@@ -338,13 +291,11 @@ fn status_counts(rows: &[UtxoComparisonRow]) -> UtxoStatusCounts {
     }
 }
 
-/// `n - f`: what Fedimint, tolerating f = (n - 1) / 3 faulty guardians, acts on
+/// what Fedimint.
 fn agreement_threshold(num_guardians: usize) -> usize {
     num_guardians - num_guardians.saturating_sub(1) / 3
 }
 
-/// Every output judged against what a threshold of guardians agrees on, and
-/// how each guardian deviates from that agreement
 struct UtxoComparison {
     threshold: usize,
     any_responding: bool,
@@ -352,20 +303,12 @@ struct UtxoComparison {
     guardians: Vec<GuardianUtxoReport>,
 }
 
-/// What one responding guardian says about one output
 enum GuardianView {
-    /// Lists it as held by the federation; `None` if it lists several amounts
     Holds(Option<Amount>),
-    /// Lists it only as part of a peg-out still in flight, so it neither
-    /// confirms nor disputes that the federation holds it
     InFlight,
     Absent,
 }
 
-/// Whether a guardian listing an output in this state says the federation
-/// holds it. Guardians keep peg-out change in `UnconfirmedChange` until the
-/// finality delay has passed, while the observer records it at threshold
-/// signatures.
 fn is_held(state: GuardianClaimedUtxoState) -> bool {
     matches!(
         state,
@@ -377,8 +320,6 @@ fn compare_utxos(
     observed: &[FederationUtxo],
     guardian_claims: &[GuardianUtxoClaim],
 ) -> UtxoComparison {
-    // Fedimint tolerates f = (n - 1) / 3 faulty guardians and acts on what
-    // n - f of them agree on, so that agreement is what honest guardians hold
     let num_guardians = guardian_claims.len();
     let threshold = agreement_threshold(num_guardians);
     let responding = guardian_claims
@@ -449,7 +390,6 @@ fn compare_utxos(
 #[derive(Default)]
 struct OutputReports<'a> {
     observed: Option<&'a FederationUtxo>,
-    /// Entries of responding guardians, usually one each
     listed: BTreeMap<u16, Vec<&'a GuardianClaimedUtxo>>,
 }
 
@@ -524,7 +464,6 @@ fn judge_output(
             })
             .unwrap_or(Amount::from_msats(0)),
         address: reports.observed.map(|utxo| utxo.address.clone()),
-        // Shown per guardian, preferring the entry that says it is held
         guardian_states: reports
             .listed
             .iter()
@@ -630,8 +569,6 @@ fn judge_output(
             .map(|(guardian_id, _)| *guardian_id)
             .collect::<Vec<_>>();
         if reports.observed.is_some() {
-            // Guardians stop listing an output once it is an input of a peg-out,
-            // while the observer only records the spend at threshold signatures
             let still_listed = if holder_ids.is_empty() {
                 String::new()
             } else {
@@ -670,7 +607,6 @@ fn judge_output(
             guardians_verb(&absent, "does", "do"),
         );
         if responding.len() >= threshold {
-            // More guardians deviate than the federation can tolerate
             mark(
                 &mut row,
                 UtxoComparisonStatus::Mismatch,
@@ -683,8 +619,6 @@ fn judge_output(
     } else if !pending_states.is_empty() {
         row.detail = Some(still_pending(&pending_states));
     }
-    // Anything else stays pending without detail: too few guardians responded
-    // to reach the threshold, which the response's guardian list shows
 
     row
 }
@@ -752,10 +686,6 @@ fn amount_reports(observed: Option<&FederationUtxo>, holders: &[(u16, Option<Amo
 }
 
 impl UtxoComparison {
-    /// Outputs guardians cannot vouch for, to be looked up on-chain, and
-    /// whether their amount is needed. Without any responding guardian that is
-    /// every output the observer holds; otherwise only outputs where the
-    /// observer differs from the guardians, since chain lookups are slow.
     fn onchain_check_requests(&self) -> Vec<(OutPoint, bool)> {
         self.rows
             .iter()
@@ -770,8 +700,7 @@ impl UtxoComparison {
                 if observed {
                     return Some((row.out_point, false));
                 }
-                // Change may not have been broadcast yet, so only outputs every
-                // guardian considers final must exist on-chain
+                // Change may not have been broadcast yet.
                 row.guardian_states
                     .values()
                     .all(|state| *state == GuardianClaimedUtxoState::Spendable)
@@ -780,11 +709,6 @@ impl UtxoComparison {
             .collect()
     }
 
-    /// Uses on-chain state to settle outputs guardians could not confirm. The
-    /// chain is authoritative: an output it shows as spent, missing or holding
-    /// a different amount than reported becomes an [`OnChainConflict`].
-    ///
-    /// [`OnChainConflict`]: GuardianUtxoDisagreementKind::OnChainConflict
     fn apply_onchain_evidence(&mut self, onchain: &HashMap<OutPoint, OnChainOutput>) {
         for row in &mut self.rows {
             let Some(&output) = onchain.get(&row.out_point) else {
@@ -793,8 +717,6 @@ impl UtxoComparison {
             let conflict = Some(GuardianUtxoDisagreementKind::OnChainConflict);
 
             if !self.any_responding {
-                // Nobody else can confirm the observer's history, e.g. because
-                // the federation is offline, so a spend it missed goes unnoticed
                 if let OnChainOutput::Spent { by } = output {
                     mark(row, UtxoComparisonStatus::Mismatch, conflict, format!(
                         "Already spent on-chain by transaction {by}, but observer history still lists it and no guardian responded"
@@ -804,8 +726,6 @@ impl UtxoComparison {
             }
 
             if row.address.is_some() {
-                // Guardians already dropped it; the chain tells whether the
-                // spend happened or a peg-out is still collecting signatures
                 if let OnChainOutput::Spent { by } = output {
                     row.detail = Some(format!(
                         "Spent on-chain by transaction {by}; observer history has not caught up yet"
@@ -852,9 +772,6 @@ impl UtxoComparison {
 }
 
 impl Utxos {
-    /// The federation's comparison: cached, refreshed in the background once
-    /// stale, and computed while the viewer waits only when there is none to
-    /// serve
     async fn report(&self, target: Target) -> anyhow::Result<Arc<UtxoReport>> {
         let slot = self
             .caches
@@ -867,7 +784,6 @@ impl Utxos {
 
         if let Some(cached) = slot.servable(Instant::now()) {
             if Instant::now() >= cached.fresh_until {
-                // Stale while revalidate: one refresh at a time per federation
                 if let Ok(computing) = slot.computing.clone().try_lock_owned() {
                     let this = self.clone();
                     let slot = slot.clone();
@@ -889,7 +805,6 @@ impl Utxos {
             return Ok(cached.report);
         }
 
-        // Concurrent misses wait here for the first one's computation
         let _computing = slot.computing.lock().await;
         if let Some(cached) = slot.servable(Instant::now()) {
             return Ok(cached.report);
@@ -915,8 +830,7 @@ impl Utxos {
         ))
     }
 
-    /// The outputs in the observer's history, with addresses for the
-    /// federation's network
+    /// The outputs in the observer's history.
     async fn federation_utxos(
         &self,
         federation_id: FederationId,
@@ -932,12 +846,10 @@ impl Utxos {
 
         query::<FederationUtxoRaw>(
             &self.services.connection().await?,
-            // language=postgresql
             "SELECT on_chain_txid, on_chain_vout, address, amount_msat FROM fmo_wallet.utxos WHERE federation_id = $1 ORDER BY amount_msat DESC",
             &[&federation_id.consensus_encode_to_vec()],
         ).await?.into_iter().map(|utxo| {
             Result::<_, anyhow::Error>::Ok(FederationUtxo {
-                // Older rows hold mainnet renderings whatever the network
                 address: address_on_network(&utxo.address, network)?,
                 out_point: OutPoint {
                     txid: Txid::from_slice(&utxo.on_chain_txid)?,
@@ -948,16 +860,13 @@ impl Utxos {
         }).collect()
     }
 
-    /// Every guardian's wallet summary, and whether every guardian got its
-    /// full time to answer
+    /// Every guardian's wallet summary.
     async fn guardian_utxo_claims(
         &self,
         target: &Target,
         mode: Mode,
     ) -> anyhow::Result<(Vec<GuardianUtxoClaim>, bool)> {
         let endpoints = &target.config.global.api_endpoints;
-        // The process-wide client: one per request would leak a connection to
-        // every guardian each time
         let api = self.services.federation_api(&target.config.global)?;
         let module_api = api.with_module(target.wallet_id);
 
@@ -978,8 +887,6 @@ impl Utxos {
                         ApiRequestErased::default(),
                         peer_id,
                     );
-                    // Timed out separately so a slow status call can't discard a
-                    // wallet summary that did arrive
                     let (summary, status) = futures::future::join(
                         tokio::time::timeout(GUARDIAN_REQUEST_TIMEOUT, summary),
                         tokio::time::timeout(GUARDIAN_REQUEST_TIMEOUT, status),
@@ -1032,10 +939,6 @@ impl Utxos {
         Ok((claims, complete))
     }
 
-    /// Looks up outputs on-chain. Each request says whether the output's amount
-    /// is needed too, which costs an extra request. Outputs whose lookup fails
-    /// or does not finish by `deadline` are left out, and the result says
-    /// whether any were.
     async fn onchain_outputs(
         &self,
         requests: Vec<(OutPoint, bool)>,
@@ -1101,10 +1004,6 @@ impl Utxos {
     }
 }
 
-/// Collects each guardian's claim, in guardian order. With a quorum
-/// `(threshold, grace)`, guardians still outstanding `grace` after `threshold`
-/// of them answered are reported as not answering in time, and the result says
-/// it is incomplete.
 async fn gather_claims<F>(
     requests: Vec<(u16, F)>,
     quorum: Option<(usize, Duration)>,
@@ -1185,12 +1084,6 @@ async fn fetch_onchain_output(
     })
 }
 
-/// Marks responding guardians whose session count is behind the federation as
-/// lagging: their wallet summary predates outputs the others already know.
-///
-/// The reference is the `f+1`-th highest reported count, so up to `f` faulty
-/// guardians claiming an inflated count cannot push honest ones out of the
-/// comparison. Guardians that did not report a count stay in.
 fn mark_lagging_guardians(claims: &mut [GuardianUtxoClaim], num_guardians: usize) {
     let max_faulty = num_guardians.saturating_sub(1) / 3;
     let mut session_counts = claims
@@ -1374,7 +1267,6 @@ mod tests {
             (all.total_rows, all.page, all.limit, all.page_count),
             (6, 1, 25, 1)
         );
-        // Same order as the full comparison
         assert_eq!(
             all.utxos.iter().map(|row| row.amount).collect::<Vec<_>>(),
             report.rows.iter().map(|row| row.amount).collect::<Vec<_>>()
@@ -1387,28 +1279,22 @@ mod tests {
         let second = page(&[("view", "verified"), ("limit", "2"), ("page", "2")]);
         assert_eq!(second.utxos.len(), 1);
         assert_eq!(second.utxos[0].out_point, report.rows[5].out_point);
-        // Past the end: the last page, not an empty one
         let clamped = page(&[("view", "verified"), ("limit", "2"), ("page", "9")]);
         assert_eq!(clamped.page, 2);
         assert_eq!(clamped.utxos.len(), 1);
 
-        // Amount in BTC with 8 decimals
         let by_amount = page(&[("search", "0.00150000")]);
         assert_eq!(by_amount.total_rows, 1);
         assert_eq!(by_amount.utxos[0].status, Mismatch);
         assert_eq!(page(&[("search", "0.02000000")]).total_rows, 1);
-        // The frontend's amounts end in an uppercase " BTC" that a lowercased
-        // query never matched, so the unit isn't searchable
+        // so the unit isn't searchable.
         assert_eq!(page(&[("search", "btc")]).total_rows, 0);
-        // Addresses match case-insensitively, base58 included
         assert_eq!(page(&[("search", "BC1QW508")]).total_rows, 1);
         assert_eq!(page(&[("search", "1bvbmseys")]).total_rows, 1);
-        // Outpoints, as txid:vout
         assert_eq!(
             page(&[("search", &format!("{}:1", "33".repeat(32)))]).total_rows,
             1
         );
-        // Search and view combine
         assert_eq!(
             page(&[("search", "bc1q"), ("view", "pending")]).total_rows,
             0

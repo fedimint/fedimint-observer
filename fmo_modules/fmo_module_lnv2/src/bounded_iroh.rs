@@ -1,5 +1,3 @@
-//! Short-lived probe transports: no URL-keyed pool survives a probe, including
-//! failed targets. Guardian/session transports retain their upstream limits.
 use std::time::Duration;
 
 use anyhow::{anyhow, ensure, Context};
@@ -14,14 +12,10 @@ use crate::probes::ProbeError;
 
 pub(crate) const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
-/// Also returns the request latency. It excludes binding the local endpoints,
-/// as HTTPS latency excludes DNS; it includes address discovery and the QUIC
-/// handshake, as HTTPS latency includes the TCP and TLS handshakes.
 pub(crate) async fn routing_info(
     url: &SafeUrl,
     fed: &FederationId,
 ) -> Result<(Option<RoutingInfo>, Duration), ProbeError> {
-    // An invalid identity or a local bind failure says nothing about the gateway.
     let host = url
         .host_str()
         .context("Missing Iroh identity")
@@ -67,9 +61,6 @@ pub(crate) async fn routing_info(
         if let Some(stable) = &stable {
             attempts.push(request_stable(stable, stable_id.into(), &request).boxed());
         }
-        // The first answer wins; if both fail, report the attempt that got
-        // furthest, so one transport's answer is not hidden by the other's
-        // failure.
         let mut failure: Option<ProbeError> = None;
         while let Some(attempt) = attempts.next().await {
             match attempt {
@@ -86,8 +77,6 @@ pub(crate) async fn routing_info(
     })
     .await;
     let elapsed = started.elapsed();
-    // Close on success, invalid/oversized responses, timeout and failed dials.
-    // Cleanup remains inside the probe concurrency budget.
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::join!(
             async {
@@ -113,7 +102,6 @@ pub(crate) async fn request_stable(
         .connect(target, FEDIMINT_GATEWAY_ALPN)
         .await
         .map_err(ProbeError::unreachable)?;
-    // Connected: from here on the gateway is reachable.
     let result = async {
         let (mut send, mut recv) = connection.open_bi().await?;
         send.write_all(request).await?;
@@ -144,7 +132,6 @@ pub(crate) async fn request_next(
         .connect(target, FEDIMINT_GATEWAY_ALPN)
         .await
         .map_err(ProbeError::unreachable)?;
-    // Connected: from here on the gateway is reachable.
     let result = async {
         let (mut send, mut recv) = connection.open_bi().await?;
         send.write_all(request).await?;

@@ -38,7 +38,6 @@ impl FederationObserver {
         let block_source = BlockHeightSource::of(&config);
         let peer_ids: Vec<PeerId> = config.global.api_endpoints.keys().copied().collect();
 
-        // Since when no guardian has answered, None while any does
         let mut offline_since = self.health_offline_since(federation_id).await?;
         let mut poll_interval =
             health_poll_interval(offline_since.map(|since| chrono::Utc::now().naive_utc() - since));
@@ -48,11 +47,9 @@ impl FederationObserver {
 
         loop {
             let poll_started = tokio::time::Instant::now();
-            // Resolved per round so rotated routes take effect.
             let mut api = match self.federation_api(&config.global) {
                 Ok(api) => api,
                 Err(err) => {
-                    // Our failure, not the guardians': record no sample.
                     tracing::warn!(%federation_id, %err, "No guardian API client for health poll; skipping sample");
                     tokio::time::sleep_until(poll_started + poll_interval).await;
                     continue;
@@ -60,16 +57,12 @@ impl FederationObserver {
             };
 
             let mut peer_status_responses = poll_guardians(&api, &peer_ids, block_source).await;
-            // While backed off, a miss can be a connection that is still being
-            // re-established after the long pause: try once more before
-            // waiting again, and store only that answer
             if poll_interval != ONLINE_POLL_INTERVAL
                 && !peer_status_responses
                     .iter()
                     .any(|(_, status, ..)| status.is_some())
             {
                 tokio::time::sleep(BACKED_OFF_RETRY_DELAY).await;
-                // Discovery may have replaced the route during the wait.
                 match self.federation_api(&config.global) {
                     Ok(current) => api = current,
                     Err(err) => {
@@ -111,19 +104,15 @@ impl FederationObserver {
                         &timestamp,
                         &(peer_id.to_usize() as i32),
                         &status.map(|s| serde_json::to_value(s).expect("Can be serialized")),
-                        // Heights beyond the column's range are nonsense, not wrapped
                         &block_height.and_then(|height| i32::try_from(height).ok()),
                         &api_latency,
                         &software_version,
-                        // The sample stands for the time until the next poll
                         &(next_interval.as_secs() as i32),
                     ],
                 )
                 .await?;
             }
             dbtx.commit().await?;
-            // The next poll can be a minute or more away. Return the connection
-            // before sleeping so other federations can record their health.
             drop(conn);
 
             if next_interval != poll_interval {
@@ -147,7 +136,6 @@ impl FederationObserver {
         let mut announcement_cursors = AnnouncementCursors::default();
         loop {
             interval.tick().await;
-            // The route this process dials, which may lag the stored one.
             let (old_peers, active_api) = match self.selected_api(&config.global) {
                 Ok((peers, api)) => (peers, Some(api)),
                 Err(error) => {
@@ -268,10 +256,6 @@ impl FederationObserver {
         }
     }
 
-    /// When a guardian of the federation last answered, as the end of the
-    /// last hour with an answer, or the first hour on record if none did. A
-    /// restart then keeps the back-off of a federation that has been offline
-    /// for months.
     async fn health_offline_since(
         &self,
         federation_id: FederationId,
@@ -300,13 +284,7 @@ impl FederationObserver {
 
         let health_rows = query::<GuardianHealthRow>(
             &self.connection().await?,
-            // The `guardians` CTE emulates an index skip-scan over the
-            // (federation_id, guardian_id, time) index to enumerate the
-            // federation's guardian ids. Naively grouping by guardian_id to get
-            // the latest row per guardian instead degenerates into a full scan
-            // of the (large) guardian_health table, since PostgreSQL has no
-            // native skip-scan. With the guardian ids known we can fetch each
-            // latest row with a single index descent.
+            // This CTE emulates PostgreSQL's missing index skip-scan.
             // language=postgresql
             "WITH RECURSIVE window_bounds AS (
                  -- Samples are stored in UTC
@@ -438,10 +416,7 @@ impl FederationObserver {
 
         let federations = query::<FederationHealthRow>(
             &self.connection().await?,
-            // See `get_guardian_health` for why the guardian ids are enumerated
-            // with a recursive CTE instead of grouping over guardian_health:
-            // it emulates the index skip-scan PostgreSQL lacks, turning a full
-            // table scan into a handful of index descents.
+            // This CTE emulates PostgreSQL's missing index skip-scan.
             // language=postgresql
             "WITH RECURSIVE guardians AS (
                  SELECT f.federation_id,
@@ -526,22 +501,12 @@ fn clamp_to_u32(value: i64) -> u32 {
     u32::try_from(value.max(0)).unwrap_or(u32::MAX)
 }
 
-/// `fedimint_walletv2_common::endpoint_constants::CONSENSUS_BLOCK_COUNT_ENDPOINT`
 const WALLETV2_CONSENSUS_BLOCK_COUNT_ENDPOINT: &str = "consensus_block_count";
-/// `fedimint_walletv2_server::CONFIRMATION_FINALITY_DELAY`: walletv2 guardians
-/// vote for their bitcoind's block count minus this many blocks
 const WALLETV2_CONFIRMATION_FINALITY_DELAY: u64 = 6;
 
-/// Where a guardian's block height comes from
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BlockHeightSource {
-    /// The v1 wallet module's block count of the guardian's own bitcoind
     WalletLocal(ModuleInstanceId),
-    /// Wallet v2 has no endpoint for the guardian's own bitcoind, only for
-    /// the block count consensus agreed on as the guardian has processed it,
-    /// which trails the chain tip by the finality delay. Added back, it is
-    /// comparable to the chain tip; a guardian behind on consensus or
-    /// federation whose bitcoinds lag reports a lower height.
     WalletV2Consensus(ModuleInstanceId),
 }
 
@@ -565,9 +530,6 @@ impl BlockHeightSource {
         }
     }
 
-    /// The 0-based height of the chain tip in the guardian's answer. Fedimint
-    /// counts blocks, so the tip is one less; a guardian without blocks
-    /// reports 0.
     fn block_height(self, response: serde_json::Value) -> Option<u32> {
         let block_count = match self {
             Self::WalletLocal(_) => {
@@ -575,7 +537,6 @@ impl BlockHeightSource {
             }
             Self::WalletV2Consensus(_) => {
                 let count = serde_json::from_value::<u64>(response).ok()?;
-                // Consensus hasn't agreed on any block yet
                 if count == 0 {
                     return None;
                 }
@@ -586,7 +547,6 @@ impl BlockHeightSource {
     }
 }
 
-/// Polls of a federation that is online, or partly so
 const ONLINE_POLL_INTERVAL: Duration = Duration::from_secs(60);
 const ANNOUNCEMENT_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const ANNOUNCEMENT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -594,8 +554,6 @@ const ANNOUNCEMENT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONCURRENT_ANNOUNCEMENT_QUERIES: usize = 4;
 const MAX_ANNOUNCEMENT_REQUESTS_PER_ROUND: usize = 64;
 const MAX_ANNOUNCEMENTS_VERIFIED_PER_RESPONSE: usize = 64;
-// Per announcement, so one guardian can't block the others' routes. Checked
-// after decoding: the pinned connector has no per-RPC receive cap.
 const MAX_ANNOUNCEMENT_BYTES: usize = 4 * 1024;
 
 struct LimitedWriter {
@@ -622,7 +580,6 @@ fn json_fits_admission_limit(value: &serde_json::Value, limit: usize) -> bool {
 
 struct AdmittedAnnouncements {
     announcements: BTreeMap<PeerId, SignedApiAnnouncement>,
-    /// Members' announcements skipped as oversized or malformed
     rejected: usize,
 }
 
@@ -666,7 +623,6 @@ struct AnnouncementWindow {
     total_known: usize,
 }
 
-/// Per-source positions, so one short reply can't reset another's progress
 #[derive(Default)]
 struct AnnouncementCursors(std::collections::HashMap<DiscoveryTarget, usize>);
 
@@ -782,12 +738,8 @@ fn discovery_targets(
     }
 }
 
-/// Retry of a poll that got no answer while backed off
 const BACKED_OFF_RETRY_DELAY: Duration = Duration::from_secs(30);
 
-/// How often to poll the health of a federation none of whose guardians has
-/// answered for `offline_for`. A federation that has been offline for days is
-/// still polled every 30 minutes, so a returning one is noticed within that.
 fn health_poll_interval(offline_for: Option<TimeDelta>) -> Duration {
     match offline_for {
         Some(offline_for) if offline_for >= TimeDelta::days(7) => Duration::from_secs(30 * 60),
@@ -820,8 +772,6 @@ async fn poll_guardians(
     join_all(peer_ids.iter().map(|&peer_id| {
         let api = api.clone();
         async move {
-            // We don't time the first request, there might be a reconnect happening in
-            // the background
             let status = tokio::time::timeout(
                 Duration::from_secs(10),
                 api.request_single_peer(
@@ -835,8 +785,7 @@ async fn poll_guardians(
             .and_then(Result::ok)
             .and_then(|json| serde_json::from_value::<StatusResponse>(json).ok());
 
-            // Second request is used to determine ping
-            // TODO: how much time does bitcoind take to answer if at all (caching?)?
+            // TODO: Measure bitcoind response latency and caching.
             let start_time = Instant::now();
             let timed_status = tokio::time::timeout(
                 Duration::from_secs(10),

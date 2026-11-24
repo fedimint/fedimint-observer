@@ -34,7 +34,6 @@ function useTabIndicator(tabCount: number) {
       setIndicator(active ? { left: active.offsetLeft, width: active.offsetWidth } : null);
     };
     measure();
-    // A tab scrolled out of view on a narrow screen is brought back when chosen
     row.querySelector<HTMLElement>('a[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     const frame = requestAnimationFrame(() => setAnimate(true));
     const resize = new ResizeObserver(measure);

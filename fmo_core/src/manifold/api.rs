@@ -1,11 +1,3 @@
-//! `/manifold/*`: discovery data as the collector stored it, joined with the
-//! seats the observer verified from federations' own consensus metadata.
-//! Handlers do no remote I/O, read no advertisement payloads and verify no
-//! credential signatures: they read the listings and credential evidence the
-//! collector derived ([`super::collector::Derived`]) and apply only the
-//! trust, revocation and time checks. Their work is bounded by the stored
-//! rows.
-
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Context;
@@ -36,7 +28,6 @@ use crate::federation::observer::{federation_id_from_db, FederationObserver};
 use crate::pagination::{keyset_page, KeysetPage, Page};
 use crate::AppState;
 
-/// Expired advertisements stay listed this long, marked expired
 const LISTED_AFTER_EXPIRY: TimeDelta = TimeDelta::days(7);
 const PRESENCE_DAYS: i64 = 30;
 
@@ -47,7 +38,6 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/flip-providers", get(list_flip_providers))
 }
 
-/// What the collector listed of an advertisement
 enum Listing {
     Mg(Box<MgAdvertisement>),
     Flip(Box<FlipListing>),
@@ -63,18 +53,12 @@ struct StoredAd {
     evidence: CredentialEvidence,
 }
 
-/// What the collector stored of each listed credential's revocation, by
-/// (issuer, credential digest)
 type RevocationEntries = HashMap<(String, String), RevocationKind>;
 
 fn unix_now() -> u64 {
     Utc::now().timestamp().max(0) as u64
 }
 
-/// The stored advertisements of `kinds` (of one author, given one), with
-/// what the collector derived of them, and the stored revocations of their
-/// credentials. Rows the collector has not derived with this binary's
-/// derivation yet are left out until it has.
 async fn load_ads(
     observer: &FederationObserver,
     kinds: &[i32],
@@ -82,8 +66,7 @@ async fn load_ads(
 ) -> anyhow::Result<(Vec<StoredAd>, RevocationEntries)> {
     let now = Utc::now().timestamp();
     let listed_since = now - LISTED_AFTER_EXPIRY.num_seconds();
-    // The collector keeps at most this many per kind; a request never reads
-    // more, whatever was published, and nothing past the retention horizon
+    // The collector keeps at most this many per kind.
     let retention = Retention::DEFAULT;
     let created_since = now - retention.max_age_seconds;
     let max_rows = retention
@@ -172,9 +155,6 @@ async fn provenance(
     })
 }
 
-/// What credentials are checked against: the trusted issuers, when the
-/// collector last read each one's revocations completely, and the stored
-/// revocations of the credentials at hand
 async fn trust_context(
     observer: &FederationObserver,
     entries: RevocationEntries,
@@ -238,9 +218,6 @@ fn wrap_page<T>(
     }
 }
 
-/// The FA's choice: the newest fresh v2 advertisement, else the newest fresh
-/// legacy one; with neither fresh, the newest of any, so it can be shown
-/// expired
 fn choose_ad<'a>(ads: &[&'a StoredAd], now: u64) -> Option<&'a StoredAd> {
     let fresh = |ad: &&&StoredAd| freshness(ad.issued_at, ad.expires_at, now) == AdFreshness::Fresh;
     let newest = |kind: u16, fresh_only: bool| {
@@ -259,10 +236,6 @@ fn choose_ad<'a>(ads: &[&'a StoredAd], now: u64) -> Option<&'a StoredAd> {
         })
 }
 
-/// Seats bound to each Manifold Guardian in observed federations whose
-/// seat-binding directory verifies against their config. Bounded by the
-/// federations that publish a directory, each of at most 64 bindings; the
-/// signatures are checked on a blocking thread.
 pub(super) async fn seats_by_guardian(
     observer: &FederationObserver,
 ) -> anyhow::Result<HashMap<String, Vec<OperatedSeat>>> {
@@ -363,7 +336,6 @@ async fn list_guardians(
     Query(query): Query<DirectoryQuery>,
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<ManifoldDiscovery<Vec<ManifoldGuardianSummary>>>> {
-    // Validated before any work
     let limit = Page::<String> {
         after: None,
         limit: query.limit,
@@ -385,7 +357,6 @@ async fn list_guardians(
     for ad in &ads {
         by_author.entry(ad.author.as_str()).or_default().push(ad);
     }
-    // Guardians that operate a verified seat but no longer advertise are listed too
     for author in seats.keys() {
         by_author.entry(author.as_str()).or_default();
     }
@@ -452,7 +423,6 @@ async fn get_guardian(
     let summary = summary(&fman_pubkey, &refs, &seats, now, &trust);
 
     let connection = observer.connection().await?;
-    // One entry per Fedimint version, with the MG release v2 named for it
     let mut versions: BTreeMap<String, (i64, Option<String>)> = BTreeMap::new();
     for row in connection
         .query(
@@ -553,7 +523,6 @@ async fn list_flip_providers(
             })
         })
         .collect();
-    // Fresh ones first, newest first; the key is the row's order and cursor
     let page = keyset_page(
         providers,
         |p| {

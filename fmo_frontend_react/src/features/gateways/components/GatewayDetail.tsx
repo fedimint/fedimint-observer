@@ -31,7 +31,7 @@ interface GatewayDetailProps {
   now: number;
   dataWindow: GatewayWindow;
   windowMinutes: number;
-  /** The window the activity figures cover, e.g. "7D" */
+
   metricsWindow: string;
   onClose: () => void;
 }
@@ -54,7 +54,6 @@ export function GatewayDetail({ gateway, strip, now, dataWindow, windowMinutes, 
         <dl className="divide-y divide-line">
           <Field label="Gateway id"><KeyChip value={gateway.gateway_id} label="gateway id" head={10} tail={8} /></Field>
           <Field label="Lightning node"><KeyChip value={gateway.node_pub_key} label="Lightning node public key" head={10} tail={8} /></Field>
-          {/* Gateway APIs (iroh:// or /v1 endpoints) are not pages, so they are text to copy */}
           <Field label="API endpoint"><span className="select-all break-all font-mono text-xs text-ink-2">{gateway.api_endpoint}</span></Field>
           <Field label="Vetted">
             {gateway.vetted ? <span className="text-ok-ink">Vetted by the federation</span> : <span className="text-ink-3">Not vetted</span>}

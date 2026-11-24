@@ -1,5 +1,4 @@
-//! Pin public HTTPS gateway addresses and disable redirects. A guardian's
-//! registry must not turn the observer into a client for private HTTP services.
+// Pin public HTTPS gateway addresses and disable redirects.
 use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{anyhow, ensure, Context};
@@ -10,9 +9,6 @@ use fedimint_lnv2_common::gateway_api::RoutingInfo;
 use crate::probes::ProbeError;
 
 pub(crate) fn classify_send_error(error: reqwest::Error) -> ProbeError {
-    // reqwest does not mark an EOF before HTTP headers as a connect error.
-    // Hyper reports it as an incomplete message, which still means that the
-    // gateway gave no response to this probe.
     let mut cause = std::error::Error::source(&error);
     while let Some(source) = cause {
         let incomplete = source
@@ -78,20 +74,15 @@ impl Target {
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            // An address that drops packets fails here, not after the full
-            // request timeout, so it holds a probe slot for seconds.
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(20))
             .resolve_to_addrs(host, &addresses)
             .build()?;
-        // The official gateway connector joins the same absolute route.
         Ok(Self {
             url: url.join("/routing_info")?,
             client,
         })
     }
-    /// Connection failures and timeouts before a response are `Unreachable`;
-    /// anything after the gateway answered is a `BadResponse`.
     pub(crate) async fn routing_info(
         &self,
         fed: &FederationId,
