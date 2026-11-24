@@ -5,9 +5,9 @@ use fmo_api_types::{
 };
 
 use super::{
-    active_assets, activity_scale, group_of, matches_search, nostr_group_of, nostr_sort_key,
-    rows_needing_session_ranges, sort_key, ActiveAssets, FederationGroup, FederationSort,
-    NostrGroup, SortDirection,
+    active_assets, activity_scale, available_assets, group_of, matches_search, nostr_group_of,
+    nostr_sort_key, rows_needing_session_ranges, sort_key, ActiveAssets, FederationGroup,
+    FederationSort, NostrGroup, SortDirection,
 };
 use crate::pagination::keyset_page;
 
@@ -130,6 +130,20 @@ fn active_assets_sum_only_the_active_list() {
         active_assets(&list(), 99).unwrap().held,
         Amount::from_msats(1_410)
     );
+}
+
+#[test]
+fn unavailable_asset_data_leaves_the_kpi_empty_not_an_error() {
+    // A failing balance read, such as a negative wallet total in any federation
+    assert_eq!(
+        available_assets(Err(anyhow::anyhow!("Negative wallet balance"))),
+        None
+    );
+    let assets = ActiveAssets {
+        held: Amount::from_msats(1_400),
+        unknown: 1,
+    };
+    assert_eq!(available_assets(Ok(assets)), Some(assets));
 }
 
 #[test]

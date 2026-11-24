@@ -19,6 +19,7 @@ use fmo_api_types::{
     NostrFederationPage,
 };
 use serde::Deserialize;
+use tracing::warn;
 
 use crate::error::ClientError;
 use crate::pagination::{key_text, keyset_page, Page};
@@ -250,6 +251,19 @@ pub(crate) fn active_assets(
                 }),
             },
         )
+}
+
+/// The asset total, or `None` with a warning, so asset data never fails the
+/// other totals
+pub(crate) fn available_assets(result: anyhow::Result<ActiveAssets>) -> Option<ActiveAssets> {
+    result
+        .inspect_err(|err| {
+            warn!(
+                ?err,
+                "Active asset total unavailable; serving the other totals"
+            )
+        })
+        .ok()
 }
 
 pub(crate) async fn list_federation_page(
