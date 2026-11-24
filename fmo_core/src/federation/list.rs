@@ -188,6 +188,18 @@ pub(crate) fn sort_key(
     }
 }
 
+/// Only shut-down rows show observed session dates, so only they pay for the
+/// range lookups
+pub(crate) fn rows_needing_session_ranges(
+    group: FederationGroup,
+    rows: &mut [FederationSummary],
+) -> &mut [FederationSummary] {
+    match group {
+        FederationGroup::ShutDown => rows,
+        FederationGroup::Active | FederationGroup::Offline => &mut [],
+    }
+}
+
 pub(crate) fn activity_scale(federations: &[FederationSummary]) -> ActivityScale {
     federations
         .iter()
@@ -225,12 +237,16 @@ pub(crate) async fn list_federation_page(
         .into_iter()
         .filter(|f| group_of(f, now) == query.group && matches_search(f, query.search.as_deref()))
         .collect();
-    let page = keyset_page(
+    let mut page = keyset_page(
         matching,
         |f| sort_key(f, query.sort, direction),
         query.after.as_deref(),
         limit,
     )?;
+    state
+        .federation_observer
+        .attach_session_ranges(rows_needing_session_ranges(query.group, &mut page.items))
+        .await?;
     Ok(Json(FederationPage {
         federations: page.items,
         next_after: page.next_after,

@@ -40,6 +40,16 @@ export function formatUtcDate(value: DateInput, options: Intl.DateTimeFormatOpti
   return date.toLocaleDateString('en-US', { ...options, timeZone: 'UTC' });
 }
 
+/** "May 10, 2024 – Sep 10, 2024", or one date when both fall on the same UTC day */
+export function formatUtcDateRange(start: DateInput, end: DateInput, fallback = 'Dates unavailable'): string {
+  const startDate = toDate(start);
+  const endDate = toDate(end);
+  if (!startDate || !endDate) return fallback;
+  const startText = formatUtcDate(startDate);
+  const endText = formatUtcDate(endDate);
+  return startText === endText ? startText : `${startText} – ${endText}`;
+}
+
 /** "Nov 7, 19:00" in UTC, for chart points a few hours apart */
 export function formatUtcDayHour(value: DateInput, fallback = ''): string {
   const date = toDate(value);

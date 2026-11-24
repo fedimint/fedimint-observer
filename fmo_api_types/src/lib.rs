@@ -53,6 +53,12 @@ pub struct FederationSummary {
     pub name: Option<String>,
     pub last_7d_activity: Vec<FederationActivity>,
     pub deposits: Option<Amount>,
+    /// Estimated time of the first session this observer dated, in Unix
+    /// seconds; not an announced start date. Set on shut-down page rows only
+    pub first_session_timestamp: Option<u64>,
+    /// Estimated time of the last session this observer dated, in Unix
+    /// seconds; not an announced shutdown date. Set on shut-down page rows only
+    pub last_session_timestamp: Option<u64>,
     pub invite: String,
     pub nostr_votes: FederationRating,
     pub health: FederationHealth,

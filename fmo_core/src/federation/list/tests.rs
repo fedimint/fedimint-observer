@@ -5,8 +5,9 @@ use fmo_api_types::{
 };
 
 use super::{
-    activity_scale, group_of, matches_search, nostr_group_of, nostr_sort_key, sort_key,
-    FederationGroup, FederationSort, NostrGroup, SortDirection,
+    activity_scale, group_of, matches_search, nostr_group_of, nostr_sort_key,
+    rows_needing_session_ranges, sort_key, FederationGroup, FederationSort, NostrGroup,
+    SortDirection,
 };
 use crate::pagination::keyset_page;
 
@@ -26,6 +27,8 @@ fn federation(
             amount_transferred: Amount::from_msats(tx * 1000),
         }],
         deposits: deposits.map(Amount::from_msats),
+        first_session_timestamp: None,
+        last_session_timestamp: None,
         invite: format!("fed1invite{n}"),
         nostr_votes: FederationRating {
             count: 0,
@@ -98,6 +101,17 @@ fn groups_follow_the_home_page_rules() {
     assert_eq!(groups, [Active, Active, Active, Offline, ShutDown]);
     // Before its expiry it is just active
     assert_eq!(group_of(&list()[4], 99), Active);
+}
+
+#[test]
+fn only_shut_down_rows_get_session_ranges() {
+    let mut rows = list();
+    assert_eq!(
+        rows_needing_session_ranges(FederationGroup::ShutDown, &mut rows).len(),
+        5
+    );
+    assert!(rows_needing_session_ranges(FederationGroup::Active, &mut rows).is_empty());
+    assert!(rows_needing_session_ranges(FederationGroup::Offline, &mut rows).is_empty());
 }
 
 #[test]

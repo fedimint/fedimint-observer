@@ -65,6 +65,7 @@ jobs:
           nix develop -c cargo test -p fmo_core postgres_endpoint_restore_completes_with_one_database_connection -- --ignored
           nix develop -c cargo test -p fmo_core postgres_guardian_route_migration_fences_revisions -- --ignored
           nix develop -c cargo test -p fmo_core postgres_worker_and_replica_share_rotations_without_downgrade -- --ignored
+          nix develop -c cargo test -p fmo_core postgres_federation_session_ranges_use_dated_bounds -- --ignored
           nix develop -c cargo test -p fmo_module_walletv2 postgres_deposit_replay_and_instance_pagination -- --ignored
           nix develop -c cargo test -p fmo_module_lnv2 postgres_probe_history_and_activity -- --ignored
           nix develop -c cargo test -p fmo_module_lnv2 postgres_v2_migration_and_admission_trim_existing_records -- --ignored
