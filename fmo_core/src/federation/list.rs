@@ -8,15 +8,18 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
+use anyhow::Context;
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::Utc;
 use fedimint_core::config::FederationId;
+use fedimint_core::Amount;
 use fmo_api_types::{
     ActivityScale, FederationHealth, FederationPage, FederationSummary, NostrFederationEntry,
     NostrFederationPage,
 };
 use serde::Deserialize;
+use tracing::warn;
 
 use crate::error::ClientError;
 use crate::pagination::{key_text, keyset_page, Page};
@@ -69,12 +72,17 @@ pub(crate) struct FederationListQuery {
 }
 
 pub(crate) fn group_of(federation: &FederationSummary, now: u64) -> FederationGroup {
-    if federation
-        .expiry_timestamp
-        .is_some_and(|expiry| expiry <= now)
-    {
+    group_for(federation.expiry_timestamp, federation.health, now)
+}
+
+pub(crate) fn group_for(
+    expiry_timestamp: Option<u64>,
+    health: FederationHealth,
+    now: u64,
+) -> FederationGroup {
+    if expiry_timestamp.is_some_and(|expiry| expiry <= now) {
         FederationGroup::ShutDown
-    } else if federation.health == FederationHealth::Offline {
+    } else if health == FederationHealth::Offline {
         FederationGroup::Offline
     } else {
         FederationGroup::Active
@@ -210,8 +218,63 @@ pub(crate) fn activity_scale(federations: &[FederationSummary]) -> ActivityScale
         })
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     Utc::now().timestamp().max(0) as u64
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveAssets {
+    pub held: Amount,
+    pub reporting: u64,
+    pub unknown: u64,
+}
+
+impl ActiveAssets {
+    /// `None` when none reports, so unknown never reads as a measured zero
+    pub(crate) fn known_held(&self) -> Option<Amount> {
+        (self.reporting > 0 || self.unknown == 0).then_some(self.held)
+    }
+}
+
+pub(crate) fn active_assets(
+    federations: impl IntoIterator<Item = (FederationGroup, Option<Amount>)>,
+) -> anyhow::Result<ActiveAssets> {
+    federations
+        .into_iter()
+        .filter(|(group, _)| *group == FederationGroup::Active)
+        .try_fold(
+            ActiveAssets {
+                held: Amount::ZERO,
+                reporting: 0,
+                unknown: 0,
+            },
+            |total, (_, deposits)| match deposits {
+                Some(amount) => Ok(ActiveAssets {
+                    held: total
+                        .held
+                        .checked_add(amount)
+                        .context("Active federation asset total overflow")?,
+                    reporting: total.reporting + 1,
+                    ..total
+                }),
+                None => Ok(ActiveAssets {
+                    unknown: total.unknown + 1,
+                    ..total
+                }),
+            },
+        )
+}
+
+/// `None` with a warning, so asset data never fails the other totals
+pub(crate) fn available_assets(result: anyhow::Result<ActiveAssets>) -> Option<ActiveAssets> {
+    result
+        .inspect_err(|err| {
+            warn!(
+                ?err,
+                "Active asset total unavailable; serving the other totals"
+            )
+        })
+        .ok()
 }
 
 pub(crate) async fn list_federation_page(

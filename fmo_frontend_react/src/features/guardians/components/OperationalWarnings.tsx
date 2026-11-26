@@ -31,7 +31,7 @@ export function OperationalWarnings({ warnings, allClear, limit = 4, onSelectGua
   const shown = expanded ? warnings : warnings.slice(0, limit);
   return (
     <div>
-      <ul className="space-y-1.5" aria-label="Operational warnings">
+      <ul className="space-y-2" aria-label="Operational warnings">
         {shown.map((warning) => {
           const style = STYLE[warning.tone];
           const content = (

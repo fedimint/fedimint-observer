@@ -35,7 +35,7 @@ export function GatewayV2Detail({ gateway, timeWindow, onClose }: { gateway: Gat
       title={gatewayName(gateway)}
       subtitle={
         <span className="inline-flex items-center gap-2">
-          <span className={`rounded-full px-2 py-0.5 text-[0.68rem] font-semibold capitalize ${STATUS_COLORS[gateway.status]}`}>{gateway.status}</span>
+          <span className={`rounded-md px-2 py-0.5 text-xs font-medium capitalize ${STATUS_COLORS[gateway.status]}`}>{gateway.status}</span>
           Lightning v2 · {gateway.api_endpoint.startsWith('iroh:') ? 'Iroh' : 'HTTPS'} gateway
         </span>
       }
@@ -43,7 +43,7 @@ export function GatewayV2Detail({ gateway, timeWindow, onClose }: { gateway: Gat
     >
       <Section title="Identity">
         <dl className="divide-y divide-line">
-          <Field label="API endpoint"><span className="select-all break-all font-mono text-[0.72rem] text-ink-2">{gateway.api_endpoint}</span></Field>
+          <Field label="API endpoint"><span className="select-all break-all font-mono text-xs text-ink-2">{gateway.api_endpoint}</span></Field>
           <Field label="Lightning node">{routing ? <KeyChip value={routing.lightning_public_key} label="Lightning node public key" head={10} tail={8} /> : awaiting}</Field>
           <Field label="Federation module key">{routing ? <KeyChip value={routing.module_public_key} label="federation module key" head={10} tail={8} /> : awaiting}</Field>
           <Field label="Reported by guardians">{gateway.announcing_guardians.map((id) => `#${id}`).join(', ') || '—'}</Field>
@@ -88,7 +88,7 @@ export function GatewayV2Detail({ gateway, timeWindow, onClose }: { gateway: Gat
         ) : (
           <p className="text-xs text-ink-3">Waiting for the gateway's identity to attribute activity.</p>
         )}
-        <p className="mt-3 text-[0.7rem] leading-relaxed text-ink-3">
+        <p className="mt-3 text-xs leading-relaxed text-ink-3">
           Activity is matched by the module key this gateway reports about itself, which the observer cannot verify; a key another gateway also claims is credited to neither. A successful API probe does not verify Lightning liquidity.
         </p>
       </Section>

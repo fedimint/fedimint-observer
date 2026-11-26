@@ -18,8 +18,8 @@ export function InspectFederationCard() {
   return (
     <ListCard className="mt-8">
       <div className="p-4 sm:p-5">
-        <h1 className="text-[0.95rem] font-semibold tracking-tight text-ink">Inspect Federation</h1>
-        <p className="mt-0.5 text-xs text-ink-3 sm:text-[0.8rem]">Fetch federation info by invite code</p>
+        <h1 className="text-base font-medium text-ink">Inspect federation</h1>
+        <p className="mt-0.5 text-xs text-ink-3 sm:text-sm">Fetch federation info by invite code</p>
       </div>
 
       <div className="p-4 pt-0 sm:p-5 sm:pt-0">
@@ -54,15 +54,14 @@ export function InspectFederationCard() {
 
         {error && (
           <div role="alert" className="mt-4 rounded-xl border border-crit/25 bg-crit-soft px-4 py-3 text-sm text-crit-ink wrap-break-word">
-            <span className="font-bold">Error: </span>
+            <span className="font-medium">Error: </span>
             {error}
           </div>
         )}
 
         {announced && (
           <div className="p-3 sm:p-4 mb-4 mt-4 text-xs sm:text-sm text-ok-ink rounded-lg bg-ok-soft">
-            <span className="font-bold">Success! </span>
-            Federation announced successfully! Reload the page to see it listed.
+            Federation announced. Reload the page to see it listed.
           </div>
         )}
       </div>

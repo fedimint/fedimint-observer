@@ -53,8 +53,8 @@ export function GatewayDirectory(props: GatewayDirectoryProps) {
       <div className="border-b border-line p-4 sm:p-5">
         <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-start">
           <div>
-            <h2 className="text-[0.95rem] font-semibold tracking-tight text-ink">Gateway directory</h2>
-            <p className="mt-0.5 text-xs text-ink-3 sm:text-[0.8rem]">{matched} {matched === 1 ? 'gateway' : 'gateways'} · select a gateway for its keys, endpoint, history and raw announcement.</p>
+            <h2 className="text-base font-medium text-ink">Gateway directory</h2>
+            <p className="mt-0.5 text-xs text-ink-3 sm:text-sm">{matched} {matched === 1 ? 'gateway' : 'gateways'} · select a gateway for its keys, endpoint, history and raw announcement.</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <SearchInput value={search} onChange={props.onSearchChange} label="Search gateways" placeholder="Search gateway, node, endpoint" className="sm:w-64" />
@@ -86,7 +86,7 @@ export function GatewayDirectory(props: GatewayDirectoryProps) {
             <col className="w-[20%]" />
             <col className="w-[14%]" />
           </colgroup>
-          <thead className="hidden bg-surface-2 text-xs uppercase tracking-wide text-ink-2 sm:table-header-group">
+          <thead className="hidden bg-surface-2 text-xs text-ink-2 sm:table-header-group">
             <tr>
               <th scope="col" className="px-4 py-3 sm:px-5">Gateway</th>
               <th scope="col" className="px-4 py-3 sm:px-5">Availability</th>

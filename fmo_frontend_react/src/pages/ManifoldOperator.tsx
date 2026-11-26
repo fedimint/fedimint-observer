@@ -80,7 +80,7 @@ function PresenceHistory({ profile }: { profile: ManifoldGuardianProfile }) {
               );
             })}
           </div>
-          <div className="mt-1.5 flex justify-between text-[0.65rem] text-ink-3">
+          <div className="mt-2 flex justify-between text-xs text-ink-3">
             <span>{formatUtcDate(days[0].date, { month: 'short', day: 'numeric' })}</span>
             <span>Today</span>
           </div>
@@ -96,7 +96,7 @@ function PresenceHistory({ profile }: { profile: ManifoldGuardianProfile }) {
 function VersionHistory({ profile }: { profile: ManifoldGuardianProfile }) {
   if (profile.version_history.length === 0) return <EmptyState icon="layers" title="No version changes observed" />;
   return (
-    <ol className="space-y-2.5">
+    <ol className="space-y-3">
       {profile.version_history.map((change, index) => (
         <li key={change.observed_at} className="flex items-start gap-3 text-xs">
           <span className={`mt-1 size-2 shrink-0 rounded-full ${index === 0 ? 'bg-manifold' : 'bg-line-strong'}`} aria-hidden="true" />
@@ -210,7 +210,7 @@ export function ManifoldOperator() {
                     </dd>
                   </dl>
                   <div>
-                    <h3 className="mb-1.5 text-[0.68rem] font-medium uppercase tracking-wide text-ink-3">Setup plans</h3>
+                    <h3 className="mb-2 text-xs font-medium text-ink-3">Setup plans</h3>
                     <PlanList plans={ad.plans} />
                   </div>
                 </div>
@@ -235,15 +235,15 @@ export function ManifoldOperator() {
             <Card aria-labelledby="technical-title">
               <details className="group">
                 <summary className="flex cursor-pointer list-none items-center justify-between gap-2">
-                  <h2 id="technical-title" className="text-[0.95rem] font-semibold text-ink">Technical details</h2>
+                  <h2 id="technical-title" className="text-base font-semibold text-ink">Technical details</h2>
                   <Icon name="chevronRight" className="size-4 text-ink-3 transition-transform group-open:rotate-90" />
                 </summary>
-                <dl className="mt-3 grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2.5 text-xs">
+                <dl className="mt-3 grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-3 text-xs">
                   <TechnicalRow label="Nostr identity"><KeyChip value={profile.fman_pubkey} label="Nostr public key" full /></TechnicalRow>
                   {ad && <>
                     <TechnicalRow label="Service key"><KeyChip value={ad.service_pubkey} label="service public key" /></TechnicalRow>
                     <TechnicalRow label="Iroh endpoints">
-                      <ul className="space-y-1">{ad.api_endpoints.map((endpoint) => <li key={endpoint.url} className="break-all font-mono text-[0.7rem]">{endpoint.url}</li>)}</ul>
+                      <ul className="space-y-1">{ad.api_endpoints.map((endpoint) => <li key={endpoint.url} className="break-all font-mono text-xs">{endpoint.url}</li>)}</ul>
                     </TechnicalRow>
                     <TechnicalRow label="Advertisement">
                       Kind {ad.event_kind} {ad.event_kind === 37709 ? '(v2)' : '(legacy)'} · signature {ad.signature_valid ? 'valid' : 'invalid'}
@@ -253,13 +253,13 @@ export function ManifoldOperator() {
                     <TechnicalRow label="Authorizations">{ad.holder_authorization_count} holder {ad.holder_authorization_count === 1 ? 'authorization' : 'authorizations'}</TechnicalRow>
                   </>}
                   <TechnicalRow label="Relays">
-                    <ul className="space-y-0.5">{profile.nostr_relays.map((relay) => <li key={relay} className="break-all font-mono text-[0.7rem]">{relay}</li>)}</ul>
+                    <ul className="space-y-0.5">{profile.nostr_relays.map((relay) => <li key={relay} className="break-all font-mono text-xs">{relay}</li>)}</ul>
                   </TechnicalRow>
                 </dl>
               </details>
             </Card>
 
-            <p className="px-1 text-[0.7rem] leading-relaxed text-ink-3">
+            <p className="px-1 text-xs leading-relaxed text-ink-3">
               The observer is read-only. Replacing or transferring a guardian seat is done through Manifold by the federation's operators.
             </p>
           </div>

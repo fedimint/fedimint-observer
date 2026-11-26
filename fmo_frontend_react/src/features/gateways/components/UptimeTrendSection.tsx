@@ -52,13 +52,13 @@ export function UptimeTrendSection({ timeWindow, points, placeholder }: UptimeTr
         {points.length > 0 && <span className="text-xs text-ink-3">{points.length} day{points.length === 1 ? '' : 's'} with data</span>}
       </div>
       {points.length > 0 ? (
-        <ErrorBoundary fallback={<div className="flex h-[210px] items-center justify-center"><ReloadMessage message="The availability chart could not be loaded." /></div>}>
-          <Suspense fallback={<div className="flex h-[210px] items-center justify-center text-sm text-ink-3">Loading chart…</div>}>
+        <ErrorBoundary fallback={<div className="flex h-52 items-center justify-center"><ReloadMessage message="The availability chart could not be loaded." /></div>}>
+          <Suspense fallback={<div className="flex h-52 items-center justify-center text-sm text-ink-3">Loading chart…</div>}>
             <UptimeTrendChart option={option} />
           </Suspense>
         </ErrorBoundary>
       ) : (
-        <div className="flex h-[210px] items-center justify-center text-sm text-ink-3">{placeholder}</div>
+        <div className="flex h-52 items-center justify-center text-sm text-ink-3">{placeholder}</div>
       )}
     </section>
   );

@@ -46,7 +46,7 @@ export function GatewayV2Row({ gateway, timeWindow, onSelect }: { gateway: Gatew
         </div>
         <div>
           <div className="flex items-center justify-between gap-2">
-            <span className={`rounded-full px-2.5 py-1 text-xs font-semibold capitalize ${STATUS_COLORS[gateway.status]}`}>{gateway.status}</span>
+            <span className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize ${STATUS_COLORS[gateway.status]}`}>{gateway.status}</span>
             <span className={`text-xs ${muted}`}>{gateway.latency_ms === null ? '—' : `${gateway.latency_ms} ms`}</span>
           </div>
           <p className="mt-2 text-sm font-semibold">{gateway.samples ? `${(gateway.online_samples / gateway.samples * 100).toFixed(1)}% successful checks` : 'No probe history'}</p>

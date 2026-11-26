@@ -79,7 +79,7 @@ export function Home() {
           }}
           label="Search federations by name, invite code or ID"
           clearLabel="Clear federation search"
-          placeholder="Search federations by name, invite code or ID…"
+          placeholder="Search by name, invite code or ID"
           size="md"
         />
         {isResolvingInvite && (
@@ -128,9 +128,9 @@ export function Home() {
 
       <ListCard>
         <div className="p-4 sm:p-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between bg-surface">
-          <div className="text-[0.95rem] font-semibold tracking-tight text-left rtl:text-right text-ink">
-            <h1>Observed Federations</h1>
-            <p className="mt-0.5 text-xs sm:text-[0.8rem] font-normal tracking-normal text-ink-3">
+          <div className="text-base font-medium text-left rtl:text-right text-ink">
+            <h1>Observed federations</h1>
+            <p className="mt-0.5 text-xs sm:text-sm font-normal text-ink-3">
               List of all active federations this instance is collecting statistics on
             </p>
             {active.error && active.page && (
@@ -155,7 +155,7 @@ export function Home() {
 
       <CollapsibleFederations
         id="offline-federations"
-        title="Offline Federations"
+        title="Offline federations"
         description="Federations where fewer guardians answered the observer in the last 5 minutes than consensus needs"
         emptyText={search ? 'No offline federations match your search' : 'No offline federations'}
         federations={offline.federations}
@@ -168,7 +168,7 @@ export function Home() {
 
       <CollapsibleFederations
         id="shut-down-federations"
-        title="Shut Down Federations"
+        title="Shut down federations"
         description="Federations whose guardians announced an expiry date that has passed"
         emptyText={search ? 'No shut down federations match your search' : 'No shut down federations'}
         federations={shutDown.federations}

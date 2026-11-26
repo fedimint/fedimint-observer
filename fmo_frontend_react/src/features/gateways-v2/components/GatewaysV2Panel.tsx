@@ -22,7 +22,7 @@ export function GatewaysV2Panel({ id, modules }: { id: string; modules: ClientCo
     <div className="text-ink">
       <div className="mb-4 flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
         <div>
-          <h2 className="text-[0.95rem] font-semibold tracking-tight text-ink">Lightning v2 gateways</h2>
+          <h2 className="text-base font-medium text-ink">Lightning v2 gateways</h2>
           <p className={`mt-1 text-xs ${muted}`}>Gateway health, routing fees and observed contract activity</p>
         </div>
         <GatewayV2WindowPicker value={timeWindow} onChange={selectWindow} />

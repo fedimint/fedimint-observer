@@ -44,7 +44,7 @@ export function GatewayDetail({ gateway, strip, now, dataWindow, windowMinutes, 
       title={name}
       subtitle={
         <span className="inline-flex items-center gap-2">
-          <span className={`rounded-full px-2 py-0.5 text-[0.68rem] font-semibold ${statusClasses(gateway.status)}`}>{gateway.status}</span>
+          <span className={`rounded-md px-2 py-0.5 text-xs font-medium ${statusClasses(gateway.status)}`}>{gateway.status}</span>
           Lightning v1 gateway
         </span>
       }
@@ -55,7 +55,7 @@ export function GatewayDetail({ gateway, strip, now, dataWindow, windowMinutes, 
           <Field label="Gateway id"><KeyChip value={gateway.gateway_id} label="gateway id" head={10} tail={8} /></Field>
           <Field label="Lightning node"><KeyChip value={gateway.node_pub_key} label="Lightning node public key" head={10} tail={8} /></Field>
           {/* Gateway APIs (iroh:// or /v1 endpoints) are not pages, so they are text to copy */}
-          <Field label="API endpoint"><span className="select-all break-all font-mono text-[0.72rem] text-ink-2">{gateway.api_endpoint}</span></Field>
+          <Field label="API endpoint"><span className="select-all break-all font-mono text-xs text-ink-2">{gateway.api_endpoint}</span></Field>
           <Field label="Vetted">
             {gateway.vetted ? <span className="text-ok-ink">Vetted by the federation</span> : <span className="text-ink-3">Not vetted</span>}
           </Field>
@@ -101,7 +101,7 @@ export function GatewayDetail({ gateway, strip, now, dataWindow, windowMinutes, 
       {gateway.raw && (
         <Section title="Raw announcement">
           <p className="mb-2 text-xs text-ink-3">Exactly as the federation published it for {shortMiddle(gateway.gateway_id, 8, 8, '...')}.</p>
-          <pre className="m-0 max-h-96 overflow-auto rounded-lg bg-ink-3 p-3 text-[0.7rem] leading-5 text-line-strong scrollbar-thin">
+          <pre className="m-0 max-h-96 overflow-auto rounded-lg bg-ink-3 p-3 text-xs leading-5 text-line-strong scrollbar-thin">
             {JSON.stringify(gateway.raw, null, 2)}
           </pre>
         </Section>

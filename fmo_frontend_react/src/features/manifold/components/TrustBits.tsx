@@ -45,7 +45,7 @@ export function FreshnessPill({ freshness, issuedAt }: { freshness: AdFreshness 
 export function PlanList({ plans }: { plans: readonly MgPlan[] }) {
   if (plans.length === 0) return <span className="text-xs text-ink-3">No plans advertised</span>;
   return (
-    <ul className="space-y-1.5">
+    <ul className="space-y-2">
       {plans.map((plan, index) => (
         <li key={index} className="flex items-center justify-between gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs">
           <span className="text-ink-2">{plan.kind === 'infinite_best_effort' ? 'Best effort, no expiry' : `Subscription (${plan.period})`}</span>
@@ -77,7 +77,7 @@ function CheckGroups({ checks }: { checks: readonly CredentialCheck[] }) {
         for (const check of group) byReason.set(check.detail ?? '', [...(byReason.get(check.detail ?? '') ?? []), check]);
         return (
           <div key={outcome.key}>
-            <h4 className="mb-1.5 flex items-center gap-1.5 text-[0.7rem] font-semibold uppercase tracking-wide text-ink-3">
+            <h4 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-ink-3">
               <Icon name={outcome.icon} className={`size-3.5 ${outcome.tone}`} />
               {outcome.title} · {group.length}
             </h4>
@@ -89,7 +89,7 @@ function CheckGroups({ checks }: { checks: readonly CredentialCheck[] }) {
                       <li key={check.id} className={outcome.key === 'skipped' ? 'text-ink-2' : 'text-ink'}>{check.label}</li>
                     ))}
                   </ul>
-                  {reason && <p className="mt-0.5 text-[0.7rem] text-ink-3">{reason}</p>}
+                  {reason && <p className="mt-0.5 text-xs text-ink-3">{reason}</p>}
                 </div>
               ))}
             </div>
@@ -127,7 +127,7 @@ export function TrustEvidence({ credential }: { credential: TrustCredential }) {
         </dl>
       )}
       {credential.checks.length > 0 && <CheckGroups checks={credential.checks} />}
-      <p className="text-[0.7rem] leading-relaxed text-ink-3">
+      <p className="text-xs leading-relaxed text-ink-3">
         A valid Nostr signature alone does not establish trust. "Verified" needs a pinned trust-root issuer, both PeerBadge proofs, no revocation at any issuer location and a trust level of at least {credential.required_trust_level}; until every check has run and passed, the credential stays unverified.
       </p>
     </div>

@@ -18,7 +18,7 @@ export function UtxoToolbar({ utxos }: { utxos: FederationUtxos }) {
               type="button"
               onClick={() => utxos.selectView(view)}
               aria-pressed={active}
-              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border font-medium transition-colors ${CONTROL_SIZE.sm} ${
+              className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border font-medium transition-colors ${CONTROL_SIZE.sm} ${
                 active ? TOGGLE_ON : alert ? 'border-crit/30 bg-surface text-crit-ink hover:bg-crit-soft' : TOGGLE_OFF
               }`}
             >

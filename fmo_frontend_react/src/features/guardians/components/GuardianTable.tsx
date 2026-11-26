@@ -116,7 +116,7 @@ export function GuardianTable({ rows, onSelect }: GuardianTableProps) {
       <div className="hidden overflow-x-auto md:block scrollbar-thin">
         <table className="w-full min-w-[900px] text-sm">
           <caption className="sr-only">Guardians of this federation. Select a row for details.</caption>
-          <thead className="border-b border-line text-[0.7rem] uppercase tracking-wide text-ink-3">
+          <thead className="border-b border-line text-xs text-ink-3">
             <tr>
               <ColumnHeader label="Guardian" sortKey="id" {...header} help="Fedimint peer id and the name in the federation config. A Manifold identity shows only when a verified seat binding names one." />
               <ColumnHeader label="Status" sortKey="state" {...header} />
@@ -178,7 +178,7 @@ export function GuardianTable({ rows, onSelect }: GuardianTableProps) {
                 <div><dt className="text-ink-3">Version</dt><dd className="mt-0.5 truncate font-mono text-ink" title={row.version ?? undefined}>{row.version ?? '—'}</dd></div>
               </dl>
               {(row.binding || row.warnings.length > 0) && (
-                <div className="mt-2.5 flex flex-wrap gap-1.5">
+                <div className="mt-3 flex flex-wrap gap-1.5">
                   {row.binding && <ManifoldCell row={row} />}
                   {row.warnings.length > 0 && <Issues row={row} />}
                 </div>

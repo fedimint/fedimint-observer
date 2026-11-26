@@ -31,7 +31,7 @@ use crate::config::meta::{MetaFields, MetaFieldsExt};
 use crate::config::FederationConfigCache;
 use crate::federation::db::Federation;
 use crate::federation::projector::ProjectorWakeups;
-use crate::federation::{db, instance_to_kind};
+use crate::federation::{db, instance_to_kind, list};
 use crate::module::{schema_name, ModuleRegistry, Services};
 use crate::task::supervise;
 use crate::util::{query, query_one, query_opt, query_value};
@@ -45,6 +45,7 @@ mod endpoint_restore_tests;
 const ESPLORA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Bounds a session fetch so its retry can switch to rotated routes
 const SESSION_FETCH_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(90);
+const ACTIVE_ASSETS_DEADLINE: Duration = Duration::from_secs(5);
 // Older SQL is retained for new databases; populated databases upgrade from
 // v11.
 const CORE_MIGRATIONS: &[&str] = &[
@@ -1085,18 +1086,8 @@ impl FederationObserver {
         query(&self.connection().await?, "SELECT * FROM federations", &[]).await
     }
 
-    /// The federation list uses a fixed number of database queries and no
-    /// remote I/O.
-    pub async fn list_federation_summaries(&self) -> anyhow::Result<Vec<FederationSummary>> {
-        let federations = self.list_federations().await?;
-        let federation_health = self.get_guardian_health_summary().await?;
-        let assets = self.federation_assets().await?;
-        let snapshots = self.asset_snapshots().await?;
-        let mut activity = self.federations_activity(7).await?;
-        let mut ratings = self.federation_ratings().await?;
-
-        let mut metas = self
-            .connection()
+    async fn meta_observations(&self) -> anyhow::Result<HashMap<FederationId, MetaFields>> {
+        self.connection()
             .await?
             .query(
                 "SELECT federation_id, data FROM federation_observations WHERE kind = 'meta'",
@@ -1110,7 +1101,20 @@ impl FederationObserver {
                     serde_json::from_value::<MetaFields>(row.get(1))?,
                 ))
             })
-            .collect::<anyhow::Result<HashMap<_, _>>>()?;
+            .collect()
+    }
+
+    /// The federation list uses a fixed number of database queries and no
+    /// remote I/O.
+    pub async fn list_federation_summaries(&self) -> anyhow::Result<Vec<FederationSummary>> {
+        let federations = self.list_federations().await?;
+        let federation_health = self.get_guardian_health_summary().await?;
+        let assets = self.federation_assets().await?;
+        let snapshots = self.asset_snapshots().await?;
+        let mut activity = self.federations_activity(7).await?;
+        let mut ratings = self.federation_ratings().await?;
+
+        let mut metas = self.meta_observations().await?;
         federations
             .into_iter()
             .map(|federation| {
@@ -1126,17 +1130,7 @@ impl FederationObserver {
                             .get("federation_name")
                             .cloned()
                     });
-                let expiry_timestamp = meta
-                    .as_ref()
-                    .and_then(|meta| meta.get_as::<u64>("federation_expiry_timestamp"))
-                    .or_else(|| {
-                        federation
-                            .config
-                            .global
-                            .meta
-                            .get("federation_expiry_timestamp")
-                            .and_then(|value| value.parse().ok())
-                    });
+                let expiry_timestamp = expiry_timestamp(meta.as_ref(), &federation);
                 let successor = meta
                     .as_ref()
                     .and_then(|meta| meta.get_as::<String>("federation_successor"))
@@ -1892,6 +1886,18 @@ impl FederationObserver {
     }
 
     pub async fn totals(&self) -> anyhow::Result<FedimintTotals> {
+        let health = self.get_guardian_health_summary().await?;
+        self.totals_with(&health, self.active_assets(&health), ACTIVE_ASSETS_DEADLINE)
+            .await
+    }
+
+    /// The counters, plus the asset sum if `assets` finishes within `deadline`
+    async fn totals_with(
+        &self,
+        health: &BTreeMap<FederationId, FederationHealth>,
+        assets: impl std::future::Future<Output = anyhow::Result<list::ActiveAssets>>,
+        deadline: Duration,
+    ) -> anyhow::Result<FedimintTotals> {
         #[derive(Debug, FromRow)]
         struct FedimintTotalsResult {
             federations: i64,
@@ -1899,9 +1905,7 @@ impl FederationObserver {
             tx_volume: i64,
         }
 
-        let offline_federations = self
-            .get_guardian_health_summary()
-            .await?
+        let offline_federations = health
             .values()
             .filter(|&health| *health == FederationHealth::Offline)
             .count() as u64;
@@ -1922,11 +1926,57 @@ impl FederationObserver {
         )
         .await?;
 
+        let assets =
+            list::available_assets(tokio::time::timeout(deadline, assets).await.unwrap_or_else(
+                |_| {
+                    Err(anyhow::anyhow!(
+                        "Active asset total took longer than {deadline:?}"
+                    ))
+                },
+            ));
+
         Ok(FedimintTotals {
             federations: (totals.federations as u64) - offline_federations,
             tx_count: totals.tx_count as u64,
             tx_volume: Amount::from_msats(totals.tx_volume as u64),
+            active_assets: assets.and_then(|assets| assets.known_held()),
+            active_assets_unknown: assets.map(|assets| assets.unknown),
+            active_assets_reporting: assets.map(|assets| assets.reporting),
         })
+    }
+
+    /// Asset-only read: the list's grouping without activity, ratings or
+    /// invites
+    async fn active_assets(
+        &self,
+        health: &BTreeMap<FederationId, FederationHealth>,
+    ) -> anyhow::Result<list::ActiveAssets> {
+        let federations = self.list_federations().await?;
+        let legacy = self.federation_assets().await?;
+        let snapshots = self.asset_snapshots().await?;
+        let mut metas = self.meta_observations().await?;
+        let now = list::unix_now();
+        let rows = federations
+            .iter()
+            .map(|federation| {
+                let group = list::group_for(
+                    expiry_timestamp(metas.remove(&federation.federation_id).as_ref(), federation),
+                    health
+                        .get(&federation.federation_id)
+                        .copied()
+                        .unwrap_or(FederationHealth::Offline),
+                    now,
+                );
+                let deposits = match group {
+                    list::FederationGroup::Active => {
+                        self.combined_assets(federation, &legacy, &snapshots)?
+                    }
+                    _ => None,
+                };
+                Ok((group, deposits))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        list::active_assets(rows)
     }
 
     /// Checks a backfill request and starts it in the background, returning
@@ -2297,6 +2347,19 @@ pub(super) async fn insert_unix_time_vote(
 fn not_observed(federation_id: FederationId) -> anyhow::Error {
     crate::error::ClientError::not_found(format!("Federation {federation_id} is not observed"))
         .into()
+}
+
+/// Latest observed meta, else the config's
+fn expiry_timestamp(meta: Option<&MetaFields>, federation: &Federation) -> Option<u64> {
+    meta.and_then(|meta| meta.get_as::<u64>("federation_expiry_timestamp"))
+        .or_else(|| {
+            federation
+                .config
+                .global
+                .meta
+                .get("federation_expiry_timestamp")
+                .and_then(|value| value.parse().ok())
+        })
 }
 
 pub(crate) fn federation_id_from_db(bytes: &[u8]) -> anyhow::Result<FederationId> {

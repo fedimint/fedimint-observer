@@ -150,7 +150,7 @@ export function TransactionChart({
         ...(movingAverageWindow > 0 && avgValues.length > 0
           ? [
               {
-                name: `${movingAverageWindow}-Day Average`,
+                name: `${movingAverageWindow}-day average`,
                 type: 'line',
                 data: avgValues,
                 smooth: true,

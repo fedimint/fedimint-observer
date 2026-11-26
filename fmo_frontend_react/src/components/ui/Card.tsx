@@ -33,9 +33,9 @@ export function CardHeader({ title, id, description, actions, meta }: CardHeader
   return (
     <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="min-w-0">
-        <h2 id={id} className="text-[0.95rem] font-semibold tracking-tight text-ink">{title}</h2>
-        {description && <p className="mt-0.5 text-xs text-ink-3 sm:text-[0.8rem]">{description}</p>}
-        {meta && <div className="mt-1.5">{meta}</div>}
+        <h2 id={id} className="text-base font-medium text-ink">{title}</h2>
+        {description && <p className="mt-0.5 text-xs text-ink-3 sm:text-sm">{description}</p>}
+        {meta && <div className="mt-2">{meta}</div>}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
     </div>

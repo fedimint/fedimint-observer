@@ -5,9 +5,9 @@ use fmo_api_types::{
 };
 
 use super::{
-    activity_scale, group_of, matches_search, nostr_group_of, nostr_sort_key,
-    rows_needing_session_ranges, sort_key, FederationGroup, FederationSort, NostrGroup,
-    SortDirection,
+    active_assets, activity_scale, available_assets, group_for, group_of, matches_search,
+    nostr_group_of, nostr_sort_key, rows_needing_session_ranges, sort_key, ActiveAssets,
+    FederationGroup, FederationSort, NostrGroup, SortDirection,
 };
 use crate::pagination::keyset_page;
 
@@ -103,6 +103,13 @@ fn groups_follow_the_home_page_rules() {
     assert_eq!(group_of(&list()[4], 99), Active);
 }
 
+fn grouped(now: u64) -> Vec<(FederationGroup, Option<Amount>)> {
+    list()
+        .iter()
+        .map(|f| (group_of(f, now), f.deposits))
+        .collect()
+}
+
 #[test]
 fn only_shut_down_rows_get_session_ranges() {
     let mut rows = list();
@@ -112,6 +119,60 @@ fn only_shut_down_rows_get_session_ranges() {
     );
     assert!(rows_needing_session_ranges(FederationGroup::Active, &mut rows).is_empty());
     assert!(rows_needing_session_ranges(FederationGroup::Offline, &mut rows).is_empty());
+}
+
+#[test]
+fn active_assets_sum_only_the_active_list() {
+    assert_eq!(
+        active_assets(grouped(1_000)).unwrap(),
+        ActiveAssets {
+            held: Amount::from_msats(1_400),
+            reporting: 2,
+            unknown: 1,
+        }
+    );
+    assert_eq!(
+        active_assets(grouped(99)).unwrap().held,
+        Amount::from_msats(1_410)
+    );
+}
+
+#[test]
+fn unknown_balances_never_read_as_a_measured_zero() {
+    use FederationGroup::*;
+    let none_report = active_assets([(Active, None), (Active, None)]).unwrap();
+    assert_eq!((none_report.reporting, none_report.unknown), (0, 2));
+    assert_eq!(none_report.known_held(), None);
+    let zero = active_assets([(Active, Some(Amount::ZERO)), (Active, None)]).unwrap();
+    assert_eq!(zero.known_held(), Some(Amount::ZERO));
+    let empty = active_assets([(Offline, None), (ShutDown, Some(Amount::from_msats(5)))]);
+    assert_eq!(empty.unwrap().known_held(), Some(Amount::ZERO));
+}
+
+#[test]
+fn group_for_matches_group_of() {
+    for now in [99, 1_000] {
+        for f in list() {
+            assert_eq!(
+                group_for(f.expiry_timestamp, f.health, now),
+                group_of(&f, now)
+            );
+        }
+    }
+}
+
+#[test]
+fn unavailable_asset_data_leaves_the_kpi_empty_not_an_error() {
+    assert_eq!(
+        available_assets(Err(anyhow::anyhow!("Negative wallet balance"))),
+        None
+    );
+    let assets = ActiveAssets {
+        held: Amount::from_msats(1_400),
+        reporting: 2,
+        unknown: 1,
+    };
+    assert_eq!(available_assets(Ok(assets)), Some(assets));
 }
 
 #[test]

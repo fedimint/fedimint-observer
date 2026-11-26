@@ -31,7 +31,7 @@ import type { ManifoldGuardianSummary } from '../features/manifold/types';
 function LabelledSelect({ label, value, onChange, children }: { label: string; value: string; onChange: (value: string) => void; children: ReactNode }) {
   return (
     <label className="flex min-w-0 flex-col gap-1">
-      <span className="text-[0.68rem] font-medium uppercase tracking-wide text-ink-3">{label}</span>
+      <span className="text-xs font-medium text-ink-3">{label}</span>
       <Select value={value} onChange={(event) => onChange(event.target.value)} className="w-full">{children}</Select>
     </label>
   );
@@ -59,7 +59,7 @@ function DirectoryTable({ guardians }: { guardians: readonly ManifoldGuardianSum
       <div className="hidden overflow-x-auto md:block scrollbar-thin">
         <table className="w-full min-w-[920px] text-sm">
           <caption className="sr-only">Manifold Guardians announced on Nostr. Select a row for its profile.</caption>
-          <thead className="border-b border-line text-left text-[0.7rem] uppercase tracking-wide text-ink-3">
+          <thead className="border-b border-line text-left text-xs text-ink-3">
             <tr>
               <th scope="col" className="px-3 py-2.5 font-medium">Manifold Guardian</th>
               <th scope="col" className="px-3 py-2.5 font-medium">Trust credential</th>
@@ -107,7 +107,7 @@ function DirectoryTable({ guardians }: { guardians: readonly ManifoldGuardianSum
                 </Link>
                 <VerificationBadge state={guardian.credential.state} />
               </div>
-              <div className="mt-1.5"><KeyChip value={guardian.fman_pubkey} label={`public key of ${guardian.display_name}`} /></div>
+              <div className="mt-2"><KeyChip value={guardian.fman_pubkey} label={`public key of ${guardian.display_name}`} /></div>
               <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
                 <div className="col-span-2"><dt className="sr-only">Advertisement</dt><dd><FreshnessPill freshness={guardian.freshness} issuedAt={ad?.issued_at} /></dd></div>
                 <div><dt className="text-ink-3">Fedimint</dt><dd className="mt-0.5 font-mono text-ink">{ad?.availability.fedimintd_version ?? '—'}</dd></div>
@@ -161,7 +161,7 @@ export function ManifoldDirectory() {
         <Card padding="p-0">
           <div className="grid gap-3 border-b border-line p-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.6fr)_repeat(4,minmax(0,1fr))] sm:p-5">
             <label className="flex min-w-0 flex-col gap-1 sm:col-span-2 lg:col-span-1">
-              <span className="text-[0.68rem] font-medium uppercase tracking-wide text-ink-3">Search</span>
+              <span className="text-xs font-medium text-ink-3">Search</span>
               <SearchInput
                 value={query.search}
                 onChange={(search) => update({ search })}

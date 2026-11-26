@@ -1,3 +1,7 @@
+[default]
+# Hex code points in CSS unicode-range lines (U+0100-02BA) read as words
+extend-ignore-re = ["unicode-range:.*"]
+
 [default.extend-words]
 FO = "FO"
 

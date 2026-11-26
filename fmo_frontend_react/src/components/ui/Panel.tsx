@@ -15,7 +15,7 @@ interface PanelProps {
 export function Panel({ title, padding, className = '', children }: PanelProps) {
   return (
     <Card as="div" padding={padding} className={className}>
-      {title && <h2 className="mb-4 text-[0.95rem] font-semibold tracking-tight text-ink">{title}</h2>}
+      {title && <h2 className="mb-4 text-base font-medium text-ink">{title}</h2>}
       {children}
     </Card>
   );

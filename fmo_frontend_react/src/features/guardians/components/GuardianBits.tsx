@@ -38,7 +38,7 @@ export function GuardianIdentity({ row, onSelect, linkManifold = true }: Guardia
   return (
     <div className="min-w-0">
       <div className="flex items-center gap-1.5">
-        <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-surface-3 px-1 font-mono text-[0.68rem] font-semibold text-ink-2" title="Fedimint peer id">
+        <span className="inline-flex h-5 min-w-5 items-center justify-center rounded bg-surface-3 px-1 font-mono text-xs font-semibold text-ink-2" title="Fedimint peer id">
           {row.id}
         </span>
         {onSelect ? (

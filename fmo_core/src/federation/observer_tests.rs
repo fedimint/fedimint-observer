@@ -557,3 +557,90 @@ async fn postgres_worker_and_replica_share_rotations_without_downgrade() -> anyh
         .await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires an isolated FMO_WORK_TEST_DATABASE"]
+async fn postgres_totals_keep_the_counters_when_the_asset_read_stalls_or_fails(
+) -> anyhow::Result<()> {
+    use fedimint_core::Amount;
+    use fmo_api_types::FederationHealth;
+
+    use crate::federation::list::ActiveAssets;
+
+    let database = std::env::var("FMO_WORK_TEST_DATABASE")?;
+    let pool = crate::runtime::pool(&database, 1, false)?;
+    pool.get()
+        .await?
+        .batch_execute(
+            "CREATE TEMP TABLE federations(federation_id BYTEA NOT NULL);
+             CREATE TEMP TABLE federation_totals(
+                 tx_count BIGINT NOT NULL,
+                 tx_volume_msat BIGINT NOT NULL
+             );
+             INSERT INTO federations SELECT int4send(i) FROM generate_series(1, 3) AS i;
+             INSERT INTO federation_totals VALUES (5, 7000), (2, 1000);",
+        )
+        .await?;
+    let observer = endpoint_test_observer(pool).await?;
+    let offline_id = format!("{:064x}", 1).parse::<FederationId>()?;
+    let health = BTreeMap::from([(offline_id, FederationHealth::Offline)]);
+    let deadline = Duration::from_millis(50);
+    let counters = |totals: &fmo_api_types::FedimintTotals| {
+        (totals.federations, totals.tx_count, totals.tx_volume)
+    };
+    let expected = (2, 7, Amount::from_msats(8_000));
+
+    let stalled = tokio::time::timeout(
+        Duration::from_secs(5),
+        observer.totals_with(
+            &health,
+            std::future::pending::<anyhow::Result<ActiveAssets>>(),
+            deadline,
+        ),
+    )
+    .await
+    .expect("a stalled asset read must not hold back the counters")?;
+    assert_eq!(counters(&stalled), expected);
+    assert_eq!(
+        (
+            stalled.active_assets,
+            stalled.active_assets_unknown,
+            stalled.active_assets_reporting
+        ),
+        (None, None, None)
+    );
+
+    let failed = observer
+        .totals_with(
+            &health,
+            async { Err(anyhow::anyhow!("Negative wallet balance")) },
+            deadline,
+        )
+        .await?;
+    assert_eq!(counters(&failed), expected);
+    assert_eq!(failed.active_assets, None);
+
+    let partial = observer
+        .totals_with(
+            &health,
+            async {
+                Ok(ActiveAssets {
+                    held: Amount::from_msats(1_400),
+                    reporting: 1,
+                    unknown: 1,
+                })
+            },
+            deadline,
+        )
+        .await?;
+    assert_eq!(counters(&partial), expected);
+    assert_eq!(
+        (
+            partial.active_assets,
+            partial.active_assets_unknown,
+            partial.active_assets_reporting
+        ),
+        (Some(Amount::from_msats(1_400)), Some(1), Some(1))
+    );
+    Ok(())
+}

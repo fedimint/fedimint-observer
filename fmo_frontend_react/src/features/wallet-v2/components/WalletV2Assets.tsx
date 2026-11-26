@@ -51,10 +51,10 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
       <section className={`${card} p-4 sm:p-6`} aria-labelledby="wallet-v2-title">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="flex flex-wrap items-center gap-2"><h3 id="wallet-v2-title" className="text-lg font-bold text-ink">Federation wallet</h3><span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-ink">Wallet v2</span></div>
+            <div className="flex flex-wrap items-center gap-2"><h3 id="wallet-v2-title" className="text-lg font-medium text-ink">Federation wallet</h3><span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-ink">Wallet v2</span></div>
             <p className={`mt-1 max-w-xl text-sm ${muted}`}>Deposits and withdrawals are reflected in the federation’s on-chain wallet.</p>
           </div>
-          <div className="min-w-0 sm:text-right"><p className={`text-xs ${muted}`}>Current wallet balance</p><p className="mt-1 break-all text-2xl font-bold text-ink sm:text-3xl">{tile(balance == null ? 'Awaiting balance' : asBitcoin(balance, 8))}</p>
+          <div className="min-w-0 sm:text-right"><p className={`text-xs ${muted}`}>Current wallet balance</p><p className="mt-1 break-all tabular text-2xl font-medium text-ink sm:text-3xl">{tile(balance == null ? 'Awaiting balance' : asBitcoin(balance, 8))}</p>
             {content === 'ready' && latest && <p className={`mt-2 text-xs font-medium ${latest.output_msat >= latest.input_msat ? 'text-ok-ink' : 'text-serious-ink'}`}>Latest operation #{latest.index}: {latest.output_msat >= latest.input_msat ? '+' : '−'}{asBitcoin(Math.abs(latest.output_msat - latest.input_msat), 8)}</p>}
           </div>
         </div>

@@ -56,15 +56,15 @@ export function ConnectivityMatrix({ matrix }: { matrix: Matrix }) {
           </tbody>
         </table>
       </div>
-      <ul className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[0.7rem] text-ink-3" aria-label="Legend">
+      <ul className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-3" aria-label="Legend">
         {(['connected', 'disconnected', 'flagged', 'no_report'] as const).map((key) => (
           <li key={key} className="inline-flex items-center gap-1.5">
-            <span aria-hidden="true" className={`inline-flex size-4 items-center justify-center rounded-[2px] text-[0.6rem] font-bold ${CELL[key].classes}`}>{CELL[key].mark}</span>
+            <span aria-hidden="true" className={`inline-flex size-4 items-center justify-center rounded-[2px] text-xs font-medium ${CELL[key].classes}`}>{CELL[key].mark}</span>
             {CELL[key].label}
           </li>
         ))}
       </ul>
-      <p className="mt-2 flex items-start gap-1.5 text-[0.7rem] text-ink-3">
+      <p className="mt-2 flex items-start gap-1.5 text-xs text-ink-3">
         <Icon name="info" className="mt-px size-3" />
         Reported by the guardians themselves. The observer cannot see the P2P network, only what each guardian says about it.
       </p>

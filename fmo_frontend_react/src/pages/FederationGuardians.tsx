@@ -113,7 +113,7 @@ export function FederationGuardians() {
           <Card aria-labelledby="bindings-title" className="min-w-0">
             <CardHeader
               id="bindings-title"
-              title={<span className="inline-flex items-center gap-2">Manifold seat bindings <span className="rounded bg-manifold-soft px-1.5 py-px text-[0.6rem] font-semibold uppercase tracking-wide text-manifold-ink">Manifold</span></span>}
+              title={<span className="inline-flex items-center gap-2">Manifold seat bindings <span className="rounded bg-manifold-soft px-1.5 py-px text-xs font-medium text-manifold-ink">Manifold</span></span>}
               description="fedi:fman_seat_bindings from the guardians' consensus metadata, verified by the observer"
               meta={seatBindings.data?.observed_at ? <DataStamp kind="live" at={seatBindings.data.observed_at} staleAfterSeconds={2 * 3600} /> : undefined}
             />
@@ -129,7 +129,7 @@ export function FederationGuardians() {
                   <div className="overflow-x-auto scrollbar-thin">
                     <table className="w-full min-w-[480px] text-xs">
                       <caption className="sr-only">Verified seat bindings</caption>
-                      <thead className="text-left text-[0.68rem] uppercase tracking-wide text-ink-3">
+                      <thead className="text-left text-xs text-ink-3">
                         <tr>
                           <th scope="col" className="py-1.5 pr-3 font-medium">Seat</th>
                           <th scope="col" className="py-1.5 pr-3 font-medium">Manifold Guardian</th>
