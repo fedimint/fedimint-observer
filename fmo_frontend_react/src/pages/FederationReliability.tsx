@@ -35,7 +35,6 @@ export function FederationReliability() {
   const events = useMemo<TimelineEvent[]>(() => {
     const list: TimelineEvent[] = [];
     if (history.data) {
-      // Hourly windows count runs of 2+ hours; the 30-day window's days count from one
       const minSlots = history.data.window === '30d' ? 1 : 2;
       for (const row of rows) {
         for (const period of offlinePeriods(history.data, row.id, minSlots)) {
@@ -65,10 +64,10 @@ export function FederationReliability() {
 
   return (
     <div>
-      {/* One range for every chart below, so it sits above them, aligned like a card's own range */}
+
       <div className="mb-4 flex flex-col-reverse gap-2 sm:mb-5 sm:flex-row sm:items-center sm:justify-between">
         <DataStamp kind="historical" at={history.data?.generated_at} scope={`${history.data?.window ?? window} window`} />
-        {/* Sized to its options, as in a card header, rather than stretched on phones */}
+
         <div className="self-start sm:self-auto">
           <Segmented
             label="Time range"

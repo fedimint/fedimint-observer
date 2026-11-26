@@ -3,11 +3,11 @@ import { Button } from './Button';
 import { TOGGLE_ON } from './controls';
 
 interface NumberedPaginationProps {
-  /** 1-based number of the page shown */
+
   page: number;
   pageCount: number;
   onChange: (page: number) => void;
-  /** What is paged, for screen readers, e.g. "UTXO pages" */
+
   label: string;
 }
 

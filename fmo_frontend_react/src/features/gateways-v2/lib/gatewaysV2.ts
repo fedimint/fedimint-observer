@@ -7,7 +7,6 @@ export type GatewayV2 = GatewayV2Registry['gateways'][number];
 type GatewayV2Status = GatewayV2['status'];
 
 export const GATEWAY_V2_WINDOWS: readonly GatewayWindow[] = ['24h', '7d', '30d', '90d'];
-// 'all' means every registered gateway; removed ones have their own filter
 export const GATEWAY_V2_FILTERS = ['all', 'online', 'degraded', 'offline', 'unknown', 'removed'] as const;
 export type GatewayV2Filter = (typeof GATEWAY_V2_FILTERS)[number];
 export const GATEWAY_V2_SORTS = ['name', 'status', 'latency', 'activity'] as const;

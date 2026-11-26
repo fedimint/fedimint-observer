@@ -12,7 +12,7 @@ const UptimeTrendChart = lazy(() => import('./UptimeTrendChart').then((module) =
 interface UptimeTrendSectionProps {
   timeWindow: GatewayWindow;
   points: GatewayUptimeTrendPoint[];
-  /** Shown in place of the chart when there are no points */
+
   placeholder: string;
 }
 
@@ -24,7 +24,6 @@ export function UptimeTrendSection({ timeWindow, points, placeholder }: UptimeTr
     return { label: theme.ink3, axis: theme.axis, grid: theme.grid, line: theme.series, area: theme.seriesSoft };
   }, [isDark]);
 
-  // Each point starts at UTC midnight and covers that UTC day
   const labels = useMemo(
     () => points.map((point) => formatUtcDate(point.day, { month: 'short', day: 'numeric' })),
     [points],

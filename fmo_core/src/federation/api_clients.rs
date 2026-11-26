@@ -1,4 +1,3 @@
-//! Guardian API clients and the admission that bounds their connections
 use std::collections::{HashMap, HashSet};
 
 use fedimint_api_client::api::DynGlobalApi;
@@ -14,17 +13,11 @@ use crate::guardian_api::{guardian_api, ApiPeers, ScopedPool};
 #[cfg(test)]
 mod tests;
 
-/// Distinct announced guardian URLs
 const MAX_ANNOUNCED_ENDPOINTS: usize = 4096;
-/// Announced URLs each guardian may introduce
 const MAX_URLS_PER_GUARDIAN: usize = 16;
-/// Federations with a selected route
 const MAX_SELECTIONS: usize = 4096;
-/// Distinct invite lookup `(secret, URL)` pairs
 const MAX_LOOKUP_PAIRS: usize = 1024;
-/// Lookup pairs each [`LookupClass`] may introduce
 const MAX_LOOKUP_PAIRS_PER_CLASS: usize = 512;
-/// Cached lookup clients; evicting one frees no connection
 const MAX_LOOKUP_CLIENTS: usize = 512;
 
 #[derive(Debug, Clone, Copy)]
@@ -60,16 +53,12 @@ impl ApiLimits {
     }
 }
 
-/// The invite route a lookup uses
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LookupClass {
-    /// Stored signed routes
     Announced,
-    /// The invite's own URLs
     Literal,
 }
 
-/// The route this process dials for an observed federation
 struct Selection {
     peers: ApiPeers,
     api: DynGlobalApi,
@@ -85,20 +74,15 @@ struct CachedApi {
 pub(crate) struct ApiClients {
     limits: ApiLimits,
     connectors: ConnectorRegistry,
-    /// Observed and canonical clients; no API secret
     trusted: ScopedPool,
     announced_urls: HashSet<SafeUrl>,
-    /// Announced URLs admitted per guardian
     guardian_urls: HashMap<(FederationId, PeerId), Vec<SafeUrl>>,
     selections: HashMap<FederationId, Selection>,
-    /// Guardians whose latest route isn't admitted
     held: HashSet<(FederationId, PeerId)>,
-    /// Per invite secret; created only after admission
     lookup_pools: HashMap<Option<String>, ScopedPool>,
     lookup_urls: HashMap<(Option<String>, SafeUrl), LookupClass>,
     announced_lookup_pairs: usize,
     literal_lookup_pairs: usize,
-    /// Route-set wrappers; the pools hold the connections
     lookups: HashMap<(ApiPeers, Option<String>), CachedApi>,
     generation: u64,
 }
@@ -261,7 +245,6 @@ impl ApiClients {
         peers: ApiPeers,
         api_secret: Option<String>,
     ) -> anyhow::Result<DynGlobalApi> {
-        // Reuses an observed client; this admits nothing.
         if api_secret.is_none() {
             if let Some(selection) = self.selections.get(&federation_id) {
                 if selection.peers == peers {
@@ -310,7 +293,7 @@ impl ApiClients {
     }
 }
 
-/// Reuses `key`'s client or adds one, evicting the least recently used at `max`
+/// Reuses `key`'s client or adds one.
 fn cached_api<K: Clone + Eq + std::hash::Hash>(
     map: &mut HashMap<K, CachedApi>,
     generation: u64,

@@ -1,6 +1,5 @@
 import { lazy } from 'react';
 
-// Each federation section's code, loaded on first visit or ahead of it
 const loaders = {
   layout: () => import('./FederationLayout'),
   detail: () => import('./FederationDetail'),

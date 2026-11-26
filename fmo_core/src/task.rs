@@ -1,5 +1,3 @@
-//! Keeping background tasks alive
-
 use std::any::Any;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -10,11 +8,8 @@ use tracing::error;
 
 const RESTART_DELAY: Duration = Duration::from_secs(30);
 
-/// Runs `task` forever, restarting it 30 s after it fails, ends or panics.
-///
-/// A panic must never escape a task spawned on fedimint's `TaskGroup`: its
-/// panic guard shuts the whole group down, which stops every federation's
-/// observer and monitors at once while the API keeps serving stale data.
+/// Restarts a task after errors, exits or panics.
+/// Panics are caught so one task cannot stop every observer.
 pub(crate) async fn supervise<F, Fut>(name: impl Into<String>, mut task: F)
 where
     F: FnMut() -> Fut,

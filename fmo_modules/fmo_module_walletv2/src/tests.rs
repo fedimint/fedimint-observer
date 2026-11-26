@@ -59,8 +59,7 @@ fn history_rejects_invalid_and_unbounded_pages() {
     );
 }
 
-/// Run against an empty, isolated local database. Every fixture and mutation is
-/// rolled back; this never connects to the observer's application database.
+/// Run against an empty, isolated local database.
 #[tokio::test]
 #[ignore = "requires an empty isolated FMO_WALLETV2_TEST_DATABASE"]
 async fn postgres_deposit_replay_and_instance_pagination() -> anyhow::Result<()> {
@@ -131,8 +130,7 @@ async fn postgres_deposit_replay_and_instance_pagination() -> anyhow::Result<()>
     )
     .await?;
     let enqueue = "INSERT INTO fmo_walletv2.deposit_jobs(federation_id,module_instance_id,txid,in_index,session_index,output_index,fee_sat) VALUES($1,3,$2,0,7,5,250)";
-    // No jobs: the wait stays NULL, so the worker awaits a notification
-    // instead of polling (SQL GREATEST(0, NULL) would have returned 0).
+    // No jobs: the wait stays NULL.
     async fn wait(
         tx: &deadpool_postgres::Transaction<'_>,
         fed: &[u8],
@@ -143,7 +141,6 @@ async fn postgres_deposit_replay_and_instance_pagination() -> anyhow::Result<()>
     }
     assert_eq!(wait(&tx, &fed).await?, None);
     tx.execute(enqueue, &[&fed, &txid]).await?;
-    // A due job reports a non-positive delay, clamped to an immediate wake.
     let due = wait(&tx, &fed).await?.expect("a job is queued");
     assert!(due <= 0.0);
     assert_eq!(
@@ -176,8 +173,6 @@ async fn postgres_deposit_replay_and_instance_pagination() -> anyhow::Result<()>
         1
     );
     collector::apply_deposit(&tx, &fed, &txid, 0, 7, amount).await?;
-    // A replay of a completed job must not add the same amount to daily volume
-    // twice.
     tx.execute(enqueue, &[&fed, &txid]).await?;
     collector::apply_deposit(&tx, &fed, &txid, 0, 7, amount).await?;
     assert_eq!(
@@ -318,15 +313,12 @@ fn history_instance_selection_maps_to_client_statuses() {
         |result: fmo_core::module::ApiResult<u16>| result.unwrap_err().into_response().status();
     assert_eq!(select_instance(&[3], None).unwrap(), 3);
     assert_eq!(select_instance(&[3, 5], Some(5)).unwrap(), 5);
-    // No walletv2 module at all, e.g. a v1-only federation
     assert_eq!(status(select_instance(&[], None)), StatusCode::NOT_FOUND);
     assert_eq!(status(select_instance(&[], Some(0))), StatusCode::NOT_FOUND);
-    // An instance that is not walletv2 (or does not exist)
     assert_eq!(
         status(select_instance(&[3], Some(0))),
         StatusCode::BAD_REQUEST
     );
-    // Several instances and none chosen
     assert_eq!(
         status(select_instance(&[3, 5], None)),
         StatusCode::BAD_REQUEST
@@ -339,7 +331,6 @@ fn unobserved_federation_is_a_not_found_client_error() {
     use axum::response::IntoResponse;
     use fmo_core::module::{ApiError, ClientError};
 
-    // What the history handler returns for a federation it doesn't observe
     let error: anyhow::Error = ClientError::not_found("Federation is not observed").into();
     assert_eq!(
         ApiError::from(error).into_response().status(),

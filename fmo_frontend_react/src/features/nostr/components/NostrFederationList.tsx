@@ -12,7 +12,7 @@ interface NostrFederationListProps {
   error: string | null;
   onRetry: () => void;
   emptyText: string;
-  /** Heading of the name column, e.g. "Name / ID" */
+
   nameLabel: string;
   renderName: (federation: NostrFederation) => ReactNode;
 }

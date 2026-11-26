@@ -8,7 +8,7 @@ interface CollapsibleFederationsProps extends Omit<ComponentProps<typeof Federat
   title: string;
   description: string;
   loading: boolean;
-  /** Federations in this group across all pages */
+
   total: number | null;
 }
 

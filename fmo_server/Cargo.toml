@@ -17,5 +17,4 @@ fmo_module_wallet = { path = "../fmo_modules/fmo_module_wallet" }
 tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread"] }
 
 [features]
-# Off by default: it doesn't build with this fedimint version yet
 stability_pool_v1 = ["dep:fmo_module_stability_pool"]

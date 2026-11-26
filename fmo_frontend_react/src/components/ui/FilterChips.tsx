@@ -5,11 +5,11 @@ interface FilterChipsProps<T extends string> {
   options: readonly T[];
   value: T;
   onChange: (value: T) => void;
-  /** The text of each chip, e.g. with a count */
+
   renderLabel: (option: T) => ReactNode;
-  /** Accessible name of the group */
+
   label: string;
-  /** Classes of the row of chips, e.g. its margin */
+
   className?: string;
 }
 

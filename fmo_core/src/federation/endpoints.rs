@@ -10,10 +10,8 @@ use tracing::{debug, info, warn};
 #[cfg(test)]
 mod tests;
 
-/// `federation_observations` kind of stored guardian routes
 pub const GUARDIAN_ENDPOINTS_OBSERVATION_KIND: &str = "guardian_endpoints";
 
-/// Schemes the guardian connector can dial
 const ALLOWED_URL_SCHEMES: &[&str] = &["ws", "wss", "iroh"];
 
 /// Whether the guardian connector can dial `url`
@@ -22,8 +20,7 @@ fn is_valid_endpoint_scheme(url: &SafeUrl) -> bool {
     ALLOWED_URL_SCHEMES.contains(&scheme)
 }
 
-/// Whether `url` names a non-public IP or `localhost`; hostnames aren't
-/// resolved
+/// Whether `url` names a non-public IP or `localhost`.
 fn non_public_host(url: &SafeUrl) -> bool {
     let Some(host) = url.host_str() else {
         return false;
@@ -36,7 +33,6 @@ fn non_public_host(url: &SafeUrl) -> bool {
             .is_ok_and(|ip| !crate::public_address::public_ip(ip))
 }
 
-/// A guardian route whose signature and scheme have been verified
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedRoute {
     announcement: SignedApiAnnouncement,
@@ -70,7 +66,6 @@ impl VerifiedRoute {
     }
 }
 
-/// Verified signed API routes by guardian
 pub type GuardianEndpointsMap = BTreeMap<PeerId, VerifiedRoute>;
 
 /// Config endpoints with each accepted announcement applied
@@ -110,7 +105,6 @@ pub fn verify_and_merge_announcements(
     let mut changed = false;
 
     for (&peer_id, announcement) in incoming {
-        // Federation members only
         let Some(guardian_pub_key) = keys.get(&peer_id) else {
             warn!(
                 %federation_id,
@@ -120,7 +114,6 @@ pub fn verify_and_merge_announcements(
             continue;
         };
 
-        // Signature and scheme
         let verified_route = match VerifiedRoute::verify(announcement.clone(), guardian_pub_key) {
             Ok(route) => route,
             Err(reason) => {
@@ -134,7 +127,6 @@ pub fn verify_and_merge_announcements(
             }
         };
 
-        // A public guardian can't redirect the observer into private networks.
         if non_public_host(verified_route.url())
             && !global
                 .api_endpoints
@@ -149,7 +141,6 @@ pub fn verify_and_merge_announcements(
             continue;
         }
 
-        // Only a strictly higher nonce
         let new_nonce = verified_route.nonce();
         if let Some(current) = updated.get(&peer_id) {
             if new_nonce <= current.nonce() {

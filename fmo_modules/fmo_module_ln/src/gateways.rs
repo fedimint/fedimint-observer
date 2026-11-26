@@ -1,6 +1,3 @@
-//! Gateway monitoring: which gateways a federation's guardians announce,
-//! how long each has been seen, and what it did in a window
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -31,36 +28,18 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 const GATEWAY_POLL_INTERVAL_MINUTES: u64 = 5;
-/// How long one guardian may take to list its gateways. Matches the Lightning
-/// v2 poller.
 const PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// Backstop for a whole poll round, so it never delays the next one
 const POLL_ROUND_TIMEOUT: Duration = Duration::from_secs(40);
 const GATEWAY_SNAPSHOT_RETENTION_DAYS: i64 = 90;
 const GATEWAY_PRUNE_INTERVAL_HOURS: i64 = 6;
-// A gateway missing from the registry this long has left the federation: it
-// gets no more "not seen" samples, and later ones don't count against uptime or
-// the trend
 const GATEWAY_RETIRED_AFTER_DAYS: i32 = 7;
-/// Time slots per gateway availability strip
 const GATEWAY_UPTIME_BUCKETS: usize = 30;
-// Matches the poll interval, so short windows are never more than one poll
-// behind; longer windows refresh every few ticks (see refresh_every_ticks)
+// Matches the poll interval.
 const GATEWAY_OVERVIEW_TICK_MINUTES: u64 = 5;
 
-/// Per gateway key, the contracts funded, settled and cancelled in the window
-/// (`$1` federation, `$2` window start), and the volume funded.
-///
-/// A settle is the input that pays a contract out on success. For an outgoing
-/// contract that is the gateway's claim, the only input carrying a preimage
-/// witness: the user's refund after the timeout or after `CancelOutgoing` has
-/// none. For an incoming contract it is the user's claim of the decrypted
-/// preimage. Inputs there carry no witness, so the gateway's reclaim after an
-/// invalid preimage (rare: it needs a bad offer) still counts as a settle.
-///
-/// NOT MATERIALIZED lets the planner see real row counts through the CTEs;
-/// materialized, it estimated one row each and nested-looped ~10k x 10k rows
-/// (90D: 55 s instead of 4 s)
+/// Attributes gateway activity; preimages identify settled contracts.
+/// Non-materialized CTEs prevent costly nested-loop plans.
 const GATEWAY_ACTIVITY_SQL: &str = "WITH tx_window AS NOT MATERIALIZED (
          SELECT t.federation_id, t.txid
          FROM transactions t
@@ -170,17 +149,12 @@ const GATEWAY_ACTIVITY_SQL: &str = "WITH tx_window AS NOT MATERIALIZED (
      GROUP BY gateway_key";
 
 type OverviewKey = (FederationId, GatewayMetricsWindow);
-/// Overviews for every federation and window, rebuilt in the background so
-/// requests never wait for the queries (90D takes seconds)
+/// Overviews for every federation and window.
 pub(crate) type GatewayOverviewCache = Arc<OverviewCache>;
 
 #[derive(Default)]
 pub(crate) struct OverviewCache {
     overviews: RwLock<HashMap<OverviewKey, Arc<GatewayOverview>>>,
-    /// Held while an overview is computed. Until the cache is filled (after a
-    /// restart, or for a federation added since the last refresh), concurrent
-    /// requests for the same overview wait for the one computation instead of
-    /// each running the heavy queries.
     computing: KeyLocks<OverviewKey>,
 }
 
@@ -201,10 +175,6 @@ impl OverviewCache {
     }
 }
 
-/// One async lock per key, so concurrent misses of a cache compute a value
-/// once: the first computes while holding the key's lock, the others wait for
-/// it and then find the value in the cache. Keys are observed federations and
-/// windows, so the map stays small.
 struct KeyLocks<K>(Mutex<HashMap<K, Arc<tokio::sync::Mutex<()>>>>);
 
 impl<K> Default for KeyLocks<K> {
@@ -233,7 +203,6 @@ pub(crate) enum GatewayMetricsWindow {
 }
 
 impl GatewayMetricsWindow {
-    // The page's default window first, so it is ready soonest after a restart
     const ALL: [Self; 4] = [Self::D7, Self::H24, Self::D30, Self::D90];
 
     fn parse(value: Option<&str>) -> anyhow::Result<Self> {
@@ -266,9 +235,6 @@ impl GatewayMetricsWindow {
         }
     }
 
-    /// How many overview ticks pass between refreshes. Five more minutes
-    /// barely move a 30- or 90-day figure, and those windows run the heaviest
-    /// queries.
     fn refresh_every_ticks(self) -> u64 {
         match self {
             Self::H24 | Self::D7 => 1,
@@ -278,7 +244,6 @@ impl GatewayMetricsWindow {
     }
 }
 
-/// The module's view of core, and its cache of overviews
 pub(crate) struct Gateways<'a> {
     pub(crate) services: &'a Services,
     pub(crate) overviews: &'a GatewayOverviewCache,
@@ -299,8 +264,7 @@ pub(crate) fn config_routes() -> Router<Services> {
     Router::new().route("/gateways", get(fetch_federation_gateways))
 }
 
-/// The gateways the guardians behind an invite code announce right now, for
-/// federations that aren't observed
+/// The gateways the guardians behind an invite code announce right now.
 async fn fetch_federation_gateways(
     Path(invite): Path<InviteCode>,
     State(services): State<Services>,
@@ -318,28 +282,18 @@ async fn fetch_federation_gateways(
 #[derive(Debug, Deserialize)]
 pub(crate) struct GetFederationGatewaysParams {
     window: Option<String>,
-    /// Comma-separated parts to return: `gateways`, `trend`. Both by default.
     include: Option<String>,
-    /// Gateways: matches the alias, gateway id, node key or endpoint
     search: Option<String>,
-    /// Gateways: a status, or `all` (every gateway that isn't retired)
     #[serde(default)]
     status: crate::directory::GatewayFilter,
     #[serde(default)]
     sort: crate::directory::GatewaySort,
     #[serde(default)]
     dir: crate::directory::SortDirection,
-    /// Gateways: the page cursor and size
     after: Option<String>,
     limit: Option<u16>,
 }
 
-/// Registered gateways a federation's guardians currently announce. Each
-/// guardian keeps its own registry, so this is the union across all of them.
-///
-/// A federation without a Lightning (v1) module is a 404 rather than an empty
-/// list: it has no such registry, while an empty list means guardians answered
-/// that no gateway is registered.
 pub(crate) async fn fetch_gateways_for_config(
     services: &Services,
     config: &JsonClientConfig,
@@ -355,7 +309,6 @@ pub(crate) async fn fetch_gateways_for_config(
                  gateway registry",
             )
         })?;
-    // The federation may not be observed: a lookup client, with the invite's secret
     let api = services.lookup_api(&config.global, api_secret)?;
     let peer_ids = config
         .global
@@ -405,15 +358,12 @@ pub(crate) async fn fetch_gateways_for_config(
         .collect()
 }
 
-/// Why a guardian's gateway list is missing from a poll
 #[derive(Debug)]
 enum PeerFailure {
     TimedOut,
     Failed(String),
 }
 
-/// Gateway announcements of every guardian that answered, merged by gateway
-/// id, and which guardians didn't answer
 struct Announcements {
     merged: HashMap<String, LightningGatewayAnnouncement>,
     answered: u32,
@@ -448,8 +398,7 @@ impl Announcements {
     }
 }
 
-/// Asks every guardian for the gateways it has registered, each within
-/// `PEER_REQUEST_TIMEOUT`
+/// Asks every guardian for the gateways it has registered.
 async fn fetch_gateway_announcements(
     api: &DynGlobalApi,
     ln_instance_id: ModuleInstanceId,
@@ -495,8 +444,7 @@ async fn fetch_gateway_announcements(
 }
 
 impl Gateways<'_> {
-    /// Background task: poll the LN module on this federation for currently
-    /// registered gateways and persist them. Runs in a loop until cancelled.
+    /// Runs in a loop until cancelled.
     pub(crate) async fn monitor_gateways(
         &self,
         federation_id: FederationId,
@@ -510,12 +458,9 @@ impl Gateways<'_> {
             config.global.api_endpoints.keys().copied().collect();
 
         let mut interval = tokio::time::interval(POLL_INTERVAL);
-        // A round that overran waits a full interval, rather than the next
-        // starting right away
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            // Resolved per round for rotations; without a client, skip the round.
             let api = match self.services.federation_api(&config.global) {
                 Ok(api) => api,
                 Err(err) => {
@@ -523,8 +468,6 @@ impl Gateways<'_> {
                     continue;
                 }
             };
-            // Nothing is recorded for a failed round, so it shows as "no polls"
-            // (not observed) rather than as every gateway being offline
             if let Err(e) = self
                 .fetch_and_store_gateways(federation_id, &api, ln_instance_id, &peer_ids)
                 .await
@@ -562,8 +505,6 @@ impl Gateways<'_> {
             );
         }
         if !announcements.failed.is_empty() {
-            // Each guardian keeps its own registry, so a gateway registered
-            // only with these is recorded as not seen this round
             warn!(
                 %federation_id,
                 answered = announcements.answered,
@@ -639,8 +580,6 @@ impl Gateways<'_> {
             .await?;
         }
 
-        // Every gateway in the registry gets a sample for this round: seen if
-        // a guardian announced it, not seen otherwise (unless retired)
         dbtx.execute(
             "WITH current_gateway_ids AS (
                  SELECT UNNEST($3::text[]) AS gateway_id
@@ -701,13 +640,11 @@ impl Gateways<'_> {
         Ok(())
     }
 
-    /// Background task: rebuild every federation's gateway overviews. Runs in
-    /// a loop until cancelled.
+    /// Background task: rebuild every federation's gateway overviews.
     pub(crate) async fn refresh_gateway_overviews(self) {
         let mut interval =
             tokio::time::interval(Duration::from_secs(GATEWAY_OVERVIEW_TICK_MINUTES * 60));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        // Tick 0 builds every window, so all are ready right after a restart
         let mut tick: u64 = 0;
         loop {
             interval.tick().await;
@@ -724,12 +661,10 @@ impl Gateways<'_> {
                     continue;
                 }
             };
-            // One query at a time keeps the load on the database steady
             for &window in &windows {
                 for federation in &federations {
                     let federation_id = federation.federation_id;
                     let key = (federation_id, window);
-                    // Requests that miss the cache meanwhile wait for this
                     let computing = self.overviews.computing.get(&key);
                     let _computing = computing.lock().await;
                     match self.compute_gateway_overview(federation_id, window).await {
@@ -763,10 +698,6 @@ impl Gateways<'_> {
         if let Some(overview) = self.overviews.get(&key) {
             return Ok(overview);
         }
-        // Only right after a restart, or for a federation added since the last
-        // refresh. One computation per key at a time: the others wait for it
-        // and take its result from the cache. The caller has checked the
-        // federation is observed, so unknown IDs can't grow the cache.
         let computing = self.overviews.computing.get(&key);
         let _computing = computing.lock().await;
         if let Some(overview) = self.overviews.get(&key) {
@@ -792,7 +723,6 @@ impl Gateways<'_> {
             computed_at,
             summary: summarize(&gateways),
             gateways: Some(gateways),
-            // The cache keeps every gateway; requests page them
             page: None,
             uptime_trend: Some(
                 self.federation_gateway_uptime_trend(federation_id, window_start)
@@ -904,7 +834,6 @@ impl Gateways<'_> {
             let buckets = buckets_by_gateway_id
                 .entry(row.gateway_id)
                 .or_insert_with(|| vec![GatewayUptimeBucket::default(); GATEWAY_UPTIME_BUCKETS]);
-            // The query clamps the index into range
             let bucket = &mut buckets[usize::try_from(row.bucket).unwrap_or(0)];
             bucket.seen_samples += row.seen_samples.max(0) as u64;
             bucket.total_samples += row.total_samples.max(0) as u64;
@@ -1042,8 +971,6 @@ fn gateway_status(minutes_since_last_seen: Option<f64>) -> GatewayStatus {
     let Some(minutes) = minutes_since_last_seen else {
         return GatewayStatus::Unknown;
     };
-    // Gateways are polled and overviews rebuilt every 5 minutes, so a healthy
-    // gateway stays online for up to three polls
     if minutes <= 15.0 {
         GatewayStatus::Online
     } else if minutes <= 30.0 {
@@ -1055,8 +982,6 @@ fn gateway_status(minutes_since_last_seen: Option<f64>) -> GatewayStatus {
     }
 }
 
-/// How a gateway's window divides into online, offline and unobserved
-/// minutes
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct WindowEstimate {
     coverage_pct: f64,
@@ -1079,8 +1004,6 @@ impl WindowEstimate {
             }
             _ => (0.0, 0.0),
         };
-        // Samples times the poll interval can add up to a little more than
-        // the window
         let raw_total = raw_online + raw_offline;
         let clamp_scale = if raw_total > window_minutes {
             window_minutes / raw_total
@@ -1091,7 +1014,6 @@ impl WindowEstimate {
         let observed_offline = raw_offline * clamp_scale;
         let sampled = online_minutes + observed_offline;
         let base_unknown = (window_minutes - sampled).max(0.0);
-        // An offline gateway was offline since it was last seen, polled or not
         let inferred_offline_from_recency = match (status, minutes_since_last_seen) {
             (GatewayStatus::Offline, Some(minutes)) => minutes.min(base_unknown).max(0.0),
             _ => 0.0,
@@ -1115,7 +1037,6 @@ impl WindowEstimate {
 }
 
 /// The overview's summary of its gateways, by their status and estimates.
-/// Retired gateways count only as retired.
 fn summarize(gateways: &[GatewayInfo]) -> GatewayOverviewSummary {
     let mut summary = GatewayOverviewSummary::default();
     let (mut coverage_sum, mut uptime_sum, mut observed) = (0.0, 0.0, 0u64);
@@ -1190,8 +1111,6 @@ pub(crate) async fn get_federation_gateway_overview(
     }
     .gateway_overview(federation_id, window)
     .await?;
-    // Only the requested parts are copied out of the shared cached overview,
-    // and of the gateways only the requested page
     let (gateways, page) = match overview.gateways.as_ref().filter(|_| include_gateways) {
         Some(all) => {
             let matching: Vec<GatewayInfo> = all
@@ -1271,8 +1190,7 @@ mod tests {
         );
     }
 
-    /// The activity query tells settles from refunds by the witness in the
-    /// stored input details, at `{V0,witness}`
+    /// at `{V0,witness}`.
     #[test]
     fn settles_are_inputs_with_a_preimage_witness() {
         let input = |witness| {
@@ -1319,7 +1237,6 @@ mod tests {
 
     #[test]
     fn window_estimates_match_the_gateways_page() {
-        // Half the 24h window polled, 3/4 of that online
         let estimate = WindowEstimate::new(
             Some(&uptime(540, 180)),
             GatewayStatus::Online,
@@ -1337,7 +1254,6 @@ mod tests {
             }
         );
 
-        // More polled minutes than the window are scaled down to it
         let estimate = WindowEstimate::new(
             Some(&uptime(1500, 300)),
             GatewayStatus::Online,
@@ -1349,8 +1265,6 @@ mod tests {
         assert_eq!(estimate.unknown_minutes, 0.0);
         assert_eq!(estimate.coverage_pct, 100.0);
 
-        // An offline gateway's unpolled minutes since it was last seen count
-        // as offline, up to the unobserved part of the window
         let estimate = WindowEstimate::new(
             Some(&uptime(600, 0)),
             GatewayStatus::Offline,
@@ -1369,7 +1283,6 @@ mod tests {
         assert_eq!(estimate.offline_minutes, 840.0);
         assert_eq!(estimate.unknown_minutes, 0.0);
 
-        // Without polls nothing is known
         let estimate = WindowEstimate::new(None, GatewayStatus::Unknown, None, 1440.0);
         assert_eq!(
             estimate,

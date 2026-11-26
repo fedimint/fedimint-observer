@@ -1,10 +1,7 @@
 import type { ReactNode } from 'react';
 import { Icon } from '../../../components/ui/Icon';
 
-/**
- * Where a page's discovery data comes from and what its verification covers.
- * The sync time is the page header's data stamp, so it is not repeated here.
- */
+
 export function CollectorNote({ relays, children }: { relays: readonly string[]; children?: ReactNode }) {
   return (
     <div className="flex gap-3 rounded-xl border border-manifold/25 bg-manifold-soft px-4 py-3 text-xs leading-relaxed text-manifold-ink">

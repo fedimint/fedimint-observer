@@ -1,10 +1,7 @@
 import { useId, useState, type ReactNode } from 'react';
 import { Icon } from './Icon';
 
-/**
- * An explanation behind a small "?" button: shown on hover and on keyboard
- * focus, dismissed with Escape, and linked to the button for screen readers.
- */
+
 export function InfoTip({ label, children, align = 'center' }: { label: string; children: ReactNode; align?: 'center' | 'start' | 'end' }) {
   const id = useId();
   const [open, setOpen] = useState(false);

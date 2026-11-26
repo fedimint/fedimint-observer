@@ -23,7 +23,6 @@ fn only_correctly_signed_ratings_are_accepted() {
     assert_eq!(parsed.star_vote, Some(5));
 
     // What a PUT body can carry: the signed event with its content edited.
-    // Deserializing it succeeds, so the signature check must catch it.
     let mut json = serde_json::to_value(&event).unwrap();
     json["content"] = "[1/5] terrible".into();
     let forged: nostr_sdk::Event = serde_json::from_value(json).unwrap();
@@ -42,7 +41,6 @@ fn bad_submitted_events_are_client_errors() {
     .unwrap();
     let status = |error: anyhow::Error| error.downcast_ref::<ClientError>().unwrap().status();
 
-    // A rating sent as a federation announcement: wrong kind
     let error = parse_submitted::<ParsedFederationEvent>(&rating).unwrap_err();
     assert_eq!(status(error), axum::http::StatusCode::BAD_REQUEST);
 
@@ -61,7 +59,6 @@ async fn edited_ratings_count_once() -> anyhow::Result<()> {
     let database = std::env::var("FMO_NOSTR_TEST_DATABASE")?;
     let (client, driver) = tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(driver);
-    // A schema of the test's own, so nothing else is touched
     let schema = format!("fmo_nostr_test_{}", std::process::id());
     client
         .batch_execute(&format!(

@@ -1,10 +1,3 @@
-//! Read-only Manifold data the observer can establish itself: which Manifold
-//! Guardian (MG) operates each guardian seat, from the federation's own
-//! consensus meta; MG and FLIP advertisements from Manifold's relays
-//! ([`collector`], [`discovery`]); and their PeerBadge trust credentials,
-//! verified as the Fedi app verifies them ([`peerbadge`]). MG telemetry is not
-//! collected.
-
 mod api;
 mod collector;
 mod directory;
@@ -27,14 +20,9 @@ use self::seat_bindings::{verify_for_federation, FederationSeats, SEAT_BINDINGS_
 use crate::error::ClientError;
 use crate::module::Services;
 
-/// Observation kind holding the raw directory string: `{"value": "<field>"}`,
-/// or `{"value": null}` when the consensus meta has no such field
 pub(crate) const SEAT_BINDINGS_OBSERVATION: &str = "manifold-seat-bindings";
 const MG_NAME_DOMAIN: &[u8] = b"fman-name/v1\0";
 
-/// Manifold's deterministic display name for an MG key (`MgName` in
-/// fedibtc/manifold): two words picked by a domain-separated hash of the
-/// x-only key. Presentation only; names can collide.
 pub fn mg_display_name(xonly_key: &[u8; 32]) -> String {
     let mut engine = sha256::Hash::engine();
     engine.input(MG_NAME_DOMAIN);
@@ -52,14 +40,12 @@ pub fn mg_display_name(xonly_key: &[u8; 32]) -> String {
     )
 }
 
-/// Records the directory field of a freshly read consensus meta. Called by
-/// the metadata refresh; failing here never fails that refresh.
+/// Records the directory field of a freshly read consensus meta.
 pub(crate) async fn save_seat_bindings_observation(
     services: &Services,
     federation_id: FederationId,
     consensus_meta: Option<&Map<String, Value>>,
 ) {
-    // Only strings are meta values; anything else is no directory
     let value = consensus_meta
         .and_then(|meta| meta.get(SEAT_BINDINGS_META_KEY))
         .and_then(Value::as_str);
@@ -75,9 +61,6 @@ pub(crate) async fn save_seat_bindings_observation(
     }
 }
 
-/// `GET /federations/:id/manifold/seat-bindings`: verifies the stored
-/// directory against the stored config. No guardian is asked here; the work
-/// is bounded by the directory's 64 binding cap.
 pub(crate) async fn get_seat_bindings(
     Path(federation_id): Path<FederationId>,
     State(state): State<crate::AppState>,

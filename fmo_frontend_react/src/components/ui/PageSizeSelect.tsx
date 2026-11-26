@@ -6,7 +6,7 @@ interface PageSizeSelectProps {
   value: PageSize;
   onChange: (size: PageSize) => void;
   disabled?: boolean;
-  /** Rows across all pages, when the backend says */
+
   total?: number;
 }
 

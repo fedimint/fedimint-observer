@@ -4,7 +4,7 @@ import type { DirectoryQuery } from './lib/directory';
 
 const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
 
-/** The backend's discovery answer: what its collector stored, and when it last synced */
+
 type DiscoveryResponse<T> = Sourced<T>;
 
 const sourced = <T,>({ observed_at, relays, data, page, facets }: DiscoveryResponse<T>): Sourced<T> => ({
@@ -27,13 +27,9 @@ function directoryParams(query: DirectoryQuery, limit: number, after?: string): 
   return params;
 }
 
-/**
- * Manifold discovery data as the observer's collector verified and stored it
- * from Nostr relays. The backend never asks relays per request, so these are
- * cheap reads.
- */
+
 export const manifoldApi = {
-  /** One page of the directory, searched, filtered and ordered by the backend */
+
   async listGuardians(query: DirectoryQuery, limit: number, after?: string, signal?: AbortSignal): Promise<Sourced<ManifoldGuardianSummary[]>> {
     const params = directoryParams(query, limit, after);
     return sourced(await request<DiscoveryResponse<ManifoldGuardianSummary[]>>(`${BASE_URL}/manifold/guardians?${params}`, { signal }));

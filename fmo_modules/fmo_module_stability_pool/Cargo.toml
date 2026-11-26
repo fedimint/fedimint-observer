@@ -4,9 +4,6 @@ version = "0.2.0"
 edition = "2021"
 description = "Fedimint Observer support for Fedi's stability pool v1 module"
 
-# Not a workspace member: stability-pool-common depends on an older
-# fedimint-core, so this crate only builds once it supports the workspace's
-# fedimint version. fmo_server pulls it in with --features stability_pool_v1.
 [dependencies]
 anyhow = "1.0.81"
 async-trait = "0.1.92"

@@ -71,7 +71,6 @@ const nameOrId = (fed: NostrFederation) => fed.name || fed.id;
 
 export function Nostr() {
   const [pageSize, setPageSize] = usePageSize('nostr-federations', 25);
-  // Each group is its own paged list; the backend groups and orders them
   const online = useNostrFederations('online', pageSize);
   const offline = useNostrFederations('offline', pageSize);
   const unobserved = useNostrFederations('unobserved', pageSize);

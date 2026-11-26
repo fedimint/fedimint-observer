@@ -13,8 +13,7 @@ use fmo_api_types::WalletV2OnChainTransaction;
 use fmo_core::module::Services;
 use futures::future::try_join_all;
 
-// The total inherits the oldest component's timestamp. Updating one wallet
-// must not make another wallet's stale balance appear freshly observed.
+// The total inherits the oldest component's timestamp.
 pub(crate) const PUBLISH_ASSETS_SQL: &str =
     "INSERT INTO federation_observations(federation_id,kind,data,observed_at)
      SELECT $1,'assets:walletv2',to_jsonb(sum(balance_msat)::bigint),min(balance_observed_at)
@@ -109,9 +108,6 @@ async fn fetch<T: serde::de::DeserializeOwned + Eq + std::fmt::Debug + Clone + S
     endpoint: &str,
     params: ApiRequestErased,
 ) -> anyhow::Result<T> {
-    // Bound queue time as well as remote I/O. The permit ends before any database
-    // write. The guardian client is the process-wide shared one: a client per
-    // call would open (and leak) a new connection to every guardian each time.
     tokio::time::timeout(Duration::from_secs(30), async {
         let _permit = services.external_io_permit().await?;
         services
@@ -140,8 +136,6 @@ async fn run_instance(
     let mut unchanged = 0u32;
     let mut history_failures = 0u32;
     let mut failures = 0u32;
-    // Stable per-instance offset spreads restarts without a shared random
-    // generator.
     let jitter = (bytes.iter().map(|b| u64::from(*b)).sum::<u64>() + u64::from(instance)) % 11;
     tokio::time::sleep(Duration::from_secs(jitter)).await;
     loop {
@@ -163,8 +157,6 @@ async fn run_instance(
                 )?;
                 let mut connection = services.connection().await?;
                 let tx = connection.transaction().await?;
-                // Serialize balance publication across instances so a delayed
-                // aggregate writer cannot overwrite a newer component total.
                 tx.execute(
                     "SELECT pg_advisory_xact_lock(14,hashtext(encode($1::bytea,'hex')))",
                     &[&bytes],
@@ -244,9 +236,6 @@ async fn store_chain(
     revision: i64,
     chain: Vec<TxInfo>,
 ) -> anyhow::Result<bool> {
-    // Upstream v0.12 only has a full-chain endpoint. Store all entries and poll
-    // unchanged chains less often; pagination bounds reads from our own API.
-    // Write bounded batches so a large import does not monopolize a connection.
     let mut end_index = -1;
     for item in &chain {
         end_index = end_index.max(i64::try_from(item.index)?);
@@ -255,8 +244,6 @@ async fn store_chain(
         "SELECT history_end_index FROM fmo_walletv2.wallets WHERE federation_id=$1 AND module_instance_id=$2",
         &[&fed,&i32::from(instance)],
     ).await?.get(0);
-    // TxInfo entries are append-only in the pinned Fedimint version. Avoid
-    // resending unchanged history to PostgreSQL on every full-chain response.
     let mut delta = chain
         .into_iter()
         .filter(|item| previous < 0 || item.index > previous as u64)
@@ -320,12 +307,8 @@ pub(crate) async fn apply_deposit(
         )
         .await?;
     if updated > 0 {
-        // Match ingest's lock order: the input's totals trigger runs before
-        // taking the federation read-model lock. Taking it first can deadlock
-        // with a session writer that already owns the totals row.
         tx.execute("SELECT lock_federation_read_models($1)", &[&bytes])
             .await?;
-        // A null input previously contributed zero; publish its delta once.
         tx.execute(
             "UPDATE federation_daily_activity a SET volume_msat=a.volume_msat+$3
              FROM session_times s WHERE s.federation_id=$1 AND s.session_index=$2
@@ -342,8 +325,6 @@ pub(crate) async fn apply_deposit(
     Ok(())
 }
 
-/// Seconds until the next deposit job is due, by the database clock; negative
-/// when overdue, NULL when there are no jobs (wait for a notification).
 pub(crate) const NEXT_DEPOSIT_RETRY_SQL: &str =
     "SELECT EXTRACT(EPOCH FROM min(retry_at)-now())::float8 FROM fmo_walletv2.deposit_jobs
      WHERE federation_id=$1 AND module_instance_id=$2";
@@ -366,8 +347,6 @@ async fn enrich_loop(
                 continue;
             }
         }
-        // Measured against the database clock that claims jobs (`retry_at<=now()`);
-        // an app clock ahead of it would otherwise wake early and spin.
         let wait: Option<f64> = services
             .connection()
             .await?

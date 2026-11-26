@@ -1,10 +1,5 @@
-//! Which IP addresses are public: the policy for every outbound connection to
-//! an address learned from guardians, gateways or invite codes.
 use std::net::IpAddr;
 
-/// IPv4 blocks a probe must not reach: the IANA IPv4 Special-Purpose Address
-/// Registry entries (RFC 6890 and updates), multicast and reserved space.
-/// Blocks with a few globally reachable anycast addresses are excluded whole.
 const NON_PUBLIC_V4: &[(u32, u32)] = &[
     (0x0000_0000, 8),  // 0.0.0.0/8 this network
     (0x0A00_0000, 8),  // 10.0.0.0/8 private
@@ -23,13 +18,8 @@ const NON_PUBLIC_V4: &[(u32, u32)] = &[
     (0xF000_0000, 4),  // 240.0.0.0/4 reserved, including broadcast
 ];
 
-/// Within global unicast 2000::/3, the IANA IPv6 Special-Purpose Address
-/// Registry blocks that are not public hosts, or that embed or tunnel IPv4.
-/// Everything outside 2000::/3 (loopback, mapped, NAT64, discard, ULA, link
-/// local, multicast, SRv6 SIDs, ...) is rejected before this table.
 const NON_PUBLIC_V6: &[(u128, u32)] = &[
-    (0x2001_0000_u128 << 96, 23), /* 2001::/23 IETF protocol assignments: Teredo, benchmarking,
-                                   * ORCHIDv2 */
+    (0x2001_0000_u128 << 96, 23), /* IETF protocol assignments */
     (0x2001_0db8_u128 << 96, 32), // 2001:db8::/32 documentation
     (0x2002_u128 << 112, 16),     // 2002::/16 6to4
     (0x3fff_0000_u128 << 96, 20), // 3fff::/20 documentation
@@ -51,7 +41,6 @@ pub fn public_ip(address: IpAddr) -> bool {
                 .any(|&(network, length)| in_prefix(ip, network, length, 32))
         }
         IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
-            // ::ffff:a.b.c.d reaches the embedded IPv4 address directly.
             Some(ip) => public_ip(IpAddr::V4(ip)),
             None => {
                 let ip = u128::from(ip);

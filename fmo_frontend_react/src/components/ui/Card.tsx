@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 interface CardProps {
   children: ReactNode;
   className?: string;
-  /** Padding classes, replacing the default */
+
   padding?: string;
   as?: 'section' | 'div' | 'article';
   'aria-labelledby'?: string;
@@ -21,11 +21,11 @@ export function Card({ children, className = '', padding = 'p-4 sm:p-5', as: Tag
 interface CardHeaderProps {
   title: ReactNode;
   id?: string;
-  /** One line under the title saying what the block shows */
+
   description?: ReactNode;
-  /** Controls such as a time-range selector */
+
   actions?: ReactNode;
-  /** Data provenance, e.g. a DataStamp */
+
   meta?: ReactNode;
 }
 

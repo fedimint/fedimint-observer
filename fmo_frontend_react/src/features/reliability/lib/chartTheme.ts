@@ -1,9 +1,4 @@
-/**
- * Chart colours per mode. Canvas charts can't read CSS variables, so these
- * mirror the tokens in index.css. Series steps were validated with the
- * dataviz palette checker against each mode's surface (lightness band,
- * chroma, CVD separation, contrast >= 3:1).
- */
+
 export interface ChartTheme {
   surface: string;
   ink: string;
@@ -11,14 +6,14 @@ export interface ChartTheme {
   ink3: string;
   grid: string;
   axis: string;
-  /** Operational series */
+
   series: string;
   seriesSoft: string;
-  /** Reference lines such as the consensus threshold */
+
   reference: string;
   crit: string;
   warn: string;
-  /** Status steps for marks that mean a direction: money in (ok) and out (serious) */
+
   ok: string;
   serious: string;
 }

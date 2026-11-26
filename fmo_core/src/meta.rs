@@ -50,7 +50,6 @@ pub async fn federation_meta(
         .and_then(|url| url.as_str().map(ToOwned::to_owned))
     {
         debug!("fetching {override_url}");
-        // Without the override, the consensus and config meta still apply
         state
             .meta_override_cache
             .fetch_meta_cached(&override_url, cfg.global.calculate_federation_id())

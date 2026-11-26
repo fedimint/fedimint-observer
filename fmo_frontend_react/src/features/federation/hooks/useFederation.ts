@@ -3,7 +3,7 @@ import type { useFederationDetails } from './useFederationDetails';
 
 type Details = NonNullable<ReturnType<typeof useFederationDetails>['data']>;
 
-/** What every federation section gets from the layout that keeps its header */
+
 export interface FederationContext extends Details {
   id: string;
 }

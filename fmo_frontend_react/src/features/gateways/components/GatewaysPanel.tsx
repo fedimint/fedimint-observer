@@ -23,17 +23,13 @@ import { useDebouncedValue } from '../../../hooks/useDebouncedValue';
 
 const EMPTY_TREND: GatewayUptimeTrendPoint[] = [];
 
-/**
- * The federation's Lightning v1 gateways, shown in a tab of the federation page.
- * A selected gateway opens in the side panel and is kept in the URL (?gateway=).
- */
+
 export function GatewaysPanel({ id }: { id: string }) {
   const view = useGatewayView();
   const { timeWindow } = view;
   const { federation, failed: federationFailed, retry: retryFederation } = useGatewayFederation(id);
   const [gatewaySearch, setGatewaySearch] = useState('');
   const [pageSize, setPageSize] = usePageSize('gateways-v1', 25);
-  // The backend searches; it is asked once typing pauses, not on every key
   const search = useDebouncedValue(gatewaySearch);
   const overview = useGatewayOverview(id, timeWindow, {
     search,
@@ -76,7 +72,6 @@ export function GatewaysPanel({ id }: { id: string }) {
   }), [currentError, dataWindow, federationFailed, federationOffline, live.lookup, observed, search, view.filter, overview.pageNumber]);
   const gateways = selection.gateways;
 
-  // Try again repeats only what failed, and is ignored while an attempt is running
   const retryBusy = overview.loading;
   const retry = () => {
     if (retryBusy) return;
@@ -86,8 +81,6 @@ export function GatewaysPanel({ id }: { id: string }) {
     live.retryIfFailed();
   };
 
-  // When a retry succeeds, its banner disappears together with the focused Try again
-  // button; put keyboard focus on the page heading instead of losing it
   useEffect(() => {
     if (focusAfterRetry.current && !overview.loading && document.activeElement === document.body) {
       focusAfterRetry.current = false;
@@ -96,15 +89,11 @@ export function GatewaysPanel({ id }: { id: string }) {
   });
 
   const rows = useMemo(() => gateways.map((gateway) => toGatewayRow(gateway, now, windowMinutes)), [gateways, now, windowMinutes]);
-  // Counted on the server over all the federation's recorded gateways, as of
-  // computed_at; retired ones count only in `retired`. Live registry rows alone have none.
   const summary = observed?.summary ?? null;
 
-  // A window switch shows the loading state rather than the previous window's trend
   const uptimeTrend = trend?.window === timeWindow ? trend.points : EMPTY_TREND;
   const selected = rows.find((row) => row.gateway_id === selectedId) ?? null;
   const metricsWindow = (rows.find((row) => row.metrics_window)?.metrics_window ?? dataWindow).toUpperCase();
-  // Until the recorded gateways arrive there are no numbers to show, only the controls
   const hasData = observed !== null || gateways.length > 0;
   const switchingWindow = observed !== null && dataWindow !== timeWindow && overview.loading;
   const trendPlaceholder = trend?.window === timeWindow

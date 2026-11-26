@@ -31,15 +31,12 @@ fn trusted_issuers_default_to_manifolds_production_roster() {
     unique.dedup();
     assert_eq!(unique.len(), defaults.len());
 
-    // The setting replaces the roster; keys are trimmed and lowercased
     let own = "AB".repeat(32);
     assert_eq!(
         parse_trusted_issuers(Some(&format!(" {own} , "))).unwrap(),
         vec!["ab".repeat(32)]
     );
-    // Set empty, no issuer is trusted
     assert!(parse_trusted_issuers(Some("")).unwrap().is_empty());
-    // A typo is an error, not a silently ignored key
     for bad in ["ab", &"g".repeat(64), &"a".repeat(65), "npub1qqqq"] {
         assert!(parse_trusted_issuers(Some(bad)).is_err(), "{bad}");
     }
@@ -48,8 +45,7 @@ fn trusted_issuers_default_to_manifolds_production_roster() {
 
 type Driver = tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>;
 
-/// A connection whose `search_path` is a fresh schema of the test's own,
-/// with every Manifold migration applied, so nothing else is touched
+/// A connection whose `search_path` is a fresh schema of the test's own.
 async fn test_schema(name: &str) -> anyhow::Result<(tokio_postgres::Client, Driver, String)> {
     test_schema_at(name, MIGRATIONS.len()).await
 }
@@ -128,10 +124,6 @@ async fn column(client: &tokio_postgres::Client, sql: &str) -> anyhow::Result<Ve
         .collect())
 }
 
-/// One advertisement the database refuses must not cost the others their
-/// sync: before each was written under its own savepoint, a single poison
-/// event rolled back every advertisement and the day's presence, on every
-/// sync that fetched it.
 #[tokio::test]
 #[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
 async fn postgres_poison_advertisements_cannot_block_a_sync() -> anyhow::Result<()> {
@@ -142,8 +134,6 @@ async fn postgres_poison_advertisements_cannot_block_a_sync() -> anyhow::Result<
         now - 60,
         json!({"availability": {"fedimintd_version": "0.12.0+fedi"}, "version": {"mg_version": "0.1.11"}}),
     );
-    // Both bypass `verify_event`, which rejects them, to reach the database:
-    // a timestamp no BIGINT holds, and a NUL that JSONB refuses
     let overflowing = advertisement('b', u64::MAX, json!({}));
     let nul = advertisement('c', now - 60, json!({"display_name": "a\u{0}b"}));
 
@@ -187,10 +177,6 @@ async fn postgres_poison_advertisements_cannot_block_a_sync() -> anyhow::Result<
     drop_schema(client, driver, &schema).await
 }
 
-/// What a self-signed advertisement claims cannot decide how long it is kept
-/// or how much is stored: before, rows were dropped only by their signed
-/// expiry, so a far-future one under a fresh key stayed for good, and every
-/// directory request read all of them.
 #[tokio::test]
 #[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
 async fn postgres_retention_ignores_claimed_expiry_and_bounds_storage() -> anyhow::Result<()> {
@@ -212,12 +198,10 @@ async fn postgres_retention_ignores_claimed_expiry_and_bounds_storage() -> anyho
         )
     };
 
-    // Expiring in year 9999, but created beyond the horizon
     let far_future = VerifiedAdvertisement {
         expires_at: crate::manifold::discovery::MAX_TIMESTAMP,
         ..versioned('f', now - 7200, "0.1.0")
     };
-    // Five fresh keys in repeated batches: only the newest three per kind stay
     let fresh: Vec<_> = ['g', 'h', 'i', 'j', 'k']
         .into_iter()
         .zip(1u64..)
@@ -242,8 +226,6 @@ async fn postgres_retention_ignores_claimed_expiry_and_bounds_storage() -> anyho
     .await?;
     assert_eq!(kept, ["i", "j", "k"]);
 
-    // A guardian's version history is bounded, newest kept, and goes with
-    // its advertisements
     for (offset, version) in [(1, "0.2.0"), (2, "0.3.0"), (3, "0.4.0")] {
         let republished = versioned('k', now - 10 + offset, version);
         sync(&mut client, &[&republished], now, retention).await?;
@@ -265,7 +247,6 @@ async fn postgres_retention_ignores_claimed_expiry_and_bounds_storage() -> anyho
         ["i", "j", "k"]
     );
 
-    // An hour later, only what was republished since is left
     let republished = versioned('k', now + 3500, "0.4.0");
     sync(&mut client, &[&republished], now + 3600, retention).await?;
     assert_eq!(
@@ -288,9 +269,6 @@ async fn checked(
         .map(|row| (row.get(0), row.get(1))))
 }
 
-/// Completeness is recorded per issuer, so a lookup that did not reach an
-/// issuer's locations never refreshes it; a valid revocation wins over
-/// invalid events for the same credential
 #[tokio::test]
 #[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
 async fn postgres_revocation_checks_are_per_issuer() -> anyhow::Result<()> {
@@ -312,7 +290,6 @@ async fn postgres_revocation_checks_are_per_issuer() -> anyhow::Result<()> {
         event_id: format!("{digest}-{}", kind.as_str()),
     };
 
-    // Complete for B only: A's check stays exactly as seeded
     let partial = RevocationLookup {
         records: vec![
             record("revoked", RevocationKind::Revoked),
@@ -330,7 +307,6 @@ async fn postgres_revocation_checks_are_per_issuer() -> anyhow::Result<()> {
     let (b_checked, _) = checked(&client, &b).await?.expect("B was read in full");
     assert!(chrono::Utc::now() - b_checked < chrono::TimeDelta::minutes(1));
 
-    // Complete for A, from where its authority now says
     let moved = vec!["wss://relay.other/".to_owned()];
     let full = RevocationLookup {
         records: vec![
@@ -365,12 +341,9 @@ async fn postgres_revocation_checks_are_per_issuer() -> anyhow::Result<()> {
     drop_schema(client, driver, &schema).await
 }
 
-/// Reads the production issuers' revocations from where their pinned
-/// authorities say, as each sync does
 #[tokio::test]
 #[ignore = "reads Manifold's production revocation relay over the network"]
 async fn live_revocation_lookup_completes() -> anyhow::Result<()> {
-    // As the server does at startup
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let trusted = parse_trusted_issuers(None)?;
     let targets = revocation_targets(&trusted)?;
@@ -389,8 +362,6 @@ async fn live_revocation_lookup_completes() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Real kind 37701, 37709 and 37702 events captured from Manifold's
-/// production relays; the 37709 one carries a production credential
 const RELAY_EVENTS: &str = include_str!("../fixtures/relay-events.json");
 
 fn real_events() -> Vec<Event> {
@@ -411,8 +382,7 @@ fn credentialed_advertisement() -> VerifiedAdvertisement {
     ad
 }
 
-/// Before, advertisements could be dated up to two hours ahead, and retention
-/// keeps the newest: a flood dated ahead evicted every real guardian
+/// advertisements could be dated up to two hours ahead.
 #[test]
 fn advertisements_dated_ahead_are_refused() {
     let events = real_events();
@@ -423,8 +393,6 @@ fn advertisements_dated_ahead_are_refused() {
         .unwrap();
     let (kept, rejected) = select_newest(&events, newest - (MAX_CLOCK_SKEW_SECONDS - 60));
     assert_eq!((kept.len(), rejected), (3, 0));
-    // A minute past the allowed skew: only the FLIP advertisement, created
-    // 15 minutes before the others, is not ahead
     let (kept, rejected) = select_newest(&events, newest - (MAX_CLOCK_SKEW_SECONDS + 60));
     assert_eq!(rejected, 2);
     assert_eq!(
@@ -433,9 +401,6 @@ fn advertisements_dated_ahead_are_refused() {
     );
 }
 
-/// A relay holding `events` that answers each query with at most `cap`,
-/// newest first, ties by lowest id (NIP-01), as relays cap answers below
-/// what was asked (relay.primal.net at 500)
 struct SimulatedRelay {
     events: Vec<Event>,
     cap: usize,
@@ -492,12 +457,8 @@ fn ids(events: &[Event]) -> std::collections::BTreeSet<EventId> {
     events.iter().map(Event::id).collect()
 }
 
-/// Before, an answer shorter than the 5000 asked for counted as complete,
-/// though relays cap answers at 500 or 4096: a revocation past the cap was
-/// never read, and its credential kept showing verified
 #[tokio::test]
 async fn revocation_reads_page_past_relay_caps() -> anyhow::Result<()> {
-    // Distinct seconds, then three events to a second
     for times in [
         (1000..2200).collect::<Vec<u64>>(),
         (0..1200).map(|n| 1000 + n / 3).collect(),
@@ -509,7 +470,6 @@ async fn revocation_reads_page_past_relay_caps() -> anyhow::Result<()> {
         assert_eq!(relay.page(None).len(), 500);
         assert_eq!(ids(&relay.read().await?), ids(&relay.events));
     }
-    // A relay capping lower than the page asked for is read in full too
     let relay = SimulatedRelay {
         events: revocations_at(1000..1300),
         cap: 70,
@@ -532,9 +492,6 @@ async fn small_revocation_reads_complete() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Paging continues from the oldest second read, so it cannot get past a
-/// second holding more events than a page: the read fails, never claims to
-/// be complete
 #[tokio::test]
 async fn a_second_fuller_than_a_page_leaves_the_read_incomplete() {
     let crowded = SimulatedRelay {
@@ -543,7 +500,6 @@ async fn a_second_fuller_than_a_page_leaves_the_read_incomplete() {
     };
     assert!(crowded.read().await.is_err());
 
-    // The relay's lower cap is learned from a page that turned out cut short
     let mut times: Vec<u64> = (2000..2150).collect();
     times.extend([1000; 150]);
     let low_cap = SimulatedRelay {
@@ -552,7 +508,6 @@ async fn a_second_fuller_than_a_page_leaves_the_read_incomplete() {
     };
     assert!(low_cap.read().await.is_err());
 
-    // Fewer than a page in that second is fine
     let mut times: Vec<u64> = (2000..2250).collect();
     times.extend([1000; 50]);
     let relay = SimulatedRelay {
@@ -597,9 +552,6 @@ fn protection(seat_bound: &[&str]) -> Protection {
     }
 }
 
-/// A flood of advertisements from new keys evicts only its own: seat-bound
-/// guardians and guardians with a sound, unrevoked credential from a trusted
-/// issuer have a quota of their own
 #[tokio::test]
 #[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
 async fn postgres_protected_guardians_survive_a_flood() -> anyhow::Result<()> {
@@ -636,8 +588,6 @@ async fn postgres_protected_guardians_survive_a_flood() -> anyhow::Result<()> {
     expected.sort();
     assert_eq!(kept, expected);
 
-    // Derived when stored: a sound credential, and where to look up its
-    // revocation
     let row = client
         .query_one(
             "SELECT credential_sound, credential_issuer, credential_digest, derived_stamp,
@@ -661,8 +611,6 @@ async fn postgres_protected_guardians_survive_a_flood() -> anyhow::Result<()> {
         .is_empty());
     dbtx.commit().await?;
 
-    // Once its issuer revoked the credential, the guardian is anonymous, and
-    // the next flood evicts it
     client
         .execute(
             "INSERT INTO revocations (issuer, credential_digest, state, event_id)
@@ -682,8 +630,7 @@ async fn postgres_protected_guardians_survive_a_flood() -> anyhow::Result<()> {
     drop_schema(client, driver, &schema).await
 }
 
-/// Presence rows go with a key's last advertisement unless it holds a seat;
-/// before, every key that ever advertised kept a row per day for 90 days
+/// Presence rows go with a key's last advertisement unless it holds a seat.
 #[tokio::test]
 #[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
 async fn postgres_presence_goes_with_the_last_advertisement() -> anyhow::Result<()> {
@@ -700,14 +647,12 @@ async fn postgres_presence_goes_with_the_last_advertisement() -> anyhow::Result<
     let presence = "SELECT left(author, 1) FROM presence_daily ORDER BY author";
     assert_eq!(column(&client, presence).await?, ["s", "x"]);
 
-    // Both aged out; only the seat-bound guardian's history stays
     sync_protected(&mut client, &[], now + 4000, retention, &guard).await?;
     assert!(column(&client, "SELECT author FROM advertisements")
         .await?
         .is_empty());
     assert_eq!(column(&client, presence).await?, ["s"]);
 
-    // The 90-day cleanup has an index to use
     let indexed = client
         .query_opt(
             "SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = 'presence_daily_day'",
@@ -718,9 +663,6 @@ async fn postgres_presence_goes_with_the_last_advertisement() -> anyhow::Result<
     drop_schema(client, driver, &schema).await
 }
 
-/// Migration 4 adds the derived columns to a populated table, and the
-/// collector derives the rows already there; until then they are not
-/// listed, since their stamp is not the binary's
 #[tokio::test]
 #[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
 async fn postgres_existing_advertisements_are_derived_after_migration() -> anyhow::Result<()> {
@@ -761,21 +703,16 @@ async fn postgres_existing_advertisements_are_derived_after_migration() -> anyho
     let evidence: CredentialEvidence = serde_json::from_value(row.get(2))?;
     assert_eq!(evidence, evaluate_credential(&ad.payload));
     assert!(row.get::<_, bool>(3));
-    // Nothing is left to derive
     assert_eq!(rederive_stale(&mut client, &schema).await?, 0);
     drop_schema(client, driver, &schema).await
 }
 
-/// A republished advertisement presents the same credential: its stored
-/// evidence is reused rather than verified again, unless it was derived
-/// with another stamp
 #[tokio::test]
 #[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
 async fn postgres_credential_evidence_is_reused() -> anyhow::Result<()> {
     let (mut client, driver, schema) = test_schema("reuse").await?;
     let ad = credentialed_advertisement();
     sync(&mut client, &[&ad], unix_now(), Retention::DEFAULT).await?;
-    // Mark the stored evidence, so reuse shows
     let mut marked = evaluate_credential(&ad.payload);
     marked.schema = Some("marked".to_owned());
     client
@@ -792,7 +729,6 @@ async fn postgres_credential_evidence_is_reused() -> anyhow::Result<()> {
     let derived = derive_all(&mut client, &schema, vec![republished.clone()]).await?;
     assert_eq!(derived[0].derived.evidence, marked);
 
-    // Evidence derived under another stamp is not trusted
     client
         .execute("UPDATE advertisements SET derived_stamp = 'v0-old'", &[])
         .await?;
@@ -804,8 +740,6 @@ async fn postgres_credential_evidence_is_reused() -> anyhow::Result<()> {
     drop_schema(client, driver, &schema).await
 }
 
-/// API-only replicas never migrate: one started before the worker ran the
-/// Manifold migrations answered every `/manifold/*` request with an error
 #[tokio::test]
 #[ignore = "requires an isolated FMO_MANIFOLD_TEST_DATABASE"]
 async fn postgres_api_replicas_need_every_manifold_migration() -> anyhow::Result<()> {

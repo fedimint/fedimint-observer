@@ -12,7 +12,7 @@ export interface FedimintTotals {
 export interface FederationOverview {
   session_count: number;
   total_assets_msat: number | null;
-  /** Sessions each module has processed, by module kind; behind session_count while it catches up */
+
   module_sessions: Record<string, number>;
 }
 
@@ -58,9 +58,9 @@ export interface GatewayV2Registry {
   successful_guardians: number;
   total_guardians: number;
   next_after: string | null;
-  /** Over every gateway of the module instance, not just this page */
+
   totals: GatewayV2Totals;
-  /** Probes of every gateway of the module instance, in the same UTC buckets as each gateway's `availability` */
+
   availability_trend: GatewayV2AvailabilityBucket[];
   gateways: {
     api_endpoint: string;
@@ -84,7 +84,7 @@ export interface GatewayV2Registry {
       incoming_msat: number; outgoing_msat: number;
       outgoing_claimed: number; outgoing_refunded: number; outgoing_cancelled: number;
     };
-    /** Module keys are self-reported and unverified; contested keys credit no endpoint */
+
     attribution: 'self_reported' | 'contested' | 'none';
     contested_keys: number;
   }[];
@@ -105,19 +105,19 @@ export interface FederationSummary {
   invite: string;
   health: FederationHealth;
   expiry_timestamp: number | null;
-  /** `federation_successor` meta field as published, normally an invite code */
+
   successor: string | null;
-  /** Federation the successor invite code points to, when it parses as one */
+
   successor_id: string | null;
-  /** That successor's name, when the observer tracks it */
+
   successor_name?: string | null;
 }
 
-/** Where a paged list stands */
+
 export interface ListPage {
-  /** Opaque cursor of the next page (`?after=`); null on the last page */
+
   next_after: string | null;
-  /** Rows matching the request across all pages */
+
   total: number;
 }
 
@@ -134,19 +134,19 @@ export interface FederationPageQuery {
   after?: string;
 }
 
-/** One page of `GET /federations/page` */
+
 export interface FederationPage {
   federations: FederationSummary[];
   next_after: string | null;
   total: number;
-  /** Largest daily figures over every federation, so charts on every page share one scale */
+
   activity_scale: { max_transactions: number; max_volume_msat: number };
 }
 
-/** Observed and answering, observed but offline, or announced but not observed */
+
 export type NostrGroup = 'online' | 'offline' | 'unobserved';
 
-/** One page of `GET /nostr/federations/page` */
+
 export interface NostrFederationPage {
   federations: { id: string; invite: string; name: string | null; health: FederationHealth | null }[];
   next_after: string | null;
@@ -158,23 +158,23 @@ export interface FederationActivity {
   amount_transferred: number;
 }
 
-/** Days a moving average spans in the histogram; 0 is none */
+
 export type HistogramAverage = 0 | 7 | 30;
 
-/** One UTC day of activity */
+
 export interface FederationHistogramDay {
-  /** UTC calendar day, e.g. "2024-05-31" */
+
   date: string;
   count: number;
   volume_msat: number;
-  /** Trailing averages over `average` days; null when no average was asked for */
+
   avg_count: number | null;
   avg_volume_msat: number | null;
-  /** Volume far above the federation's usual days */
+
   outlier: boolean;
 }
 
-/** Every UTC day from the first activity through today, quiet days included, oldest first */
+
 export interface FederationHistogram {
   days: FederationHistogramDay[];
   total_count: number;
@@ -189,7 +189,7 @@ export interface GuardianHealth {
 }
 
 export interface GatewayV2AvailabilityBucket {
-  /** RFC 3339, UTC */
+
   start: string;
   samples: number;
   online_samples: number;
@@ -214,25 +214,22 @@ export interface GuardianHealthLatest {
   session_outdated: boolean;
 }
 
-/**
- * Fedimint's JsonClientConfig, which is not part of fmo_api_types. Only the
- * fields the pages read are listed; the rest is still there and shown as is.
- */
+
 export interface ClientConfig {
   global?: {
     api_endpoints?: Record<string, { url?: string; name?: string }>;
-    /** Each guardian's broadcast (consensus) public key, by peer id */
+
     broadcast_public_keys?: Record<string, string>;
     meta?: Record<string, unknown>;
   };
-  /** Keyed by module instance id */
+
   modules?: Record<string, { kind?: string; network?: string; finality_delay?: number }>;
 }
 
-/** Which rows `/federations/:id/utxos?view=` lists */
+
 export type UtxoView = 'all' | 'verified' | 'pending' | 'mismatch';
 
-/** How many outputs have each status */
+
 export interface UtxoStatusCounts {
   all: number;
   verified: number;
@@ -244,17 +241,17 @@ export interface FederationUtxosResponse {
   /** Guardians that must agree before an output counts as held or not held */
   threshold: number;
   guardians: GuardianUtxoReport[];
-  /** The requested page of the rows matching the view and search; most severe status first, then largest amount first */
+
   utxos: UtxoComparisonRow[];
-  /** Rows per status over every output, before view and search */
+
   counts: UtxoStatusCounts;
-  /** Rows matching the view and search, across all pages */
+
   total_rows: number;
-  /** The 1-based page served: the requested one, clamped to the last page */
+
   page: number;
-  /** Rows per page */
+
   limit: number;
-  /** Pages of rows matching the view and search, at least 1 */
+
   page_count: number;
 }
 
@@ -263,11 +260,11 @@ export interface GuardianUtxoReport {
   status: 'unavailable' | 'ok' | 'lagging' | 'error';
   session_count: number | null;
   error: string | null;
-  /** Outputs a threshold of guardians agrees are held that this guardian does not list */
+
   missing_outputs: number;
-  /** Outputs this guardian lists that a threshold of guardians agrees are not held */
+
   extra_outputs: number;
-  /** Outputs this guardian lists with another amount than the agreed one */
+
   wrong_amounts: number;
 }
 
@@ -275,7 +272,7 @@ export interface UtxoComparisonRow {
   out_point: string;
   amount: number;
   address: string | null;
-  /** Keyed by guardian id */
+
   guardian_states: Record<string, GuardianClaimedUtxoState>;
   status: 'mismatch' | 'pending' | 'verified';
   disagreement: 'evidence_mismatch' | 'inventory_difference' | 'observer_difference' | 'on_chain_conflict' | null;
@@ -302,11 +299,11 @@ export interface GatewayInfo {
   activity_window?: GatewayActivityMetrics;
   uptime_window?: GatewayUptimeMetrics;
   metrics_window?: GatewayWindow;
-  /** Server-computed availability for the window; missing from live registry lookups */
+
   status?: GatewayStatus;
-  /** Share of the window covered by polls */
+
   coverage_pct?: number;
-  /** Online share of the polled time */
+
   estimated_uptime_pct?: number;
   estimated_online_minutes?: number;
   estimated_offline_minutes?: number;
@@ -328,7 +325,7 @@ export interface GatewayUptimeMetrics {
   online_minutes: number;
   offline_minutes: number;
   uptime_pct: number;
-  /** The window in equal time slots, oldest first; missing from older servers */
+
   buckets?: GatewayUptimeBucket[];
 }
 
@@ -338,7 +335,7 @@ export interface GatewayUptimeBucket {
 }
 
 export interface GatewayUptimeTrendPoint {
-  /** UTC midnight of the day, e.g. "2026-11-07T00:00:00Z" */
+
   day: string;
   seen_samples: number;
   total_samples: number;
@@ -347,22 +344,20 @@ export interface GatewayUptimeTrendPoint {
 
 export type GatewayWindow = '24h' | '7d' | '30d' | '90d';
 
-// Gateways and their trend for one window, computed together on the server
 export interface GatewayOverview {
   window: GatewayWindow;
   computed_at: string;
-  // Both are present unless the request narrows them with ?include=
   gateways?: GatewayInfo[];
   uptime_trend?: GatewayUptimeTrendPoint[];
-  /** Over all the federation's gateways, whatever ?include= asks for */
+
   summary: GatewayOverviewSummary;
-  /** Where the gateway list stands; with `gateways` only */
+
   page?: ListPage;
 }
 
-/** The gateway list's search, filter, order and page, applied by the backend */
+
 export interface GatewayListQuery {
-  /** `gateways`, `trend` or both (the default) */
+
   include?: string;
   search: string;
   status: 'all' | 'online' | 'degraded' | 'offline' | 'unknown' | 'retired';
@@ -372,36 +367,36 @@ export interface GatewayListQuery {
   after?: string;
 }
 
-/** A federation's gateways summed up for the overview's window; retired ones count only in `retired` */
+
 export interface GatewayOverviewSummary {
-  /** Gateways that aren't retired */
+
   total: number;
   online: number;
   degraded: number;
   offline: number;
   unknown: number;
   retired: number;
-  /** Of the gateways that aren't retired */
+
   vetted: number;
-  /** Mean estimated_uptime_pct of non-retired gateways polled in the window */
+
   avg_uptime_pct: number | null;
-  /** Mean coverage_pct of non-retired gateways */
+
   avg_coverage_pct: number | null;
 }
 
 export type FederationHealth = 'online' | 'degraded' | 'offline';
 
-/** Window of `/federations/:id/health/history` */
+
 export type GuardianHealthWindow = '24h' | '7d' | '30d';
 
-/** Each guardian's availability over a window, from the hourly rollup (historical) */
+
 export interface GuardianHealthHistory {
   window: GuardianHealthWindow;
-  /** 3600 for 24h and 7d, 86400 (a UTC day) for 30d */
+
   bucket_seconds: number;
-  /** RFC 3339 start of the first bucket */
+
   start: string;
-  /** Buckets in the window, the current partial one included */
+
   bucket_count: number;
   generated_at: string;
   guardians: GuardianHealthSeries[];
@@ -409,12 +404,12 @@ export interface GuardianHealthHistory {
 
 export interface GuardianHealthSeries {
   guardian_id: number;
-  /** Online share of polled time in the window; null without samples */
+
   uptime_pct: number | null;
   avg_latency_ms: number | null;
-  /** Start of the last hour within 90 days with an answered poll */
+
   last_online_hour: string | null;
-  /** Only buckets with samples, oldest first; a missing bucket was not polled */
+
   buckets: GuardianHealthBucket[];
 }
 
@@ -427,7 +422,7 @@ export interface GuardianHealthBucket {
   avg_latency_ms: number | null;
 }
 
-/** Each guardian's latest polls, from the last hour of raw samples (live) */
+
 export interface FederationLiveHealth {
   generated_at: string;
   guardians: GuardianLiveStatus[];
@@ -435,9 +430,9 @@ export interface FederationLiveHealth {
 
 export interface GuardianLiveStatus {
   guardian_id: number;
-  /** Latest poll in the last hour, answered or not */
+
   polled_at: string | null;
-  /** Latest answered poll in the last hour; the fields below are from it */
+
   answered_at: string | null;
   latency_ms: number | null;
   session_count: number | null;
@@ -445,7 +440,7 @@ export interface GuardianLiveStatus {
   peers_offline: number | null;
   peers_flagged: number | null;
   scheduled_shutdown: number | null;
-  /** How this guardian sees its peers' P2P connections */
+
   peers: GuardianPeerView[];
 }
 
@@ -458,26 +453,26 @@ export interface GuardianPeerView {
 
 export type SeatBindingsStatus = 'not_observed' | 'not_published' | 'invalid' | 'verified';
 
-/** `fedi:fman_seat_bindings` from consensus meta, verified by the observer */
+
 export interface ManifoldSeatBindingsReport {
   has_meta_module: boolean;
   observed_at: string | null;
   status: SeatBindingsStatus;
-  /** Why the directory is invalid; only for `invalid` */
+
   error: string | null;
-  /** Only when every binding verified: an invalid directory binds no seat */
+
   bindings: ManifoldSeatBinding[];
   distinct_guardians: number;
 }
 
 export interface ManifoldSeatBinding {
   peer_id: number;
-  /** Lowercase x-only hex Nostr key of the Manifold Guardian */
+
   fman_pubkey: string;
-  /** Manifold's deterministic name for the key; presentation only */
+
   display_name: string;
   guardian_identity: string;
   guardian_fee_pubkey: string;
-  /** Unix seconds */
+
   issued_at: number;
 }

@@ -1,6 +1,3 @@
-//! Bounded admission, request deadlines, and low-cardinality Prometheus
-//! metrics.
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,7 +45,6 @@ pub(crate) async fn admission(
     request: Request,
     next: Next,
 ) -> Response {
-    // Probes must remain usable while application request capacity is exhausted.
     if matches!(
         request.uri().path(),
         "/health" | "/live" | "/ready" | "/metrics"

@@ -5,14 +5,12 @@ import { errorMessage, isNetworkError } from '../../../utils/errors';
 import { initialPagedList, pagedListReducer, requestedCursors, shownPageNumber } from '../../../utils/pagedList';
 import type { LoadError } from '../lib/gatewaySelection';
 
-// Gateways are polled and their overview rebuilt every 5 minutes on the server
 const REFRESH_INTERVAL_MS = 60_000;
 const REFRESH_CHECK_MS = 10_000;
 const CLOCK_MS = 30_000;
-// Showing the tab again refreshes data older than this
 const STALE_ON_SHOW_MS = 30_000;
 
-/** One answer: the table and the trend always describe the same moment and window */
+
 interface OverviewPage {
   window: GatewayWindow;
   gateways: GatewayInfo[];
@@ -22,18 +20,9 @@ interface OverviewPage {
   computedAt: number;
 }
 
-/**
- * The observer's recorded gateways for a window, with the summary and the
- * availability trend, refreshed a minute after each load while the page is
- * visible. `now` ticks along so statuses and "seen" times stay current.
- *
- * The gateway list comes one page at a time, searched, filtered and ordered
- * by the backend as `list` asks; `next` and `previous` request another page,
- * and the page number only moves once that page has arrived.
- */
+
 export function useGatewayOverview(id: string, timeWindow: GatewayWindow, list: Omit<GatewayListQuery, 'after' | 'include'>) {
   const { search, status, sort, dir, limit } = list;
-  // Another window or list query is another list: back to its page 1
   const listKey = JSON.stringify([id, timeWindow, search, status, sort, dir, limit]);
   const [paged, dispatch] = useReducer(pagedListReducer<OverviewPage>, listKey, initialPagedList<OverviewPage>);
   if (paged.key !== listKey) dispatch({ type: 'query', key: listKey });
@@ -72,7 +61,6 @@ export function useGatewayOverview(id: string, timeWindow: GatewayWindow, list: 
       })
       .catch((err: unknown) => {
         if (signal.aborted) return;
-        // A failed Next or Previous stays on the page shown, which the next refresh reloads
         dispatch({ type: 'failed', key: listKey, cursors: requested });
         setError({
           window: timeWindow,
@@ -91,11 +79,9 @@ export function useGatewayOverview(id: string, timeWindow: GatewayWindow, list: 
       controller.abort();
       loadInFlight.current = false;
     };
-    // `listKey` is derived from the query values listed here
   }, [id, timeWindow, search, status, sort, dir, limit, listKey, requested, attempt]);
 
-  // Keep statuses and "seen" times current, and refresh a minute after the last load
-  // finished. A load in flight is never interrupted, so slow windows can complete.
+  // Keep statuses and "seen" times current, and refresh a minute after the last load finished. A load in flight is never interrupted, so slow windows can complete.
   useEffect(() => {
     const clock = setInterval(() => setNow(Date.now()), CLOCK_MS);
     const refresh = setInterval(() => {
@@ -116,20 +102,19 @@ export function useGatewayOverview(id: string, timeWindow: GatewayWindow, list: 
   }, []);
 
   const data = paged.data;
-  // Kept per answer, so views that memoize on them only recompute when one arrives
   const observed = useMemo(() => data && { window: data.window, gateways: data.gateways, summary: data.summary, page: data.page }, [data]);
   const trend = useMemo(() => data && { window: data.window, points: data.trend }, [data]);
   return {
     observed,
     trend,
-    /** The latest failure, for whichever window or page it happened in */
+
     error,
     loading,
     updatedAt: data?.computedAt ?? null,
     now,
-    /** Try again: repeats the last request, a failed Next or Previous included */
+
     reload: () => dispatch({ type: 'retry' }),
-    /** 1-based number of the page shown; moves only once the page asked for arrives */
+
     pageNumber: shownPageNumber(paged),
     hasNext: Boolean(data?.page?.next_after),
     next: () => {

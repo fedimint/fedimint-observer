@@ -1,6 +1,3 @@
-//! The Guardian directory's search, filters and order, applied on the server
-//! so each page of `/manifold/guardians` is the right slice of the result.
-
 use std::collections::BTreeSet;
 
 use fmo_api_types::{
@@ -10,14 +7,10 @@ use serde::Deserialize;
 
 use crate::pagination::key_text;
 
-/// `GET /manifold/guardians` query; every filter is optional
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct DirectoryQuery {
-    /// Matches the name, the Manifold Guardian key, the service key and the
-    /// holder key
     pub search: Option<String>,
     pub verification: Option<CredentialState>,
-    /// A minor version such as "0.12"
     pub version: Option<String>,
     pub size: Option<u16>,
     #[serde(default)]
@@ -38,7 +31,7 @@ pub(crate) enum DirectorySort {
     Name,
 }
 
-/// "0.12.0+fedi" -> "0.12"; Manifold groups compatibility by major and minor
+/// "0.12.0+fedi" -> "0.12".
 pub(crate) fn minor_version(version: &str) -> String {
     let mut parts = version.split(|c: char| !c.is_ascii_digit());
     match (parts.next(), parts.next()) {
@@ -114,8 +107,6 @@ pub(crate) fn matches(guardian: &ManifoldGuardianSummary, query: &DirectoryQuery
     !(query.fresh_only && guardian.freshness != Some(AdFreshness::Fresh))
 }
 
-/// The row's position in the chosen order, unique per guardian (it ends with
-/// the key), and the cursor a page continues after
 pub(crate) type SortKey = (i64, i64, String, String);
 
 pub(crate) fn sort_key(guardian: &ManifoldGuardianSummary, sort: DirectorySort) -> SortKey {
@@ -124,7 +115,6 @@ pub(crate) fn sort_key(guardian: &ManifoldGuardianSummary, sort: DirectorySort) 
     let signed = |msats: u64| i64::try_from(msats).unwrap_or(i64::MAX);
     match sort {
         DirectorySort::Name => (0, 0, name(), key),
-        // Guardians without a price go last in both directions
         DirectorySort::PriceAsc => match cheapest_msats(guardian) {
             Some(price) => (0, signed(price), name(), key),
             None => (1, 0, name(), key),
@@ -150,7 +140,7 @@ pub(crate) fn sort_key(guardian: &ManifoldGuardianSummary, sort: DirectorySort) 
     }
 }
 
-/// Filter choices over every listed guardian, so they do not depend on the page
+/// Filter choices over every listed guardian.
 pub(crate) fn facets(guardians: &[ManifoldGuardianSummary]) -> ManifoldDirectoryFacets {
     let mut versions = BTreeSet::new();
     let mut sizes = BTreeSet::new();
@@ -162,7 +152,6 @@ pub(crate) fn facets(guardians: &[ManifoldGuardianSummary]) -> ManifoldDirectory
         sizes.extend(availability.federation_sizes.iter().copied());
     }
     let mut versions: Vec<String> = versions.into_iter().collect();
-    // Newest first, comparing numerically ("0.10" after "0.9")
     versions.sort_by_key(|v| {
         std::cmp::Reverse(
             v.split('.')

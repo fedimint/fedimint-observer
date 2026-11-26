@@ -1,8 +1,3 @@
--- The collector's read-model rebuild and session time repair, as session-local
--- functions for the SQL regression tests. Mirrors
--- FederationObserver::rebuild_read_models and ::process_session_time_repair
--- (fmo_core/src/federation/projector.rs), without their step sizes: the steps
--- are each final for what they cover, so one unbounded step is equivalent.
 
 CREATE FUNCTION pg_temp.rebuild_read_models(fed BYTEA, from_index INTEGER) RETURNS VOID AS $$
 DECLARE
@@ -16,8 +11,6 @@ BEGIN
     END IF;
 END;
 $$ LANGUAGE plpgsql;
-
--- Whether a ready repair job was processed
 CREATE FUNCTION pg_temp.process_session_time_repair() RETURNS BOOLEAN AS $$
 DECLARE
     claim RECORD;

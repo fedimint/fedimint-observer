@@ -76,7 +76,6 @@ test('a recorded page gets live details for its own rows only', () => {
   const page = [gateway('a')];
   const live = [gateway('a', { lightning_alias: 'live-a' }), gateway('z', { lightning_alias: 'live-only' })];
   assert.deepEqual(mergeGatewayData(page, live).map((row) => row.lightning_alias), ['live-a']);
-  // Nothing recorded at all: the live registry stands in, unless the list was narrowed
   assert.deepEqual(mergeGatewayData([], live).map((row) => row.gateway_id), ['a', 'z']);
   assert.deepEqual(mergeGatewayData([], live, false), []);
   const narrowed = selectGatewayData(sources({ observed: [], live: { status: 'done', gateways: live, error: null }, listNarrowed: true }));

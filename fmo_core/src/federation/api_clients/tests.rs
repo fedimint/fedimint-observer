@@ -54,7 +54,6 @@ async fn hostile_guardian_exhausting_its_budget_holds_only_its_own_route() -> an
     );
     assert_eq!(clients.held, HashSet::from([(fed, PeerId::from(0))]));
 
-    // Another new URL keeps it held without a new transition.
     let (selected, _) = clients.selected(fed, &canonical, &peers(&["ws://a4/", "ws://b1/"]))?;
     assert_eq!(selected[&PeerId::from(0)], url("ws://a2/"));
     assert_eq!(clients.held.len(), 1);
@@ -163,7 +162,6 @@ async fn literal_fallback_keeps_its_capacity() -> anyhow::Result<()> {
         "the announced share is full"
     );
 
-    // The identical route through the literal class reuses its pairs.
     clients.lookup(LookupClass::Literal, fed, invite, None)?;
     assert_eq!(clients.literal_lookup_pairs, 0);
     clients.lookup(LookupClass::Literal, fed, peers(&["ws://c/"]), None)?;
@@ -227,7 +225,6 @@ async fn public_lookups_never_consume_announced_admission() -> anyhow::Result<()
 
     let observed = peers(&["ws://observed/"]);
     clients.selected(federation(1), &observed, &observed)?;
-    // A secret-less lookup of its route reuses the observed client.
     clients.lookup(LookupClass::Literal, federation(1), observed, None)?;
     assert_eq!(clients.lookup_urls.len(), 4);
     Ok(())

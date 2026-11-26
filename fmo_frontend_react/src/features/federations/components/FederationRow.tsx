@@ -18,7 +18,7 @@ interface FederationRowProps {
   secondaryColumn: 'assets' | 'operational';
   health: FederationHealth;
   expiryTimestamp?: number | null;
-  /** Federation its guardians named to migrate to, with its name when the observer tracks it */
+
   successorId?: string | null;
   successorName?: string | null;
   activityData: FederationActivity[];
@@ -26,7 +26,6 @@ interface FederationRowProps {
   maxVolume?: number;        // global max for consistent chart scale, in msats
 }
 
-// Health status messages
 const HEALTH_MESSAGES = {
   degraded: 'Some guardians are offline or out of sync',
   offline: 'Fewer guardians answer the observer than consensus needs',
@@ -51,12 +50,9 @@ export const FederationRow = memo(function FederationRow({
   maxTransaction,
   maxVolume,
 }: FederationRowProps) {
-  // Extract data for mini charts
   const transactionData = useMemo(() => activityData.map(d => d.num_transactions), [activityData]);
   const volumeData = useMemo(() => activityData.map(d => d.amount_transferred), [activityData]);
 
-  // The server counts UTC days, the last being the current one (most recent data
-  // last, so we count backwards)
   const dates = useMemo(() => activityData.map((_, index) => {
     const daysAgo = activityData.length - 1 - index;
     if (daysAgo === 0) return 'Today (UTC)';
@@ -78,7 +74,6 @@ export const FederationRow = memo(function FederationRow({
     >
       {/* Shut-down rows end after the operating range; live rows add the chart below/on the right. */}
       <div className={`grid grid-cols-[1.5fr_1fr] gap-3 items-start ${shutDown ? 'md:grid-cols-2' : 'md:grid-cols-3'}`}>
-        {/* Name */}
         <div className="font-medium text-ink min-w-0">
           <span className="meta-label block mb-1 md:hidden">Name</span>
           <div className="flex items-center gap-1.5 min-w-0">
@@ -103,7 +98,7 @@ export const FederationRow = memo(function FederationRow({
                   {isShutDown ? 'Moved' : 'Migrating'}{successorName ? ` to ${successorName}` : ''}
                 </span>
               </span>
-              {/* The row is itself a link, so the explainer opens from a button rather than a nested link */}
+
               {!isShutDown && showMigrationHelp() && (
                 <button
                   type="button"
@@ -150,7 +145,6 @@ export const FederationRow = memo(function FederationRow({
           </span>
         </div>
 
-        {/* Activity, last 7 days */}
         {!shutDown && <div className="col-span-2 md:col-span-1">
           <span className="meta-label block mb-1 md:hidden">Activity, last 7 days</span>
           <CombinedMiniChart

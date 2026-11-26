@@ -1,6 +1,3 @@
-//! Guardian health over time and the latest polls, read from what
-//! `monitor_health` has already stored: no request here talks to a guardian.
-
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::{DateTime, DurationRound, NaiveDateTime, TimeDelta, Utc};
@@ -15,12 +12,8 @@ use serde_json::Value;
 
 use crate::federation::observer::FederationObserver;
 
-/// How far back `last_online_hour` looks, so a guardian that has been gone
-/// for years costs a bounded index range, not the whole rollup
 const LAST_ONLINE_LOOKBACK_DAYS: i64 = 90;
 
-/// Enumerates the federation's guardian ids with one index descent each; see
-/// `get_guardian_health` for why this replaces a GROUP BY over the samples
 const GUARDIANS_CTE: &str = "WITH RECURSIVE guardians AS (
          SELECT (SELECT h.guardian_id
                  FROM guardian_health h
@@ -60,10 +53,6 @@ fn ratio(part: i64, whole: i64) -> Option<f32> {
     (whole > 0).then(|| part as f32 / whole as f32)
 }
 
-/// The mean latency over a window, from each bucket's `(latency_sum_ms,
-/// latency_samples)`: every timed request weighs the same. Weighting the
-/// buckets' means by their online samples instead biased it, since the
-/// status poll and the separately timed request succeed independently.
 fn window_latency_ms(buckets: impl IntoIterator<Item = (i64, i64)>) -> Option<f32> {
     let (sum, samples) = buckets
         .into_iter()
@@ -88,9 +77,6 @@ fn clamp_u32(value: i64) -> u32 {
     u32::try_from(value.max(0)).unwrap_or(u32::MAX)
 }
 
-/// The parts of a stored `StatusResponse` the live view shows. Read
-/// leniently: rows come from every Fedimint version the observer has polled,
-/// so a missing or odd field leaves that field empty instead of failing.
 struct ReportedStatus {
     session_count: Option<u64>,
     peers_online: Option<u64>,
@@ -147,8 +133,6 @@ impl FederationObserver {
         let id = federation_id.consensus_encode_to_vec();
         let connection = self.connection().await?;
 
-        // At most one row per guardian and bucket: 168 per guardian for 7d,
-        // each from a range of the rollup's primary key
         let rows = connection
             .query(
                 &format!(
@@ -218,7 +202,6 @@ impl FederationObserver {
             })
             .collect();
 
-        // Per guardian, as in `guardians`: each bucket's (latency sum, timed samples)
         let mut latency: Vec<Vec<(i64, i64)>> = vec![Vec::new(); guardians.len()];
         for row in &rows {
             let guardian_id = row.get::<_, i32>("guardian_id") as u16;
@@ -265,8 +248,6 @@ impl FederationObserver {
     ) -> anyhow::Result<FederationLiveHealth> {
         self.ensure_observed(federation_id).await?;
         let now = Utc::now();
-        // Polls are a minute apart while any guardian answers and at most 30
-        // minutes apart otherwise, so the last hour holds the latest poll
         let since = (now - TimeDelta::hours(1)).naive_utc();
         let rows = self
             .connection()
@@ -398,12 +379,7 @@ mod tests {
 
     #[test]
     fn window_latency_weighs_every_timed_request_alike() {
-        // Hour 1: 10 polls answered but only 1 request timed, at 1000 ms.
-        // Hour 2: 1 poll answered but 9 requests timed, at 100 ms each.
-        // Weighting the hours' means by answered polls gave
-        // (1000·10 + 100·1) / 11 ≈ 918 ms; the 10 timed requests average 190 ms.
         assert_eq!(window_latency_ms([(1000, 1), (900, 9)]), Some(190.0));
-        // Timed requests in a bucket without answered polls still count
         assert_eq!(window_latency_ms([(0, 0), (300, 3)]), Some(100.0));
         assert_eq!(window_latency_ms([(0, 0)]), None);
         assert_eq!(window_latency_ms([]), None);
@@ -450,7 +426,6 @@ mod tests {
             vec![(1, true, false, Some(4021)), (2, false, true, Some(4020))]
         );
 
-        // A guardian still in setup reports no federation status
         let setup = reported_status(
             &serde_json::json!({ "server": "awaiting_password", "federation": null }),
         );

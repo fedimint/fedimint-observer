@@ -9,7 +9,6 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
-// The paginated lists (wallet operations, gateway registry) share this gate.
 for (const olderFirst of [false, true]) {
   test(`refresh racing pagination preserves the page boundary, older first=${olderFirst}`, async () => {
     const gate = new PageRequests();
@@ -70,8 +69,6 @@ test('numbered pagination shows the ends and the neighbours of the current page'
   assert.deepEqual(pageItems(10, 10), [1, 'gap', 9, 10]);
 });
 
-// The gateway list's position (useGatewayOverview), clicked through every
-// order of answers and failures the hook can see.
 import { initialPagedList, pagedListReducer, requestedCursors, shownPageNumber } from '../src/utils/pagedList.ts';
 
 const step = (state, ...actions) => actions.reduce(pagedListReducer, state);
@@ -174,14 +171,12 @@ test('after a failed Next, background refreshes reload the page shown, not the f
   s = step(s, failed(s));
   assert.equal(s.pending, null, 'the failed navigation is no longer pending');
   assert.equal(s.attempt, attemptBeforeFailure, 'the failure itself starts no request');
-  // A minute later the refresh asks for page 1 again
   s = step(s, { type: 'refresh' });
   assert.notEqual(s.attempt, attemptBeforeFailure);
   assert.deepEqual(requestedCursors(s), []);
   s = step(s, loaded(s, 'p1 refreshed'));
   assert.equal(shownPageNumber(s), 1, 'no jump to page 2 without a click');
   assert.equal(s.data, 'p1 refreshed');
-  // While page 2 keeps failing, page 1 keeps refreshing
   s = step(s, { type: 'next', cursor: 'c2' });
   s = step(s, failed(s), { type: 'refresh' });
   s = step(s, loaded(s, 'p1 again'));

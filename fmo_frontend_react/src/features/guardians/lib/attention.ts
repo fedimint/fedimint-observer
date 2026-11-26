@@ -1,6 +1,6 @@
 import type { GuardianWarning, Resilience } from './guardianModel';
 
-/** Live status older than this no longer describes "right now" (the collector polls every minute) */
+
 export const LIVE_STALE_AFTER_MS = 3 * 60_000;
 
 export type Attention =
@@ -11,18 +11,14 @@ export type Attention =
 interface AttentionInput {
   warnings: readonly GuardianWarning[];
   res: Resilience;
-  /** When the live status shown was generated; null when none has loaded */
+
   liveGeneratedAt: string | null;
-  /** The latest request for live status failed */
+
   liveFailed: boolean;
   now: number;
 }
 
-/**
- * What the "Attention" list says. Nothing to warn about is only an all-clear
- * when the evidence is complete and current: live status that failed to load,
- * is stale, or leaves guardians unpolled says "unknown", never a green check.
- */
+
 export function attention({ warnings, res, liveGeneratedAt, liveFailed, now }: AttentionInput): Attention {
   const generated = liveGeneratedAt ? Date.parse(liveGeneratedAt) : NaN;
   let gap: string | null = null;

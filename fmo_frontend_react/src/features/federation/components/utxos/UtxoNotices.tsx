@@ -16,7 +16,7 @@ function Notice({ tone, children }: { tone: keyof typeof tones; children: ReactN
 interface UtxoNoticesProps {
   utxos: FederationUtxos;
   overview: FederationOverview | null;
-  /** The federation's indexing progress could not be loaded */
+
   overviewFailed: boolean;
 }
 

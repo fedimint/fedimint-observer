@@ -40,14 +40,9 @@ use crate::util::{query, query_one, query_opt, query_value};
 #[path = "observer_tests.rs"]
 mod endpoint_restore_tests;
 
-/// Per request to the mempool instance; callers bound their total time
-/// themselves
 const ESPLORA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-/// Bounds a session fetch so its retry can switch to rotated routes
 const SESSION_FETCH_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(90);
 const ACTIVE_ASSETS_DEADLINE: Duration = Duration::from_secs(5);
-// Older SQL is retained for new databases; populated databases upgrade from
-// v11.
 const CORE_MIGRATIONS: &[&str] = &[
     include_str!("../../schema/v0.sql"),
     include_str!("../../schema/v1.sql"),
@@ -70,7 +65,6 @@ const NO_ACTIVITY: FederationActivity = FederationActivity {
 };
 
 const GUARDIAN_ENDPOINT_REFRESH_BATCH_SIZE: i64 = 128;
-/// Startup restore budget; the periodic refresh continues from the cursor
 const MAX_GUARDIAN_ENDPOINT_STARTUP_BATCHES: usize = 32;
 
 use crate::federation::api_clients::{ApiClients, ApiLimits, LookupClass};
@@ -146,38 +140,26 @@ pub struct FederationObserver {
     connection_pool: deadpool_postgres::Pool,
     worker_pool: deadpool_postgres::Pool,
     worker_lease: Option<Arc<tokio_postgres::Client>>,
-    /// Claimed with the worker lease; fences route writes after handoff
     worker_epoch: Option<i64>,
     pub(crate) work_budget: Arc<tokio::sync::Semaphore>,
     pub(crate) external_io: Arc<tokio::sync::Semaphore>,
     pub(crate) work_notifications: crate::work::WorkNotifications,
-    /// `FO_HEALTH_RETENTION_DAYS`; zero keeps health history indefinitely
     pub(crate) health_retention_days: u32,
     admin_auth: String,
-    /// Shared so requests reuse its connections to the mempool instance
     esplora: esplora_client::AsyncClient,
     task_group: TaskGroup,
     connectors: ConnectorRegistry,
-    /// Configs fetched by invite code, shared with the config API
     federation_config_cache: FederationConfigCache,
-    /// One guardian API client per set of guardian endpoints, see
-    /// [`Self::federation_api`]
     api_clients: Arc<std::sync::Mutex<ApiClients>>,
-    /// Verified announced routes per federation
     guardian_endpoints: Arc<
         std::sync::RwLock<
             HashMap<FederationId, crate::federation::endpoints::GuardianEndpointsMap>,
         >,
     >,
-    /// Highest admitted route revision; also serializes refreshes and commits
     guardian_endpoint_revision: Arc<tokio::sync::Mutex<i64>>,
     modules: ModuleRegistry,
-    /// Tells a federation's module projectors about stored sessions and moved
-    /// cursors
     projector_wakeups: ProjectorWakeups,
     nostr_pool: Arc<tokio::sync::OnceCell<nostr_sdk::RelayPool>>,
-    /// Federations whose observer tasks this process runs, see
-    /// [`Self::spawn_observer`]
     spawned_federations: Arc<std::sync::Mutex<std::collections::HashSet<FederationId>>>,
 }
 
@@ -250,7 +232,6 @@ impl FederationObserver {
                 version == CORE_MIGRATIONS.len() as i32 - 1,
                 "Start the worker to migrate the database before API replicas"
             );
-            // `/manifold/*` reads the Manifold schema, migrated separately
             let connection = slf.connection().await?;
             crate::manifold::check_manifold_schema(&connection).await?;
             slf.restore_guardian_endpoints_at_startup().await?;
@@ -259,8 +240,6 @@ impl FederationObserver {
             ));
             return Ok(slf);
         }
-        // The dedicated worker lease serializes startup migrations as well as
-        // collection. An API-only instance never runs migrations.
         slf.setup_schema().await?;
         slf.worker_epoch = Some(slf.claim_guardian_endpoint_worker_epoch().await?);
         slf.restore_guardian_endpoints_at_startup().await?;
@@ -307,7 +286,6 @@ impl FederationObserver {
             }),
         );
         slf.spawn_module_tasks();
-        // Off when FO_MANIFOLD_RELAYS is set empty
         let manifold_relays = crate::manifold::configured_relays();
         if !manifold_relays.is_empty() {
             let observer = slf.clone();
@@ -412,7 +390,6 @@ impl FederationObserver {
             .batch_execute("SET LOCAL lock_timeout = '5s'")
             .await?;
 
-        // Lock first, so the reads below see the previous commit.
         let state = transaction
             .query_one(
                 "SELECT worker_epoch, last_revision
@@ -464,7 +441,6 @@ impl FederationObserver {
             )
             .await?
             .map(|row| row.get::<_, serde_json::Value>(0));
-        // Replace a malformed row instead of failing every commit.
         let stored_announcements = match stored_data.clone().map(
             serde_json::from_value::<
                 BTreeMap<PeerId, fedimint_core::net::api_announcement::SignedApiAnnouncement>,
@@ -478,7 +454,6 @@ impl FederationObserver {
             }
         };
 
-        // Stored routes already cover this process's cache.
         let (durable, _) = crate::federation::endpoints::verify_and_merge_announcements(
             federation_id,
             &config.global,
@@ -551,7 +526,6 @@ impl FederationObserver {
                 async move {
                     loop {
                         match observer.load_guardian_endpoint_batch().await {
-                            // A backlog drains without waiting between pages.
                             Ok(true) => {
                                 tokio::task::yield_now().await;
                                 continue;
@@ -570,7 +544,6 @@ impl FederationObserver {
 
     /// Verifies one batch of stored routes; returns whether more may follow
     async fn load_guardian_endpoint_batch(&self) -> anyhow::Result<bool> {
-        // Held from read to cursor advance, so an older batch can't win.
         let mut admitted_revision = self.guardian_endpoint_revision.lock().await;
         let after_revision = *admitted_revision;
         let rows = load_guardian_endpoint_inputs(&self.connection_pool, after_revision).await?;
@@ -828,7 +801,6 @@ impl FederationObserver {
         );
 
         let federation_id = federation.federation_id;
-        // Without broadcast keys no announcement can be verified.
         if federation.config.global.broadcast_public_keys.is_some() {
             let slf = self.worker();
             let config = federation.config.clone();
@@ -852,8 +824,7 @@ impl FederationObserver {
         self.spawn_module_federation_tasks(federation);
     }
 
-    /// Runs the background task each module has for the federation, if any,
-    /// supervised like core's own
+    /// Runs the background task each module has for the federation.
     fn spawn_module_federation_tasks(&self, federation: Federation) {
         let services = Services::new(self.worker());
         let federation_id = federation.federation_id;
@@ -898,8 +869,7 @@ impl FederationObserver {
         }
     }
 
-    /// Whether the v12 database has `session_time_repairs`, which the
-    /// pre-release v12 lacked
+    /// Whether the v12 database has `session_time_repairs`.
     async fn has_session_time_repair_schema(&self) -> anyhow::Result<bool> {
         query_value(
             &self.connection().await?,
@@ -959,14 +929,12 @@ impl FederationObserver {
                 .await?
             {
                 -1 => {
-                    // No schema version table, assume schema is not set up
                     info!("No schema version found, setting up schema");
                     None
                 }
                 version => Some(version as usize),
             };
 
-        // Pre-release v12..v14 were merged into v12 and v13; detect them.
         let pre_release = match maybe_schema_version {
             Some(14) => true,
             Some(13) => !self.has_guardian_endpoint_fence_schema().await?,
@@ -982,7 +950,6 @@ impl FederationObserver {
             "Database schema is newer than this binary; use a compatible observer version"
         );
 
-        // Earlier versions require Rust backfills from the previous release.
         const MIN_UPGRADE_VERSION: usize = 11;
         if let Some(version) = maybe_schema_version {
             ensure!(
@@ -1014,7 +981,6 @@ impl FederationObserver {
         .await?
             == 0
         {
-            // Seed block times table
             self.connection()
                 .await?
                 .batch_execute(include_str!(concat!(
@@ -1028,9 +994,6 @@ impl FederationObserver {
         self.setup_manifold_schema().await
     }
 
-    /// Creates every registered module's schema and runs the module's own
-    /// migrations a database hasn't seen, each in its own transaction with the
-    /// module's schema first on the search path
     async fn setup_module_schemas(&self) -> anyhow::Result<()> {
         for kind in self.modules.kinds() {
             let module = self.modules.get(kind).expect("listed by the registry");
@@ -1057,7 +1020,6 @@ impl FederationObserver {
             for (index, sql) in migrations.iter().enumerate().skip(applied) {
                 info!("Running migration {} of module {kind}", index + 1);
                 let dbtx = connection.transaction().await?;
-                // Like core migrations: no statement deadline, a bounded lock wait
                 dbtx.batch_execute(&format!(
                     "SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '30s';
                      SET LOCAL search_path TO {schema}, public"
@@ -1104,8 +1066,6 @@ impl FederationObserver {
             .collect()
     }
 
-    /// The federation list uses a fixed number of database queries and no
-    /// remote I/O.
     pub async fn list_federation_summaries(&self) -> anyhow::Result<Vec<FederationSummary>> {
         let federations = self.list_federations().await?;
         let federation_health = self.get_guardian_health_summary().await?;
@@ -1178,8 +1138,6 @@ impl FederationObserver {
                         .copied()
                         .unwrap_or(FederationHealth::Offline),
                     expiry_timestamp,
-                    // A successor that is not an invite code, or names this
-                    // federation itself, points nowhere users can move to
                     successor_id: successor
                         .as_deref()
                         .and_then(|successor| successor.trim().parse::<InviteCode>().ok())
@@ -1191,7 +1149,6 @@ impl FederationObserver {
             })
             .collect::<anyhow::Result<Vec<FederationSummary>>>()
             .map(|mut summaries| {
-                // A successor the observer tracks is named from its own summary
                 let names: HashMap<FederationId, String> = summaries
                     .iter()
                     .filter_map(|summary| Some((summary.id, summary.name.clone()?)))
@@ -1228,8 +1185,7 @@ impl FederationObserver {
         Ok(())
     }
 
-    /// Each federation's transactions and volume on each of the last `days`
-    /// days, oldest first
+    /// Returns daily federation activity oldest first.
     async fn federations_activity(
         &self,
         days: u32,
@@ -1310,8 +1266,7 @@ impl FederationObserver {
         .await
     }
 
-    /// Fails unless the federation is observed. Unlike
-    /// [`Self::get_federation`], doesn't decode the federation's config.
+    /// Fails unless the federation is observed.
     pub async fn ensure_observed(&self, federation_id: FederationId) -> anyhow::Result<()> {
         let observed = query_value::<bool>(
             &self.connection().await?,
@@ -1335,20 +1290,14 @@ impl FederationObserver {
             .ok_or_else(|| not_observed(federation_id))
     }
 
-    /// Stores the federation and starts observing it. Adding a federation
-    /// again, or concurrently, is fine: it is stored once, and observed once
-    /// per process.
     pub async fn add_federation(&self, invite: &InviteCode) -> anyhow::Result<FederationId> {
         let federation_id = invite.federation_id();
 
         if let Some(federation) = self.get_federation(federation_id).await? {
-            // Its observer may not run yet, if the request that stored it was
-            // cancelled before starting it
             self.spawn_observer(federation);
             return Ok(federation_id);
         }
 
-        // Observing uses the shared clients, which carry no API secret
         if invite.api_secret().is_some() {
             return Err(crate::error::ClientError::bad_request(
                 "Federations whose invite code has an API secret can't be observed",
@@ -1357,8 +1306,6 @@ impl FederationObserver {
         }
         let config = crate::config::download_client_config(invite, self).await?;
 
-        // Stored and started apart from the request, so a request cancelled at
-        // its deadline can't leave a stored federation unobserved
         let observer = self.clone();
         tokio::spawn(async move {
             observer
@@ -1372,7 +1319,6 @@ impl FederationObserver {
                     ],
                 )
                 .await?;
-            // A concurrent add may have stored it first
             let federation = observer
                 .get_federation(federation_id)
                 .await?
@@ -1387,8 +1333,6 @@ impl FederationObserver {
 
     // FIXME: use middleware for auth and get it out of here
     pub fn check_auth(&self, bearer_token: &str) -> crate::error::Result<()> {
-        // Constant time, so response timing doesn't reveal how much of a
-        // guessed token is right
         if !bool::from(self.admin_auth.as_bytes().ct_eq(bearer_token.as_bytes())) {
             return Err(crate::error::AppError::unauthorized());
         }
@@ -1400,12 +1344,10 @@ impl FederationObserver {
         Ok(())
     }
 
-    /// A repair's durable request is deleted once its rebuild is done, so a
-    /// crash or database error leaves it available for the next attempt.
+    /// A repair's durable request is deleted once its rebuild is done.
     async fn repair_session_times(self) -> anyhow::Result<()> {
         let mut wakeup = self.work_notifications.subscribe("session-time-repair");
         loop {
-            // Mark the generation before querying, retaining commits racing the query.
             wakeup.borrow_and_update();
             let permit = self.work_budget.acquire().await?;
             let repaired = self.process_session_time_repair().await?;
@@ -1431,9 +1373,6 @@ impl FederationObserver {
     async fn fetch_block_times_inner(&self) -> anyhow::Result<()> {
         let esplora_client = &self.esplora;
 
-        // block_times.sql seeds the table on first start, so the fallback only
-        // matters if that seed is ever dropped. Block 820k was mined Dec 2023,
-        // before any compatible federation.
         let next_block_height = self.last_fetched_block_height().await?.unwrap_or(820_000) + 1;
         let current_block_height = esplora_client.get_height().await?;
 
@@ -1510,7 +1449,6 @@ impl FederationObserver {
                         background_backoff(),
                         || async {
                             gate.wait_turn(session_index).await;
-                            // Resolved per attempt so rotated routes are dialed
                             let api = match observer.federation_api(&global) {
                                 Ok(api) => api,
                                 Err(e) => {
@@ -1546,10 +1484,6 @@ impl FederationObserver {
             let _permit = self.work_budget.acquire().await?;
             let mut connection = self.connection().await?;
             let dbtx = connection.transaction().await?;
-            // Waiting is right for every lock this takes: a step of a
-            // read-model rebuild (record_new_session) or another writer's
-            // commit of the federation's totals. Both are short, but the
-            // default 5 s would fail the session and restart the sync.
             dbtx.batch_execute("SET LOCAL lock_timeout = '60s'").await?;
             let new = self
                 .process_session(
@@ -1560,8 +1494,6 @@ impl FederationObserver {
                     &dbtx,
                 )
                 .await?;
-            // Read models count each session once, in the transaction that
-            // stores it. A session that was already stored has been counted.
             if new {
                 dbtx.execute(
                     "SELECT record_new_session($1, $2)",
@@ -1581,8 +1513,7 @@ impl FederationObserver {
         unreachable!("Session stream should never end")
     }
 
-    /// Stores a session and its items. Returns whether the session was new;
-    /// items of a stored session are filled in where missing.
+    /// Stores a session and its items.
     async fn process_session(
         &self,
         federation_id: FederationId,
@@ -1627,9 +1558,7 @@ impl FederationObserver {
                     )
                     .await?;
                 }
-                _ => {
-                    // Ignore unknown CIs
-                }
+                _ => {}
             }
         }
 
@@ -1757,8 +1686,6 @@ impl FederationObserver {
             insert_consensus_item(dbtx, &at, &kind, &data).await?;
         }
 
-        // Votes date the session: session_times, a core read model, is built
-        // from them in this transaction (record_new_session)
         if let Some(height) = module.block_height_vote(&ci) {
             insert_block_height_vote(dbtx, &at, height).await?;
         }
@@ -1910,12 +1837,8 @@ impl FederationObserver {
             .filter(|&health| *health == FederationHealth::Offline)
             .count() as u64;
 
-        // Reads the counters maintained by the triggers introduced in v9 instead of
-        // aggregating over `transactions` and `transaction_inputs`, which meant a full
-        // scan of both tables (~1.3GB) on every request.
         let totals = query_one::<FedimintTotalsResult>(
             &self.connection().await?,
-            // language=postgresql
             "
                 SELECT (SELECT count(*) from federations)::bigint as federations,
                        COALESCE(sum(tx_count), 0)::bigint         as tx_count,
@@ -1979,9 +1902,6 @@ impl FederationObserver {
         list::active_assets(rows)
     }
 
-    /// Checks a backfill request and starts it in the background, returning
-    /// the stored sessions it covers. One backfill per federation runs at a
-    /// time; see [`Self::backfill_federation`].
     pub async fn start_backfill(
         &self,
         federation_id: FederationId,
@@ -2018,7 +1938,6 @@ impl FederationObserver {
         static RUNNING: std::sync::LazyLock<
             std::sync::Mutex<std::collections::HashSet<FederationId>>,
         > = std::sync::LazyLock::new(Default::default);
-        /// Ends the federation's entry in `RUNNING` however the backfill ends
         struct Running(FederationId);
         impl Drop for Running {
             fn drop(&mut self) {
@@ -2037,8 +1956,7 @@ impl FederationObserver {
             format!("backfill of {federation_id}"),
             async move {
                 let _running = running;
-                // A panic must not reach the task group, which would stop
-                // every task (see `supervise`)
+                // A panic must not reach the task group.
                 match futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
                     worker.backfill_federation(federation_id, session_start, session_end),
                 ))
@@ -2049,19 +1967,12 @@ impl FederationObserver {
                     Err(_) => warn!("Backfill panicked"),
                 }
             }
-            // Outlives the request, so not inside its span
             .instrument(info_span!(parent: None, "backfill", fed = %federation_id.to_prefix())),
         );
         Ok((session_start, session_end))
     }
 
-    /// Reprocesses stored sessions of a federation, filling in core rows that
-    /// are missing. Commits every `BACKFILL_BATCH` sessions, so an interrupted
-    /// run keeps its progress, and has the session times and daily activity
-    /// rebuilt from `session_start` by the repair worker: once with the first
-    /// batch, so an interrupted run's batches are covered, and once after the
-    /// last. Module tables are rebuilt by resetting the module's cursor instead
-    /// (`reset_module_cursor`).
+    /// Reprocesses sessions in batches and repairs their read models.
     async fn backfill_federation(
         &self,
         federation_id: FederationId,
@@ -2125,16 +2036,10 @@ impl FederationObserver {
     }
 }
 
-/// Up to 32 sessions are fetched at once, each retrying on its own. While the
-/// guardians don't answer, that is 32 failing requests a minute for a
-/// federation that may have been gone for months. Then only the fetch of the
-/// next session to store keeps trying; the first fetch that succeeds lets the
-/// others go on.
 #[derive(Clone)]
 struct SessionFetchGate(Arc<SessionFetchGateState>);
 
 struct SessionFetchGateState {
-    /// Whether the last fetch that finished failed
     failing: AtomicBool,
     next_to_store: AtomicU64,
     changed: Notify,
@@ -2152,7 +2057,6 @@ impl SessionFetchGate {
     /// Returns once the session's fetch may ask the guardians
     async fn wait_turn(&self, session_index: u64) {
         loop {
-            // Created before checking, so a change in between still wakes it
             let changed = self.0.changed.notified();
             if !self.0.failing.load(Ordering::SeqCst)
                 || self.0.next_to_store.load(Ordering::SeqCst) >= session_index
@@ -2178,7 +2082,6 @@ impl SessionFetchGate {
     }
 }
 
-/// Logs how far a sync got and how fast, at most every 5 s
 pub(super) struct SyncProgress {
     unit: &'static str,
     logged_at: Instant,
@@ -2208,12 +2111,6 @@ impl SyncProgress {
     }
 }
 
-/// The summary core stores an input or output with: the module's, or, when the
-/// build has no module of its kind or the module can't summarize it (a variant
-/// newer than the build), none. The item is then stored without amount or
-/// details, which the module's projector fills in once a build summarizes it.
-/// Failing instead would roll back the session and stall the federation's
-/// sync on it until the build is upgraded.
 fn summary_or_default<S: Default>(kind: &str, item: &str, summary: Option<anyhow::Result<S>>) -> S {
     match summary {
         Some(Ok(summary)) => summary,
@@ -2227,10 +2124,6 @@ fn summary_or_default<S: Default>(kind: &str, item: &str, summary: Option<anyhow
         }
     }
 }
-
-// Core rows written from a module's summary of an item. Ingest writes them as
-// it stores a session; the module's projector writes the ones of items stored
-// while the build lacked the module (projector.rs).
 
 pub(super) async fn insert_input_details(
     dbtx: &Transaction<'_>,
@@ -2276,7 +2169,6 @@ pub(super) async fn insert_output_details(
     Ok(())
 }
 
-/// Where a module consensus item sits in a federation's history
 pub(super) struct CiPosition {
     pub(super) federation_id: FederationId,
     pub(super) session_index: u64,
@@ -2457,19 +2349,16 @@ mod tests {
         let mut later = Box::pin(gate.wait_turn(12));
         assert!((&mut later).now_or_never().is_none());
 
-        // Storing session 10 makes 11 the next, 12 still waits
         gate.stored(10);
         assert!(gate.wait_turn(11).now_or_never().is_some());
         assert!((&mut later).now_or_never().is_none());
 
-        // A fetch that succeeds lets the waiting ones go on
         gate.record(true);
         assert!(later.now_or_never().is_some());
     }
 
     #[test]
     fn unsummarizable_items_are_stored_without_summary() {
-        // A module that doesn't know an item's version must not stall ingest
         let input: InputSummary = summary_or_default(
             "mint",
             "input",

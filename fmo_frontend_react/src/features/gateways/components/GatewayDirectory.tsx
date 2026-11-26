@@ -8,11 +8,11 @@ import { buildUptimeStrip, GATEWAY_FILTERS, type GatewayFilter, type GatewaySort
 import { GatewayTableRow } from './GatewayTableRow';
 
 interface GatewayDirectoryProps {
-  /** One page of gateways, searched, filtered and ordered by the backend */
+
   rows: GatewayWithStatus[];
-  /** Gateways matching the search and filter across all pages */
+
   matched: number;
-  /** Rows per page and previous/next */
+
   pager: ReactNode;
   summary: GatewayOverviewSummary | null;
   search: string;
@@ -27,7 +27,7 @@ interface GatewayDirectoryProps {
   dataWindow: GatewayWindow;
   windowMinutes: number;
   metricsWindow: string;
-  /** Dimmed while another window loads */
+
   switchingWindow: boolean;
   onSelect: (gatewayId: string) => void;
 }
@@ -77,7 +77,7 @@ export function GatewayDirectory(props: GatewayDirectoryProps) {
         />
         <StatusLegend />
       </div>
-      {/* Phones get one stacked card per gateway instead of a 960px table behind a sideways scroll */}
+
       <div className="sm:overflow-x-auto">
         <table className="block w-full text-left text-sm text-ink-3 sm:table sm:min-w-[760px] sm:table-fixed">
           <colgroup className="hidden sm:table-column-group">

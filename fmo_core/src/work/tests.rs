@@ -7,7 +7,6 @@ async fn notification_during_query_is_retained_and_scoped() {
     let mut gateways = notifications.subscribe("lnv2:fed:0");
     deposits.borrow_and_update();
     gateways.borrow_and_update();
-    // Commit arrives after marking the generation but before awaiting changed.
     notifications.notify("walletv2:fed:4");
     assert!(deposits.has_changed().unwrap());
     assert!(!gateways.has_changed().unwrap());
@@ -29,8 +28,7 @@ async fn postgres_commit_notifications_and_block_arrival() -> anyhow::Result<()>
         crate::runtime::worker_lease(&database, tasks.clone(), notifications.clone()).await?;
     let (mut writer, driver) = tokio_postgres::connect(&database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(driver);
-    // Everything v12 creates here lands in a schema of this test's own, so the
-    // cleanup below cannot drop a real database's functions or triggers.
+    // Everything v12 creates here lands in a schema of this test's own.
     let schema = format!("fmo_work_test_{}", std::process::id());
     writer
         .batch_execute(&format!(
@@ -41,7 +39,6 @@ async fn postgres_commit_notifications_and_block_arrival() -> anyhow::Result<()>
         ))
         .await?;
     writer
-        // The notification triggers of v12, which only need the tables above
         .batch_execute(
             include_str!("../../schema/v12.sql")
                 .split_once("-- BEGIN WORK NOTIFICATIONS")

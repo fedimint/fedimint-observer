@@ -1,10 +1,7 @@
 import type { ReactNode } from 'react';
 import { Icon, type IconName } from './Icon';
 
-/**
- * What a state means. Status colours are reserved for state and always come
- * with an icon and a label, never colour alone.
- */
+
 export type Tone = 'ok' | 'warn' | 'crit' | 'neutral' | 'info' | 'manifold' | 'demo';
 
 const TONE_CLASSES: Record<Tone, string> = {
@@ -40,7 +37,7 @@ const TONE_DOT: Record<Tone, string> = {
 interface StatusPillProps {
   tone: Tone;
   children: ReactNode;
-  /** Replaces the tone's icon; `null` hides it (only when the label alone carries the meaning) */
+
   icon?: IconName | null;
   title?: string;
   size?: 'sm' | 'md';

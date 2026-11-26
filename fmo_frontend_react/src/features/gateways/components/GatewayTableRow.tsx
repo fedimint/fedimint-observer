@@ -9,9 +9,9 @@ interface GatewayTableRowProps {
   now: number;
   dataWindow: GatewayWindow;
   windowMinutes: number;
-  /** The window the activity figures cover, e.g. "7D" */
+
   metricsWindow: string;
-  /** Opens the gateway's details in the side panel */
+
   onSelect: () => void;
 }
 
@@ -26,7 +26,7 @@ export function GatewayTableRow({ gateway, strip, now, dataWindow, windowMinutes
   return (
     <tr onClick={onSelect} className="block cursor-pointer py-2 align-top border-b border-line bg-surface transition-colors last:border-b-0 hover:bg-accent-soft sm:table-row sm:py-0">
       <td className={cell}>
-        {/* The row opens the details too; the button makes that reachable by keyboard */}
+
         <button
           type="button"
           onClick={(event) => { event.stopPropagation(); onSelect(); }}

@@ -1,5 +1,3 @@
-//! Observes the mint module: e-cash issuance and redemption
-
 use anyhow::Context;
 use async_trait::async_trait;
 use axum::Router;

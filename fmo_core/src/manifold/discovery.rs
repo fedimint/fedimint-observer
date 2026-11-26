@@ -1,21 +1,5 @@
-//! Verification of Manifold discovery events, as Manifold's consumer pipeline
-//! does it (`crates/nostr/specs/SPEC-mg-nostr-events.md`,
-//! `SPEC-flip-advertisement.md` in fedibtc/manifold):
-//!
-//! - kind 37701, MG advertisement: `{payload, proof}`, a BIP-340 signature by
-//!   `payload.fman_id_pubkey` over `SHA256("fedi-fman-advertisement/v1\0" ||
-//!   JCS(payload))`
-//! - kind 37709, MG advertisement v2: a signed JSON envelope `{signer, payload,
-//!   signature}`, signed over `SHA256("fedi-signed-json/mg- advertisement/v1\0"
-//!   || payload)` with the payload's exact bytes
-//! - kind 37702, FLIP provider advertisement: `{payload, proof}` like 37701,
-//!   under `fedi-flip-advertisement/v1\0`, by `payload.provider_pubkey`
-//!
-//! On top of the outer Nostr event signature, every inner signer must be the
-//! event author. Passing proves who published the offer, nothing more: an
-//! advertisement is never evidence of federation membership, and its embedded
-//! trust credentials are evaluated separately ([`evaluate_credential`],
-//! [`assess_credential`]).
+//! Verifies Manifold MG v1/v2 and FLIP advertisement signatures.
+//! Inner signers must match the author; credentials are checked separately.
 
 use std::collections::BTreeMap;
 
@@ -43,17 +27,10 @@ pub const FLIP_KIND: u16 = 37702;
 const MG_LEGACY_DOMAIN: &[u8] = b"fedi-fman-advertisement/v1\0";
 const MG_V2_PURPOSE: &[u8] = b"fedi-signed-json/mg-advertisement/v1\0";
 const FLIP_DOMAIN: &[u8] = b"fedi-flip-advertisement/v1\0";
-/// `SIGNED_JSON_ENVELOPE_MAX_BYTES`; also the per-event cap for the others
 const MAX_CONTENT_BYTES: usize = 64 * 1024;
-/// `SIGNED_JSON_PAYLOAD_MAX_BYTES`
 const MAX_PAYLOAD_BYTES: usize = 65_536;
-/// The FA's `MG_ADVERTISEMENT_MAX_AGE`
 pub const MAX_AD_AGE_SECONDS: u64 = 2 * 60 * 60;
-/// Every canonical Manifold environment requires this trust level
 pub const REQUIRED_TRUST_LEVEL: u64 = 9;
-/// The last second of year 9999. A signed timestamp past it is not a real
-/// date, and bounding them keeps every timestamp and the differences of two
-/// far inside PostgreSQL's `BIGINT`.
 pub const MAX_TIMESTAMP: u64 = 253_402_300_799;
 
 /// `d` and `t` tags each kind must carry
@@ -66,17 +43,14 @@ pub fn kind_tags(kind: u16) -> Option<(&'static str, &'static str)> {
     }
 }
 
-/// A discovery event whose signatures and author binding all verified
 #[derive(Debug, Clone, PartialEq)]
 pub struct VerifiedAdvertisement {
     pub kind: u16,
-    /// Lowercase x-only hex
     pub author: String,
     pub event_id: String,
     pub created_at: u64,
     pub issued_at: u64,
     pub expires_at: u64,
-    /// The signed payload, as a JSON object
     pub payload: Value,
 }
 
@@ -89,9 +63,6 @@ pub enum DiscoveryError {
     Malformed,
     AuthorMismatch,
     InvalidSignature,
-    /// Correctly signed, but not storable: a timestamp past
-    /// [`MAX_TIMESTAMP`], or a NUL character, which PostgreSQL's `JSONB`
-    /// cannot hold. Rejected here, it never reaches a sync's transaction.
     Unstorable,
 }
 
@@ -105,8 +76,6 @@ pub fn verify_event(event: &Event) -> Result<VerifiedAdvertisement, DiscoveryErr
             parts.len() >= 2 && parts[0] == name && parts[1] == value
         })
     };
-    // Other applications publish under the same kinds; only these tags mark
-    // a Manifold advertisement
     if !has_tag("d", d_tag) || !has_tag("t", t_tag) {
         return Err(DiscoveryError::MissingTags);
     }
@@ -186,8 +155,7 @@ fn digest(domain: &[u8], bytes: &[u8]) -> Message {
     Message::from_digest(sha256::Hash::from_engine(engine).to_byte_array())
 }
 
-/// `{payload, proof: {signature}}`, signed over the JCS form of the payload
-/// by the key the payload names in `signer_field`, which must be the author
+/// proof: {signature}}`.
 fn verify_proof(
     content: &str,
     signer_field: &str,
@@ -221,9 +189,6 @@ fn verify_proof(
     Ok(payload.clone())
 }
 
-/// MG proofs carry the 64 signature bytes as base64url without padding
-/// (PeerBadge's `SchnorrSignatureProof`); FLIP proofs as a JSON array of
-/// bytes (serde's default for the FLIP crate's signature type)
 fn proof_signature(value: &Value) -> Option<schnorr::Signature> {
     match value {
         Value::String(encoded) => decode_signature(encoded),
@@ -245,7 +210,7 @@ fn lower_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     hex::decode(text).ok()?.try_into().ok()
 }
 
-/// The v2 signed JSON envelope; the signature covers the payload's exact bytes
+/// The v2 signed JSON envelope.
 fn verify_envelope(
     content: &str,
     author: &str,
@@ -310,7 +275,6 @@ fn check(id: &str, label: &str, outcome: Outcome) -> CredentialCheck {
     }
 }
 
-/// One check's result: `passed` is None when it did not run
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
     pub passed: Option<bool>,
@@ -323,37 +287,17 @@ impl Outcome {
     }
 }
 
-/// What the PeerBadge SDK found checking a credential against its issuer's
-/// pinned authority
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinnedEvidence {
-    /// Whether the SDK admitted the pinned authority
     pub authority_admitted: bool,
-    /// The issuance proof, checked when the credential parses and the
-    /// authority was admitted
     pub issuance: Outcome,
-    /// Whether the SDK's combined check, as Manifold runs it, accepted the
-    /// credential and authorization, apart from the authorization time
     pub sdk_accepts: bool,
-    /// The verified authorization's time, which the SDK requires not to be
-    /// in the future
     pub sdk_authorized_at: Option<u64>,
 }
 
-/// Everything about an advertisement's credential that does not change
-/// over time: what it names, and the outcome of every cryptographic check.
-/// The collector works it out once per credential ([`evaluate_credential`]);
-/// requests combine it with the trusted issuers, the revocation state and
-/// the time ([`assess_credential`]), so no request verifies a signature.
-///
-/// It does not depend on which issuers are trusted: a credential whose
-/// issuer has a pinned authority is checked against it either way, and
-/// [`assess_credential`] ignores that result unless the issuer is trusted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialEvidence {
-    /// False when the advertisement carries no holder authorization
     pub presented: bool,
-    /// As published
     pub issuer: Option<String>,
     pub holder: Option<String>,
     pub subject: Option<String>,
@@ -361,13 +305,11 @@ pub struct CredentialEvidence {
     pub schema: Option<String>,
     pub blind_msg: Option<String>,
     pub trust_level: Option<u64>,
-    /// The credential digest's wire form, when the credential parses
     pub digest: Option<String>,
     pub credential_parses: bool,
     pub holder_authorization: Outcome,
     pub digest_matches: Outcome,
     pub schema_check: Outcome,
-    /// Present when the issuer has a pinned authority
     pub pinned: Option<PinnedEvidence>,
 }
 
@@ -397,10 +339,6 @@ impl CredentialEvidence {
         self.issuer.as_deref().map(str::to_lowercase)
     }
 
-    /// Whether every check that does not depend on the trusted issuers, the
-    /// revocation state or the time passed for `author`: the credential is
-    /// genuine, issued under a pinned authority and authorizes `author`.
-    /// The collector keeps such advertisements ahead of anonymous ones.
     pub fn sound_for(&self, author: &str) -> bool {
         let passed = |outcome: &Outcome| outcome.passed == Some(true);
         self.credential_parses
@@ -424,10 +362,6 @@ fn malformed() -> Option<String> {
     Some("The credential does not parse as a PeerBadge credential".to_owned())
 }
 
-/// Works out [`CredentialEvidence`] for the first holder authorization in an
-/// advertisement, as the Fedi app's Manifold verifier checks it
-/// ([`super::peerbadge`]). This runs the PeerBadge SDK's signature checks:
-/// call it off the async executor, once per credential.
 pub fn evaluate_credential(payload: &Value) -> CredentialEvidence {
     let envelope = payload
         .get("holder_authorizations")
@@ -509,10 +443,6 @@ pub fn evaluate_credential(payload: &Value) -> CredentialEvidence {
                     Err(error) => Outcome::new(Some(false), Some(format!("{error}"))),
                 },
             };
-            // The SDK's combined check, exactly as Manifold runs it, at the
-            // latest possible time: its only time-dependent step is that the
-            // authorization is not dated after the check, which
-            // `assess_credential` applies with the time of each request
             let sdk_accepts = authority_admitted
                 && match (&signed_credential, &authorization) {
                     (Some(signed), Some(authorization)) => verifier
@@ -551,13 +481,6 @@ pub fn evaluate_credential(payload: &Value) -> CredentialEvidence {
     }
 }
 
-/// The credential of an advertisement by `author`, from its stored
-/// [`CredentialEvidence`]. Each check is reported; the credential is
-/// `Verified` only when every one ran and passed, `Failed` when one the
-/// observer ran failed, and `Unavailable` otherwise (an untrusted issuer, an
-/// issuer without a pinned authority, or revocation state that is missing or
-/// out of date). Runs no cryptography: only the trust, revocation and time
-/// checks happen here.
 pub fn assess_credential(
     evidence: &CredentialEvidence,
     author: &str,
@@ -758,8 +681,7 @@ pub fn assess_credential(
     }
 }
 
-/// [`evaluate_credential`] and [`assess_credential`] in one step, as tests
-/// check a credential
+/// [`evaluate_credential`] and [`assess_credential`] in one step.
 #[cfg(test)]
 pub fn credential(
     payload: &Value,
@@ -770,11 +692,6 @@ pub fn credential(
     assess_credential(&evaluate_credential(payload), author, now, trust)
 }
 
-/// Whether the issuer revoked the credential, by the collector's latest
-/// complete read of this issuer's revocation locations. Not run unless that
-/// read covered this issuer, at the locations its pinned authority names now,
-/// within [`super::peerbadge::REVOCATION_MAX_AGE`]; on success, also returns
-/// when that read was.
 fn revocation_check(
     issuer: Option<&str>,
     authority: Option<&peerbadge_protocol::IssuerAuthority>,

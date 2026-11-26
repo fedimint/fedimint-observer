@@ -3,8 +3,6 @@ use serde_json::json;
 
 use super::*;
 
-/// fedibtc/manifold `crates/domain/conformance/fman-seat-bindings-v1.json`:
-/// shape and canonical-form vectors (their signatures are placeholders)
 const CONFORMANCE: &str = include_str!("../fixtures/fman-seat-bindings-v1.json");
 
 fn secret(byte: u8) -> SecretKey {
@@ -15,7 +13,6 @@ fn compressed(byte: u8) -> String {
     PublicKey::from_secret_key(&Secp256k1::new(), &secret(byte)).to_string()
 }
 
-/// A four-guardian config whose broadcast keys are the keys of secrets 1..=4
 fn config(meta: &[(&str, &str)]) -> ClientConfig {
     let mut api_endpoints = Map::new();
     let mut broadcast = Map::new();
@@ -36,7 +33,7 @@ fn config(meta: &[(&str, &str)]) -> ClientConfig {
     .unwrap()
 }
 
-/// The MG for `peer` signs with secret 100 + mg; fee keys come from 200 + peer
+/// The MG for `peer` signs with secret 100 + mg.
 fn attestation(seats: &FederationSeats, peer: u16, mg: u8) -> Value {
     let mg_key = Keypair::from_secret_key(&Secp256k1::new(), &secret(100 + mg));
     json!({
@@ -176,8 +173,6 @@ fn a_fully_bound_federation_verifies() {
     assert_eq!(verified[3].guardian_fee_pubkey, compressed(203));
     assert_eq!(verified[0].issued_at, 1_700_000_000);
 
-    // The config hash ignores meta, so publishing the directory there does
-    // not invalidate it
     let with_meta =
         FederationSeats::from_config(&config(&[("federation_name", "Example")])).unwrap();
     assert_eq!(with_meta.config_hash, seats.config_hash);
@@ -189,12 +184,10 @@ fn any_bad_binding_invalidates_the_directory() {
     let seats = FederationSeats::from_config(&config(&[])).unwrap();
     let check = |bindings: Vec<Value>| verify_for_federation(&directory(bindings), &seats);
 
-    // Changed after signing
     let mut tampered = valid_bindings(&seats);
     tampered[2]["attestation"]["issued_at"] = json!(1_700_000_001u64);
     assert_eq!(check(tampered), Err(SeatBindingsError::InvalidSignature(2)));
 
-    // Signed by a key other than the one it names
     let mut wrong_signer = valid_bindings(&seats);
     wrong_signer[1] = sign(attestation(&seats, 1, 0), 7);
     assert_eq!(
@@ -202,7 +195,6 @@ fn any_bad_binding_invalidates_the_directory() {
         Err(SeatBindingsError::InvalidSignature(1))
     );
 
-    // The key in uppercase is not the canonical spelling
     let mut upper = attestation(&seats, 3, 2);
     upper["fman_pubkey"] = json!(upper["fman_pubkey"].as_str().unwrap().to_uppercase());
     let mut uppercase_key = valid_bindings(&seats);

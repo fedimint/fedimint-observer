@@ -10,11 +10,7 @@ const CELL: Record<PeerCell, { label: string; classes: string; mark: string }> =
   no_report: { label: 'No report', classes: 'bg-surface-3 text-ink-3', mark: '–' },
 };
 
-/**
- * How each guardian sees its peers' P2P connections, as reported in its own
- * status. Rows report, columns are reported on; a guardian that does not
- * answer has no row.
- */
+
 export function ConnectivityMatrix({ matrix }: { matrix: Matrix }) {
   if (matrix.reporters.length === 0) {
     return (

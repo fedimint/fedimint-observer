@@ -1,5 +1,3 @@
-//! The nonce endpoint: when e-cash notes were spent
-
 use std::collections::HashMap;
 
 use axum::extract::{Path, State};
@@ -11,7 +9,6 @@ use fmo_api_types::{NonceSpendInfo, NoncesRequest};
 use fmo_core::module::{query, ApiResult, ClientError, Services};
 use postgres_from_row::FromRow;
 
-/// Each nonce is matched against the federation's mint inputs
 pub(crate) const MAX_NONCES_PER_REQUEST: usize = 1000;
 
 /// `POST /federations/:federation_id/nonces/spend`
@@ -48,7 +45,6 @@ async fn nonces_spend_info(
     use chrono::{DateTime, Utc};
 
     check_nonce_count(nonces)?;
-    // 404 for unknown federations, even when no nonces are asked about
     services.ensure_observed(federation_id).await?;
     if nonces.is_empty() {
         return Ok(std::collections::HashMap::new());
@@ -61,8 +57,6 @@ async fn nonces_spend_info(
         estimated_session_timestamp: Option<chrono::NaiveDateTime>,
     }
 
-    // Extract nonce from JSONB: {"V0": {"note": {"nonce": "..."}}}
-    // language=postgresql
     let sql = "
         SELECT
             tid.details->'V0'->'note'->>'nonce' AS nonce,

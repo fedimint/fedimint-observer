@@ -20,9 +20,9 @@ export function GuardianStatePill({ state, size }: { state: GuardianState; size?
 
 interface GuardianIdentityProps {
   row: GuardianRow;
-  /** Makes the name a button, e.g. to open the guardian's details */
+
   onSelect?: () => void;
-  /** Link the Manifold name to its profile; off inside other interactive elements */
+
   linkManifold?: boolean;
 }
 

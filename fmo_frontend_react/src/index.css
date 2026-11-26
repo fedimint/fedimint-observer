@@ -41,14 +41,6 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
-/*
-  Design tokens.
-
-  The gray scale is re-stepped toward navy, so every existing `gray-*` class
-  (light and dark) takes on the observer's navy identity without touching the
-  components that use it. Semantic tokens below switch with the theme and are
-  what new components are written against.
-*/
 @theme {
   --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
@@ -65,11 +57,7 @@
   --color-gray-900: #0c1326;
   --color-gray-950: #070c1a;
 
-  /*
-    Blue is re-stepped to the brand blue of the Fedimint mark, so the existing
-    pages' blue buttons, links and tabs match the accent. 600 and 700, the
-    button fills, keep at least 4.5:1 against white text.
-  */
+
   --color-blue-50: #eef5fe;
   --color-blue-100: #dbe9fc;
   --color-blue-200: #bcd6fa;
@@ -93,15 +81,15 @@
   --color-ink: var(--fmo-ink);
   --color-ink-2: var(--fmo-ink-2);
   --color-ink-3: var(--fmo-ink-3);
-  /* Operational data */
+
   --color-accent: var(--fmo-accent);
   --color-accent-soft: var(--fmo-accent-soft);
   --color-accent-ink: var(--fmo-accent-ink);
-  /* Manifold */
+
   --color-manifold: var(--fmo-manifold);
   --color-manifold-soft: var(--fmo-manifold-soft);
   --color-manifold-ink: var(--fmo-manifold-ink);
-  /* Status, reserved: always shown with an icon and a label */
+
   --color-ok: var(--fmo-ok);
   --color-ok-soft: var(--fmo-ok-soft);
   --color-ok-ink: var(--fmo-ok-ink);
@@ -142,10 +130,7 @@
   --fmo-manifold-soft: var(--fmo-accent-soft);
   --fmo-manifold-ink: var(--fmo-accent-ink);
 
-  /*
-    Status: healthy is cool and every problem warm, darker as it gets worse,
-    so the four stay apart under red-green colour blindness (dataviz validator)
-  */
+
   --fmo-ok: #0f9f8a;
   --fmo-ok-soft: #e3f5f1;
   --fmo-ok-ink: #0b6b5d;
@@ -162,7 +147,7 @@
   --fmo-demo-soft: #fff1e7;
   --fmo-demo-ink: #9a3412;
 
-  /* Charts */
+
   --fmo-chart-grid: #e6eaf1;
   --fmo-chart-axis: #c9d1df;
   --fmo-cell-empty: #edf0f6;
@@ -208,11 +193,7 @@
   --fmo-cell-empty: #1a2440;
 }
 
-/*
-  The default border color has changed to `currentcolor` in Tailwind CSS v4,
-  so we've added these compatibility styles to make sure everything still
-  looks the same as it did with Tailwind CSS v3.
-*/
+
 @layer base {
   *,
   ::after,
@@ -228,7 +209,7 @@
     border-color: var(--fmo-line);
   }
 
-  /* Tailwind CSS v4 gives buttons the default cursor; keep v3's pointer */
+
   button:not(:disabled),
   [role='button']:not(:disabled) {
     cursor: pointer;
@@ -236,7 +217,7 @@
 }
 
 @layer base {
-  /* Smaller base font size for mobile, default for larger screens */
+
   html {
     font-size: 14px;
   }
@@ -278,7 +259,6 @@
     color: var(--fmo-ink-3);
   }
 
-  /* Loading placeholder; still in reduced motion, where only the tone shows */
   .skeleton {
     background: linear-gradient(90deg, var(--fmo-surface-3) 0%, var(--fmo-surface-2) 50%, var(--fmo-surface-3) 100%);
     background-size: 200% 100%;
@@ -317,7 +297,7 @@
   animation: fmo-section-enter 220ms var(--fmo-ease);
 }
 
-/* Light/dark switch: every surface eases to its new colour together */
+
 .theme-switching,
 .theme-switching *,
 .theme-switching *::before,

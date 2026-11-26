@@ -7,10 +7,7 @@ import {
   type SortKey,
 } from '../../../utils/sortFederations';
 
-/**
- * The federation list's order. It lives in the URL, so it survives opening a
- * federation and coming back, and can be shared. Defaults are left out of the URL.
- */
+
 export function useFederationSort() {
   const [params, setParams] = useSearchParams();
   const requestedSort = params.get('sort');

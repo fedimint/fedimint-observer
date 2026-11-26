@@ -17,7 +17,6 @@ fn bounds_are_enforced_including_an_omitted_limit() {
 
 #[test]
 fn keyset_pages_walk_the_whole_list_once_in_order() {
-    // Sorted by score descending, then id: the key negates the score
     let rows: Vec<(i64, &str)> = vec![(5, "b"), (9, "a"), (5, "a"), (1, "c"), (9, "d")];
     let key = |row: &(i64, &str)| (-row.0, row.1.to_owned());
     let mut seen = Vec::new();
@@ -40,7 +39,6 @@ fn a_row_removed_between_pages_does_not_skip_or_repeat_others() {
     let rows = vec![1, 2, 3, 4, 5, 6];
     let first = keyset_page(rows.clone(), |n| *n, None, 3).unwrap();
     assert_eq!(first.items, vec![1, 2, 3]);
-    // Row 3 (the cursor's own row) and row 2 disappear before the next request
     let next = keyset_page(vec![1, 4, 5, 6], |n| *n, first.next_after.as_deref(), 3).unwrap();
     assert_eq!(next.items, vec![4, 5, 6]);
     assert_eq!(next.next_after, None);
@@ -64,8 +62,7 @@ fn key_text_cuts_by_character_not_byte() {
     assert!(cut.chars().all(|c| c == '𝔽'));
 }
 
-/// The worst key a list builds: two cut texts that JSON escapes 6 bytes per
-/// character, an id and the widest numbers
+/// The worst key a list builds.
 #[test]
 fn the_largest_possible_cursor_is_accepted() {
     use super::{key_text, MAX_CURSOR_BYTES};

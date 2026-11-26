@@ -42,16 +42,13 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
   }: ${errorMessage(pages.error.cause)}`;
 
   const gateways = registry?.gateways ?? [];
-  // Every figure covers all of the module's gateways, as counted by the server
   const totals = registry?.totals;
   const samples = totals?.samples ?? 0;
   const successful = totals?.online_samples ?? 0;
   const medianLatency = totals?.median_latency_ms ?? null;
   const visible = visibleGateways(gateways, filter, search, sort);
-  // The server pages over every gateway it recorded, removed ones included
   const pagedTotal = totals ? totals.registered + totals.removed : undefined;
 
-  // The selected gateway opens in the side panel, kept in the URL by its endpoint
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedEndpoint = searchParams.get('gateway');
   const selected = gateways.find((gateway) => gateway.api_endpoint === selectedEndpoint) ?? null;

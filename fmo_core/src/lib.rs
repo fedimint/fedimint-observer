@@ -1,16 +1,3 @@
-//! Module-agnostic core of Fedimint Observer.
-//!
-//! An observer build picks its modules and runs:
-//!
-//! ```ignore
-//! FedimintObserver::builder()
-//!     .with_module(MintObserver)
-//!     .with_module(WalletObserver::default())
-//!     .with_module(LnObserver::default())
-//!     .run()
-//!     .await
-//! ```
-
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -30,9 +17,7 @@ use crate::federation::nostr::{get_nostr_federations, publish_federation_event};
 use crate::federation::observer::FederationObserver;
 use crate::module::{ModuleRegistry, ObserverModule, Services};
 
-/// Fedimint config fetching service implementation
 mod config;
-/// HTTP error responses with sanitized internal errors.
 mod error;
 mod federation;
 mod guardian_api;
@@ -79,7 +64,6 @@ struct AppState {
     http_metrics: Arc<http::HttpMetrics>,
 }
 
-/// Entry point of an observer build
 pub struct FedimintObserver;
 
 impl FedimintObserver {
@@ -94,24 +78,18 @@ pub struct FedimintObserverBuilder {
 }
 
 impl FedimintObserverBuilder {
-    /// Decode and process this module's items. A module added to a build
-    /// later fills its own tables from the stored sessions, and completes the
-    /// core rows of its items, which were stored without amounts or details.
     pub fn with_module(mut self, module: impl ObserverModule) -> Self {
         self.modules.push(Arc::new(module));
         self
     }
 
-    /// Parses the command line and environment, then runs the observer and its
-    /// API server until it fails
+    /// Parses the command line and environment.
     pub async fn run(self) -> anyhow::Result<()> {
         run(ModuleRegistry::new(self.modules)?).await
     }
 }
 
 async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
-    // Dependencies enable both Rustls providers. Select one before any
-    // background HTTPS/WebSocket task can initialize a TLS client.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let args = Args::parse();
     args.runtime.validate()?;
@@ -162,7 +140,6 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
             get(federation::list::list_nostr_federation_page),
         )
         .route("/nostr/federations", put(publish_federation_event));
-    // The modules' endpoints, at the same paths core served them from
     if let Some(routes) = modules.federation_routes() {
         app = app.nest(
             "/federations/:federation_id",
@@ -197,8 +174,6 @@ async fn run(modules: ModuleRegistry) -> anyhow::Result<()> {
         .await
         .context("Starting axum server")?;
 
-    // A shutdown caused by losing the worker lease, not by a signal, is a
-    // failure: exiting with an error lets a process manager restart us
     anyhow::ensure!(
         !runtime::worker_lease_lost(),
         "Lost the worker lease and stopped the collectors"

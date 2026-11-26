@@ -2,8 +2,6 @@ SELECT g.api_endpoint,g.announcing_guardians,g.registered,g.first_seen,g.last_se
        g.routing_info,g.routing_observed_at,g.probed_at,g.reachable,g.federation_supported,g.latency_ms,
        health.buckets,activity.metrics,keys.claimed_keys,keys.contested_keys
 FROM fmo_lnv2.gateways g
--- Module keys are self-reported by each endpoint and unverified. A key that
--- another registered endpoint also claims is contested and credits neither.
 LEFT JOIN LATERAL (
     SELECT COUNT(*) AS claimed_keys,COUNT(*) FILTER(WHERE ck.contested) AS contested_keys,
            COALESCE(array_agg(ck.module_public_key) FILTER(WHERE NOT ck.contested),'{}') AS attributed

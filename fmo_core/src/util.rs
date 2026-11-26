@@ -9,8 +9,7 @@ use serde_json::json;
 use crate::config::meta::MetaFields;
 use crate::module::ModuleRegistry;
 
-/// Caches keyed by what callers send (invite codes, meta URLs) must stay
-/// bounded: makes room for one more entry by evicting an arbitrary one
+/// Caches keyed by what callers send (invite codes.
 pub fn make_room<K, V>(map: &mut std::collections::HashMap<K, V>, max_entries: usize)
 where
     K: Clone + Eq + std::hash::Hash,
@@ -121,9 +120,6 @@ where
         .collect::<Result<_, _>>()?)
 }
 
-/// Merges meta fields from different sources
-///
-/// * `metas` - Meta fields from different sources highest to lowest priority
 pub fn merge_metas(metas: &[MetaFields]) -> MetaFields {
     let key_set = metas
         .iter()

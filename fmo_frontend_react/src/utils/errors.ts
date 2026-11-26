@@ -1,10 +1,6 @@
 import { ApiError } from '../services/http';
 
-/**
- * Why something failed, for the page to show after saying what failed
- * ("Could not load the UTXOs: <this>"). API failures already carry a message fit
- * to show (see services/http); other errors are the app's own.
- */
+
 export function errorMessage(err: unknown): string {
   return err instanceof Error && err.message ? err.message : 'Unknown error';
 }

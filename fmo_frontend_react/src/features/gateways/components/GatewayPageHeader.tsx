@@ -7,13 +7,13 @@ import { GATEWAY_WINDOWS } from '../lib/gatewayRows';
 const WINDOW_OPTIONS = GATEWAY_WINDOWS.map((value) => ({ value, label: value }));
 
 interface GatewayPageHeaderProps {
-  /** Takes keyboard focus after a successful retry removes the focused button */
+
   headingRef: Ref<HTMLHeadingElement>;
   timeWindow: GatewayWindow;
   onSelectWindow: (window: GatewayWindow) => void;
-  /** Loading, freshness or fallback note under the window buttons */
+
   windowStatus: string;
-  /** The summary line, once there is data */
+
   children?: ReactNode;
 }
 
@@ -37,11 +37,11 @@ export function GatewayPageHeader({ headingRef, timeWindow, onSelectWindow, wind
 }
 
 interface GatewaySummaryBarProps {
-  /** Counted on the server over all recorded gateways; null for live registry rows alone */
+
   summary: GatewayOverviewSummary | null;
-  /** How many gateways the live registry listed, when there is no summary */
+
   liveCount: number;
-  /** Dimmed while another window loads */
+
   switchingWindow: boolean;
 }
 

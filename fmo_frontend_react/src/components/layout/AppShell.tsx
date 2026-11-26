@@ -54,7 +54,6 @@ function SidebarNav({ onNavigate, collapsed = false }: { onNavigate?: () => void
       {navGroups().map((group) => (
         <div key={group.label}>
           {collapsed ? (
-            // Keeps the groups apart without their labels
             <div className="mx-2 mb-2 border-t border-line" aria-hidden="true" />
           ) : (
             <div className={`meta-label mb-2 px-2 ${
@@ -152,7 +151,7 @@ function useSidebarCollapsed(): [boolean, () => void] {
       try {
         window.localStorage.setItem(SIDEBAR_KEY, was ? '0' : '1');
       } catch {
-        // Storage blocked: the choice lasts for this page only
+        // Keep the in-memory choice.
       }
       return !was;
     });
@@ -173,7 +172,6 @@ export function AppShell({ theme, onToggleTheme, children }: AppShellProps) {
   const menuButton = useRef<HTMLButtonElement>(null);
   const drawer = useRef<HTMLDivElement>(null);
 
-  // Close the drawer on navigation and with Escape, returning focus to its button
   useEffect(() => setMenuOpen(false), [pathname]);
   useEffect(() => {
     if (!menuOpen) return;
@@ -194,7 +192,7 @@ export function AppShell({ theme, onToggleTheme, children }: AppShellProps) {
         Skip to content
       </a>
 
-      {/* Desktop sidebar */}
+
       <aside
         id="desktop-sidebar"
         className={`fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-line bg-surface lg:flex ${
@@ -219,7 +217,7 @@ export function AppShell({ theme, onToggleTheme, children }: AppShellProps) {
         <SidebarFooter theme={theme} onToggleTheme={onToggleTheme} collapsed={collapsed} />
       </aside>
 
-      {/* Mobile and tablet top bar */}
+
       <div className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-surface/95 px-4 backdrop-blur lg:hidden">
         <Brand />
         <button
@@ -237,7 +235,7 @@ export function AppShell({ theme, onToggleTheme, children }: AppShellProps) {
       {menuOpen && (
         <div className="fixed inset-0 top-14 z-30 lg:hidden" role="presentation" onMouseDown={() => setMenuOpen(false)}>
           <div className="absolute inset-0 bg-black/40" />
-          {/* A dropdown under the menu button, right-aligned with it */}
+
           <div
             id="mobile-navigation"
             ref={drawer}

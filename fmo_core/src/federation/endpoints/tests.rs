@@ -60,6 +60,11 @@ fn signed_rotation_overrides_only_the_target_guardian() {
         (p1, pk1, url1_initial.clone()),
     ]);
 
+    assert_eq!(
+        latest_api_peers(&config, None).get(&p0),
+        Some(&url0_initial)
+    );
+
     let url0_migrated = SafeUrl::from_str("wss://guardian0-new.example.com:8173").unwrap();
     let signed0 = ApiAnnouncement::new(url0_migrated.clone(), 10).sign(SECP256K1, &k0);
     let mut incoming = BTreeMap::new();
@@ -134,7 +139,6 @@ fn canonical_recovery_accepts_second_rotation_without_stale_downgrade() {
     );
     assert!(changed);
 
-    // A canonical guardian may return an old and a newer route.
     let second_url = SafeUrl::from_str("wss://second-rotation.example.com:8173").unwrap();
     let second = ApiAnnouncement::new(second_url.clone(), 2).sign(SECP256K1, &keypair);
     let (after_stale, stale_changed) = verify_and_merge_announcements(
@@ -171,14 +175,13 @@ fn canonical_recovery_accepts_second_rotation_without_stale_downgrade() {
 
 #[test]
 fn announcement_signed_by_another_guardian_is_ignored() {
-    let (p0, _, _, pk0) = generate_test_guardian(0);
+    let (p0, _, k0, pk0) = generate_test_guardian(0);
     let (_, _, k1_attacker, _) = generate_test_guardian(1);
 
     let url0 = SafeUrl::from_str("ws://guardian0.example.com:8173").unwrap();
     let (fed_id, config) = sample_global_config(&[(p0, pk0, url0)]);
 
     let malicious_url = SafeUrl::from_str("ws://malicious.example.com:8173").unwrap();
-    // Signed with guardian 1 keypair instead of guardian 0
     let forged = ApiAnnouncement::new(malicious_url, 10).sign(SECP256K1, &k1_attacker);
 
     let mut incoming = BTreeMap::new();
@@ -191,6 +194,19 @@ fn announcement_signed_by_another_guardian_is_ignored() {
     assert!(
         updated.is_empty(),
         "a forged announcement must not enter the routing cache"
+    );
+
+    let accepted_url = SafeUrl::from_str("wss://guardian0-new.example.com:8173").unwrap();
+    let valid = ApiAnnouncement::new(accepted_url.clone(), 1).sign(SECP256K1, &k0);
+    let (accepted, changed) =
+        verify_and_merge_announcements(fed_id, &config, &existing, &BTreeMap::from([(p0, valid)]));
+    assert!(changed);
+
+    let (updated, changed) = verify_and_merge_announcements(fed_id, &config, &accepted, &incoming);
+    assert!(!changed);
+    assert_eq!(
+        latest_api_peers(&config, Some(&updated)).get(&p0),
+        Some(&accepted_url)
     );
 }
 
@@ -212,7 +228,6 @@ fn equal_or_lower_nonce_cannot_roll_back_an_accepted_route() {
     let (existing, _) =
         verify_and_merge_announcements(fed_id, &config, &BTreeMap::new(), &incoming);
 
-    // 1. Equal nonce (10) rejected
     let signed_equal = ApiAnnouncement::new(
         SafeUrl::from_str("ws://equal.example.com:8173").unwrap(),
         10,
@@ -237,7 +252,6 @@ fn equal_or_lower_nonce_cannot_roll_back_an_accepted_route() {
         "an equal nonce must not change the destination"
     );
 
-    // 2. Lower nonce (5) rejected
     let signed_lower =
         ApiAnnouncement::new(SafeUrl::from_str("ws://lower.example.com:8173").unwrap(), 5)
             .sign(SECP256K1, &k0);
@@ -411,11 +425,9 @@ fn route_rotation_does_not_change_the_canonical_federation_id() {
         (p1, pk1, url1_initial.clone()),
     ]);
 
-    // Baseline federation ID before rotation
     let baseline_fed_id = config.calculate_federation_id();
     assert_eq!(fed_id, baseline_fed_id);
 
-    // Rotate p0 endpoint
     let url0_rotated = SafeUrl::from_str("ws://g0-new.example.com:8173").unwrap();
     let signed_rotated = ApiAnnouncement::new(url0_rotated.clone(), 1).sign(SECP256K1, &k0);
 
@@ -426,7 +438,6 @@ fn route_rotation_does_not_change_the_canonical_federation_id() {
         verify_and_merge_announcements(fed_id, &config, &BTreeMap::new(), &incoming);
     assert!(changed, "the signed rotation must affect active dialing");
 
-    // Dialing peers uses the rotated URL
     let active_peers = latest_api_peers(&config, Some(&announced));
     assert_eq!(
         active_peers.get(&p0),
@@ -434,7 +445,6 @@ fn route_rotation_does_not_change_the_canonical_federation_id() {
         "active dialing must use the rotated route"
     );
 
-    // The canonical config and federation ID are unchanged
     assert_eq!(
         config.calculate_federation_id(),
         baseline_fed_id,
@@ -485,7 +495,6 @@ fn valid_rotation_from_another_peer_survives_a_forged_high_nonce() {
     peer_b_response.insert(p0, ann0_v2);
     peer_b_response.insert(p1, ann1_v5);
 
-    // Discovery verifies each response on its own, as it arrives.
     let mut updated = GuardianEndpointsMap::new();
     let mut changed = false;
     for response in [peer_a_response, peer_b_response] {

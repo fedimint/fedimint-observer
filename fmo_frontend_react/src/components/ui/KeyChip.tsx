@@ -4,11 +4,11 @@ import { Icon } from './Icon';
 
 interface KeyChipProps {
   value: string;
-  /** Accessible description of what is copied, e.g. "Manifold Guardian public key" */
+
   label: string;
   head?: number;
   tail?: number;
-  /** Show the full value, wrapping, instead of a shortened one */
+
   full?: boolean;
 }
 

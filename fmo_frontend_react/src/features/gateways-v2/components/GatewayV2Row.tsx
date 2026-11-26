@@ -36,7 +36,7 @@ export function GatewayV2Row({ gateway, timeWindow, onSelect }: { gateway: Gatew
       <div className="grid gap-4 lg:grid-cols-4">
         <div>
           <h3 className="truncate font-semibold" title={gatewayName(gateway)}>
-            {/* The card opens the details too; the button makes that reachable by keyboard */}
+
             <button type="button" onClick={(event) => { event.stopPropagation(); onSelect(); }} className="max-w-full truncate text-left hover:underline" aria-label={`Details for ${gatewayName(gateway)}`}>
               {gatewayName(gateway)}
             </button>

@@ -11,7 +11,7 @@ export interface UtxoInventoryRow {
   outPoint: string;
   amount: number;
   address: string | null;
-  /** State each responding guardian lists this output in */
+
   guardianStates: Map<number, GuardianClaimedUtxoState>;
   kind: UtxoKind;
   detail?: string;

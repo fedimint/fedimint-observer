@@ -3,7 +3,7 @@ import { shortMiddle } from '../../utils/format';
 import { explorerTxUrl } from '../../utils/network';
 
 interface ExplorerLinkProps {
-  /** The block explorer page, or null on a network it has no pages for */
+
   href: string | null;
   className: string;
   title?: string;

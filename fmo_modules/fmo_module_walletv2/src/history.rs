@@ -33,9 +33,6 @@ pub(crate) fn page_limit(params: &Params) -> ApiResult<i64> {
     Ok(i64::from(limit))
 }
 
-/// The walletv2 instance a request is about: 404 if the federation has none,
-/// 400 if the requested one isn't a walletv2 instance or the choice is
-/// ambiguous
 pub(crate) fn select_instance(ids: &[u16], requested: Option<u16>) -> ApiResult<u16> {
     match (requested, ids) {
         (_, []) => Err(ApiError::not_found("Federation has no Wallet v2 module")),

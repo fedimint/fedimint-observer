@@ -20,7 +20,6 @@ interface UptimeStripProps {
 export function UptimeStrip({ gateway, strip, dataWindow, windowMinutes }: UptimeStripProps) {
   const buckets = uptimeBuckets(gateway);
   return (
-    // One stop for keyboards and screen readers instead of 30 per row
     <div
       className="mt-3 flex gap-0.5"
       role="img"

@@ -4,8 +4,7 @@ use fmo_core::module::ObserverModule;
 
 use super::MintObserver;
 
-// A federation upgrading its mint module must stall only its own sync, not
-// panic: a panic stops every federation's tasks
+// A federation upgrading its mint module must stall only its own sync.
 #[test]
 fn unsupported_versions_are_errors() {
     let input = DynInput::from_typed(
@@ -40,7 +39,6 @@ fn too_many_nonces_is_a_bad_request() {
     assert!(check_nonce_count(&[]).is_ok());
 
     let too_many = vec![String::new(); MAX_NONCES_PER_REQUEST + 1];
-    // Through `?` and `.context()`, as the handler returns it
     let error =
         anyhow::Context::context(check_nonce_count(&too_many), "Checking nonces").unwrap_err();
     assert_eq!(

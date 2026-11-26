@@ -1,13 +1,9 @@
-//! The gateway directory's search, status filter and order, applied on the
-//! server so each page of the overview is the right slice of the result.
-
 use fmo_api_types::{GatewayInfo, GatewayStatus};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GatewayFilter {
-    /// Every gateway that is not retired
     #[default]
     All,
     Online,
@@ -20,7 +16,6 @@ pub(crate) enum GatewayFilter {
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GatewaySort {
-    /// By when it was last seen
     #[default]
     Freshness,
     Status,
@@ -65,8 +60,7 @@ pub(crate) fn matches(gateway: &GatewayInfo, filter: GatewayFilter, search: Opti
         .any(|value| value.to_lowercase().contains(&needle))
 }
 
-/// The page's activity score: funds + 3 × settles − 1.5 × cancels, plus a
-/// small volume bonus; None without recorded activity
+/// The page's activity score: funds + 3 × settles − 1.5 × cancels.
 pub(crate) fn activity_score(gateway: &GatewayInfo) -> Option<i64> {
     let activity = gateway
         .activity_window
@@ -78,8 +72,6 @@ pub(crate) fn activity_score(gateway: &GatewayInfo) -> Option<i64> {
     Some(score.round().max(0.0) as i64)
 }
 
-/// The row's position in the chosen order, unique per gateway (it ends with
-/// the id), and the cursor a page continues after
 pub(crate) type SortKey = (i64, i64, String);
 
 pub(crate) fn sort_key(
@@ -90,7 +82,6 @@ pub(crate) fn sort_key(
     let last_seen = gateway.last_seen.map_or(0, |at| at.timestamp_millis());
     let (primary, secondary) = match sort {
         GatewaySort::Freshness => (last_seen, 0),
-        // Healthiest first ascending; within a status, the most recently seen
         GatewaySort::Status => {
             let rank = match status(gateway) {
                 GatewayStatus::Online => 0,

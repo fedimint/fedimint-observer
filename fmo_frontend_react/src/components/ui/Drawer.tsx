@@ -6,22 +6,17 @@ interface DrawerProps {
   subtitle?: ReactNode;
   onClose: () => void;
   children: ReactNode;
-  /** Width class of the panel on larger screens */
+
   width?: string;
 }
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea, [tabindex]:not([tabindex="-1"])';
 
-/**
- * A detail panel sliding over the page from the right (full screen on
- * phones). Focus moves into it, stays inside while it is open, and returns to
- * whatever opened it; Escape and the backdrop close it.
- */
+
 export function Drawer({ title, subtitle, onClose, children, width = 'sm:max-w-xl' }: DrawerProps) {
   const titleId = useId();
   const panel = useRef<HTMLElement>(null);
-  // Parents pass a new callback on every render; the effect below must run
-  // once per opening, or each refresh would move focus back into the panel
+  // Parents pass a new callback on every render; the effect below must run once per opening, or each refresh would move focus back into the panel
   const close = useRef(onClose);
   useEffect(() => {
     close.current = onClose;

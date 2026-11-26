@@ -11,7 +11,6 @@ export interface SignedNostrEvent extends NostrEvent {
   sig: string;
 }
 
-// Injected by Nostr browser extensions such as nos2x or Alby (NIP-07)
 declare global {
   interface Window {
     nostr?: {

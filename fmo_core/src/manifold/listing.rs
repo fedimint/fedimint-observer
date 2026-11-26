@@ -1,13 +1,3 @@
-//! What the directory lists of an advertisement, worked out by the collector
-//! when it stores the advertisement, so requests read these small views
-//! instead of the signed payloads (up to 64 KiB each).
-//!
-//! Payloads are self-asserted and unbounded within that size, so each view
-//! is bounded: at most [`MAX_LISTED_ITEMS`] entries per list
-//! ([`MAX_LISTED_SIZES`] federation sizes), and a text
-//! longer than [`MAX_LISTED_TEXT`] bytes is left out rather than cut, so
-//! nothing is shown altered.
-
 use std::collections::BTreeMap;
 
 use fmo_api_types::{
@@ -19,16 +9,10 @@ use serde_json::Value;
 
 use super::discovery::{VerifiedAdvertisement, FLIP_KIND, MG_V2_KIND};
 
-/// Entries listed per array; real advertisements carry a handful (a FLIP
-/// provider lists one attester policy per production issuer)
 pub const MAX_LISTED_ITEMS: usize = 32;
-/// Federation sizes listed; they are small numbers, and Manifold Guardians
-/// list every size they serve (7 to 20, say)
 pub const MAX_LISTED_SIZES: usize = 256;
-/// Longer texts are left out
 pub const MAX_LISTED_TEXT: usize = 256;
 
-/// A FLIP provider's listed fields; the API adds its freshness and credential
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlipListing {
     pub display: Option<FlipDisplay>,

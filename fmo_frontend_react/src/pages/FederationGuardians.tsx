@@ -98,8 +98,7 @@ export function FederationGuardians() {
           </div>
         </Card>
 
-        {/* minmax(0, 1fr) columns: a wide matrix or table scrolls inside its card
-            instead of widening the page, e.g. with 10+ guardians on a phone */}
+
         <div className="grid grid-cols-1 gap-4 sm:gap-5 xl:grid-cols-2">
           <Card aria-labelledby="connectivity-title" className="min-w-0">
             <CardHeader

@@ -28,16 +28,11 @@ use crate::federation::observer::FederationObserver;
 use crate::util::{config_to_json, make_room};
 use crate::AppState;
 
-/// Helper API that exposes the federation id
 pub mod id;
-/// Helper API that unifies config meta and override meta, applying lenient
-/// parsing
 pub mod meta;
 
-/// Helper API that exposes the federation modules
 pub mod modules;
 /// CORS for these routes comes from the permissive layer on the whole app.
-/// `/:invite/gateways` is the Lightning module's.
 pub fn get_config_routes() -> Router<AppState> {
     Router::new()
         .route("/:invite", get(fetch_federation_config))
@@ -62,13 +57,7 @@ type DownloadSlots = Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex
 #[derive(Default, Debug, Clone)]
 pub struct FederationConfigCache {
     federations: Arc<tokio::sync::RwLock<HashMap<FederationId, JsonClientConfig>>>,
-    /// Invites whose download failed, when and how. Failures are not cached
-    /// like configs, but for [`FAILED_INVITE_RETRY_DELAY`] the invite fails
-    /// again without contacting anyone, so clients asking for it in a loop
-    /// don't make the observer contact its servers in one.
     failures: Arc<std::sync::Mutex<HashMap<String, (Instant, ClientError)>>>,
-    /// One download per invite at a time: concurrent requests for the same
-    /// invite wait for the one in progress and use its result
     downloads: DownloadSlots,
 }
 
@@ -86,7 +75,6 @@ impl FederationConfigCache {
         let key = invite.to_string();
         let slot = DownloadSlot::take(&self.downloads, &key);
         let _download = slot.lock().await;
-        // The download this one waited for may have stored a result
         if let Some(config) = self.cached(federation_id).await {
             return Ok(config);
         }
@@ -120,8 +108,7 @@ impl FederationConfigCache {
         self.federations.read().await.get(&federation_id).cloned()
     }
 
-    /// How the last download of the invite failed, if it did within
-    /// [`FAILED_INVITE_RETRY_DELAY`]
+    /// How the last download of the invite failed.
     fn recent_failure(&self, key: &str) -> Option<ClientError> {
         let mut failures = self.failures.lock().expect("failure cache lock poisoned");
         match failures.get(key) {
@@ -144,8 +131,6 @@ impl FederationConfigCache {
     }
 }
 
-/// A request's claim on the download of an invite; the last request done with
-/// it removes it
 struct DownloadSlot<'a> {
     slots: &'a DownloadSlots,
     key: &'a str,
@@ -175,21 +160,15 @@ impl std::ops::Deref for DownloadSlot<'_> {
 impl Drop for DownloadSlot<'_> {
     fn drop(&mut self) {
         let mut slots = self.slots.lock().expect("download slots lock poisoned");
-        // The map's reference and ours: no other request waits for it
         if Arc::strong_count(&self.slot) <= 2 {
             slots.remove(self.key);
         }
     }
 }
 
-/// Federations anyone can ask about through an invite code
 const MAX_CACHED_CONFIGS: usize = 256;
-/// Invite codes name the servers to contact, so they can name unreachable
-/// ones
 pub const INVITE_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
-/// How long an invite whose download failed fails without a new attempt
 const FAILED_INVITE_RETRY_DELAY: Duration = Duration::from_secs(30);
-/// Leaves most of the invite deadline for the literal-route fallback
 const ANNOUNCED_ROUTE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn fetch_config_inner(
@@ -200,14 +179,7 @@ async fn fetch_config_inner(
     config_to_json(raw_config, observer.modules())
 }
 
-/// Downloads the config behind an invite code from the federation's guardians.
-///
-/// Uses the observer's shared guardian clients: every client built per
-/// request (`fedimint_api_client::download_from_invite_code` builds two) keeps
-/// its guardian connections open for the life of the process. A few failed
-/// attempts are retried, within [`INVITE_FETCH_TIMEOUT`]. Fails with a
-/// [`ClientError`]: 504 if the guardians didn't answer in time, 502 if they
-/// couldn't be reached or answered wrongly.
+/// Downloads a config through shared guardian clients with bounded retries.
 pub(crate) async fn download_client_config(
     invite: &InviteCode,
     observer: &FederationObserver,
@@ -228,7 +200,6 @@ pub(crate) async fn download_client_config(
 fn download_outcome<T>(result: Option<anyhow::Result<T>>) -> anyhow::Result<T> {
     match result {
         Some(Ok(value)) => Ok(value),
-        // E.g. too many guardian clients: keeps its own status
         Some(Err(error)) if error.downcast_ref::<ClientError>().is_some() => Err(error),
         Some(Err(error)) => {
             debug!(?error, "Federation config download failed");
@@ -243,9 +214,6 @@ fn download_outcome<T>(result: Option<anyhow::Result<T>>) -> anyhow::Result<T> {
     }
 }
 
-/// One attempt, the way `fedimint_api_client::try_download_client_config`
-/// does it: the invite's guardians name all guardians, a threshold of which
-/// must then agree on the config
 async fn try_download_client_config(
     invite: &InviteCode,
     observer: &FederationObserver,

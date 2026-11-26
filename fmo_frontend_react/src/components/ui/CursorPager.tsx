@@ -3,27 +3,22 @@ import { PageSizeSelect } from './PageSizeSelect';
 import { Button } from './Button';
 
 interface CursorPagerProps {
-  /** 1-based number of the page shown */
+
   page: number;
   hasNext: boolean;
   loading: boolean;
   onPrevious: () => void;
   onNext: () => void;
-  /** What is paged, for screen readers, e.g. "Gateway pages" */
+
   label: string;
-  /** Rows per page, sent to the backend as `limit`; omit to offer no choice */
+
   pageSize?: PageSize;
   onPageSizeChange?: (size: PageSize) => void;
-  /** Rows across all pages, when the backend says */
+
   total?: number;
 }
 
-/**
- * Rows per page and previous/next for lists the backend pages with a cursor.
- * Each click asks the backend for that page only. Cursor paging knows whether
- * a next page exists, not how many there are, so only the current page number
- * is shown (with the row count, when the backend gives one).
- */
+
 export function CursorPager({ page, hasNext, loading, onPrevious, onNext, label, pageSize, onPageSizeChange, total }: CursorPagerProps) {
   const withSize = pageSize !== undefined && onPageSizeChange !== undefined;
   const paged = page > 1 || hasNext;

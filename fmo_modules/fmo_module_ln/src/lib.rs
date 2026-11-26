@@ -1,6 +1,3 @@
-//! Observes the Lightning (v1) module: contracts funded, claimed and
-//! cancelled, and the gateways guardians announce
-
 use anyhow::Context;
 use async_trait::async_trait;
 use axum::Router;
@@ -23,8 +20,7 @@ mod gateways;
 
 #[derive(Default)]
 pub struct LnObserver {
-    /// Gateway overviews for every federation and window, rebuilt in the
-    /// background so requests never wait for the queries
+    /// Gateway overviews for every federation and window.
     overviews: GatewayOverviewCache,
 }
 
@@ -78,7 +74,6 @@ impl ObserverModule for LnObserver {
                 "fund",
                 contract.contract.contract_id(),
             ),
-            // For incoming contracts payment hash == contract id
             LightningOutputV0::Offer(offer) => (0, "offer", offer.hash.into()),
             LightningOutputV0::CancelOutgoing { contract, .. } => (0, "cancel", *contract),
         };
@@ -113,7 +108,6 @@ impl ObserverModule for LnObserver {
         federation_id: FederationId,
         config: ClientConfig,
     ) -> Option<Task> {
-        // A federation without a Lightning module has no gateways to poll
         module_instance_id(&config, "ln")?;
         let services = services.clone();
         let overviews = self.overviews.clone();

@@ -1,16 +1,5 @@
-//! Verification of the `fedi:fman_seat_bindings` consensus meta field, as
-//! Manifold specifies it (`crates/domain/src/mg_seat_bindings.rs`,
-//! `mg_peer_attestation.rs` and `federation_config.rs` in fedibtc/manifold).
-//!
-//! The field binds each guardian seat to the Manifold Guardian (MG) whose key
-//! signed for it. Validation fails closed and all or nothing, like
-//! Manifold's own readers: a missing, extra, conflicting or unverifiable
-//! binding invalidates the whole directory, and nothing from an invalid one is
-//! reported as bound.
-//!
-//! What a verified binding does not establish: that the MG's operator holds a
-//! trust credential. Standing comes from PeerBadge credentials, resolved
-//! separately and not by this module.
+//! Verifies Manifold seat bindings against the federation consensus config.
+//! Any missing, conflicting or invalid binding rejects the whole directory.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -30,16 +19,12 @@ const ATTESTATION_DOMAIN: &[u8] = b"fedi-fman-peer-attestation/v1\0";
 const ATTESTATION_TYPE: &str = "fedi.fman.peer-attestation";
 const CONFIG_HASH_DOMAIN: &[u8] = b"fedi-federation-config-hash/v1\0";
 const FEE_ACCOUNT_TYPE: &str = "BtcDepositor";
-/// Integers above this lose their decimal form under JCS (RFC 8785 formats
-/// numbers as IEEE doubles), so no canonical value carries one
 const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
 
-/// What a federation's final config says its seats are
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FederationSeats {
     federation_id: String,
     config_hash: [u8; 32],
-    /// Guardian identity (compressed broadcast key, hex) by peer id
     seats: BTreeMap<u16, String>,
 }
 
@@ -72,8 +57,7 @@ impl FederationSeats {
     }
 }
 
-/// SHA-256 over the domain separator and the consensus encoding of the config
-/// with its meta cleared, so later meta changes keep the hash
+/// so later meta changes keep the hash.
 pub fn federation_config_hash(config: &ClientConfig) -> [u8; 32] {
     let mut hashable = config.clone();
     hashable.global.meta = BTreeMap::new();
@@ -83,7 +67,6 @@ pub fn federation_config_hash(config: &ClientConfig) -> [u8; 32] {
     sha256::Hash::from_engine(engine).to_byte_array()
 }
 
-/// A binding that verified against the federation's config
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedSeatBinding {
     pub peer_id: u16,
@@ -93,8 +76,7 @@ pub struct VerifiedSeatBinding {
     pub issued_at: u64,
 }
 
-/// Why a directory value is invalid. The messages are fit to show: they name
-/// seats and checks, never key material.
+/// Why a directory value is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeatBindingsError {
     Empty,
@@ -112,8 +94,6 @@ pub enum SeatBindingsError {
     InvalidGuardianFeeAccount(u16),
     DuplicateGuardianFeeAccount(u16),
     UnboundPeerId(u16),
-    /// Not the directory's fault: the observer's copy of the config lacks
-    /// the guardian keys bindings are checked against
     ConfigWithoutGuardianKeys,
 }
 
@@ -184,9 +164,6 @@ fn peer_of(binding: &Value) -> Option<u16> {
         .ok()
 }
 
-/// Parses `value` and checks the shape Manifold's `parse_canonical`
-/// enforces: size, exact fields, canonical bytes, peer-id order and
-/// uniqueness. Returns the bindings in order.
 pub fn parse_canonical(value: &str) -> Result<Vec<Value>, SeatBindingsError> {
     if value.len() > MAX_VALUE_BYTES {
         return Err(SeatBindingsError::ValueTooLarge);
@@ -224,16 +201,13 @@ pub fn parse_canonical(value: &str) -> Result<Vec<Value>, SeatBindingsError> {
     if let Some(pair) = sorted.windows(2).find(|pair| pair[0] == pair[1]) {
         return Err(SeatBindingsError::DuplicatePeerId(pair[0]));
     }
-    // Manifold sorts by numeric peer id before canonicalizing, so any other
-    // order is not the canonical value
     if sorted != peers || canonical_json(&parsed)? != value {
         return Err(SeatBindingsError::NonCanonical);
     }
     Ok(bindings.clone())
 }
 
-/// Checks every binding against the federation, in Manifold's order of
-/// checks, and that every seat is bound
+/// Checks every binding against the federation.
 pub fn verify_for_federation(
     value: &str,
     seats: &FederationSeats,
@@ -248,7 +222,6 @@ pub fn verify_for_federation(
         let attestation = &binding["attestation"];
         let text = |key: &str| attestation[key].as_str().unwrap_or_default();
 
-        // The signature, under the key the binding names
         let fman_pubkey = text("fman_pubkey");
         let public_key =
             canonical_xonly_key(fman_pubkey).ok_or(SeatBindingsError::InvalidSignature(peer))?;
@@ -260,7 +233,6 @@ pub fn verify_for_federation(
         secp.verify_schnorr(&signature, &Message::from_digest(digest), &public_key)
             .map_err(|_| SeatBindingsError::InvalidSignature(peer))?;
 
-        // Its claims, against the config
         if text("federation_id") != seats.federation_id {
             return Err(SeatBindingsError::FederationMismatch(peer));
         }
@@ -275,7 +247,6 @@ pub fn verify_for_federation(
         }
         let fee_pubkey = single_btc_depositor(&attestation["guardian_fee_account"])
             .ok_or(SeatBindingsError::InvalidGuardianFeeAccount(peer))?;
-        // A single-signature account is identified by its one key
         if !fee_accounts.insert(fee_pubkey.clone()) {
             return Err(SeatBindingsError::DuplicateGuardianFeeAccount(peer));
         }
@@ -301,8 +272,6 @@ pub fn verify_for_federation(
     Ok(verified)
 }
 
-/// SHA-256 over the domain separator and the JCS form of the type-tagged
-/// statement, the message the MG's Schnorr signature covers
 fn attestation_digest(attestation: &Value) -> Result<[u8; 32], SeatBindingsError> {
     let payload = serde_json::json!({
         "type": ATTESTATION_TYPE,
@@ -347,7 +316,6 @@ fn check_binding_shape(binding: &Value) -> Result<(), SeatBindingsError> {
     attestation["issued_at"]
         .as_u64()
         .ok_or(SeatBindingsError::MalformedJson)?;
-    // Any length decodes; a wrong one fails as a config hash mismatch
     attestation["federation_config_hash"]
         .as_array()
         .ok_or(SeatBindingsError::MalformedJson)?
@@ -403,11 +371,10 @@ fn hash_bytes(value: &Value) -> Result<[u8; 32], SeatBindingsError> {
         .map(|byte| byte.as_u64().and_then(|byte| u8::try_from(byte).ok()))
         .collect::<Option<_>>()
         .ok_or(SeatBindingsError::MalformedJson)?;
-    // A hash of another length can't be this config's
     Ok(bytes.try_into().unwrap_or([0; 32]))
 }
 
-/// The lowercase x-only hex Manifold requires; npub and uppercase are not it
+/// The lowercase x-only hex Manifold requires.
 fn canonical_xonly_key(hex_key: &str) -> Option<XOnlyPublicKey> {
     let is_lower_hex = hex_key.len() == 64
         && hex_key
@@ -422,7 +389,6 @@ fn canonical_xonly_key(hex_key: &str) -> Option<XOnlyPublicKey> {
 /// base64url without padding, as Manifold's proofs encode the 64 bytes
 pub(crate) fn decode_signature(encoded: &str) -> Option<schnorr::Signature> {
     let bytes = URL_SAFE_NO_PAD.decode(encoded).ok()?;
-    // Reject alternative spellings of the same bytes
     if URL_SAFE_NO_PAD.encode(&bytes) != encoded {
         return None;
     }
@@ -442,10 +408,6 @@ fn single_btc_depositor(account: &Value) -> Option<String> {
     (parsed.to_string() == key).then(|| key.to_owned())
 }
 
-/// RFC 8785 (JCS) serialization of the values a directory can hold: objects
-/// with keys in UTF-16 order, strings escaped as ECMAScript does (which
-/// `serde_json` matches), and integers. Fractions, negatives and integers
-/// past 2^53 have no place in a directory and are rejected.
 pub fn canonical_json(value: &Value) -> Result<String, SeatBindingsError> {
     let mut out = String::new();
     write_canonical(value, &mut out)?;

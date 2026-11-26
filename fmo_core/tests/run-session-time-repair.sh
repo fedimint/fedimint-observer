@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
-# Upgrade and fresh-setup regression for the core schema and its read-model
-# repairs. Creates and drops its own databases on the server libpq's PG*
-# variables point at.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 db="fmo_repair_test_$$"
 fresh_db="${db}_fresh"
 createdb "$db"
 trap 'dropdb --if-exists "$db"; dropdb --if-exists "$fresh_db"' EXIT
-# Every core migration, in order, so new ones are picked up without editing this
 versions=$(cd "$root/fmo_core/schema" && ls v*.sql | sed 's/^v//; s/\.sql$//' | sort -n)
 migrate() { # database, first version, last version (empty: the latest)
     for version in $versions; do
@@ -19,7 +15,6 @@ migrate() { # database, first version, last version (empty: the latest)
 }
 sql() { psql -X -q -v ON_ERROR_STOP=1 -1 -d "$1" -f "$root/fmo_core/tests/repair_worker.sql" -f - >/dev/null; }
 
-# A populated v11 database, as the last release leaves it
 migrate "$db" 0 11
 psql -X -q -v ON_ERROR_STOP=1 -1 -d "$db" >/dev/null <<'SQL'
 INSERT INTO federations VALUES ('\x03', '\x00');
@@ -51,7 +46,6 @@ DO $$ BEGIN
     END IF;
 END $$;
 SQL
-# A vote for a block without a time yet is repaired once the time arrives
 sql "$db" <<'SQL'
 INSERT INTO sessions VALUES ('\x02', 1, '\x00');
 INSERT INTO block_height_votes VALUES ('\x02', 1, 0, 0, 12399);
@@ -68,7 +62,6 @@ END $$;
 SQL
 psql -X -q -v ON_ERROR_STOP=1 -1 -d "$db" -f "$root/fmo_core/tests/session_time_repair.sql" >/dev/null
 psql -X -q -v ON_ERROR_STOP=1 -1 -d "$db" -f "$root/fmo_core/tests/read_model_rebuild.sql" >/dev/null
-# Also exercise a fresh database through every migration.
 createdb "$fresh_db"
 migrate "$fresh_db" 0
 psql -X -q -v ON_ERROR_STOP=1 -1 -d "$fresh_db" -f "$root/fmo_core/tests/session_time_repair.sql" >/dev/null

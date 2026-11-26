@@ -1,5 +1,3 @@
-// Taken from https://github.com/tokio-rs/axum/blob/main/examples/anyhow-error-response/src/main.rs
-
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
@@ -38,10 +36,6 @@ impl AppError {
     }
 }
 
-/// An error the client caused or should see as is, with its HTTP status.
-/// Return it through `anyhow` (`Err(ClientError::not_found(..).into())`, or
-/// `bail!(ClientError::..)`): it keeps its status through `?` and `.context()`,
-/// unlike other errors, which become a sanitized 500.
 #[derive(Debug, Clone)]
 pub struct ClientError {
     status: StatusCode,
