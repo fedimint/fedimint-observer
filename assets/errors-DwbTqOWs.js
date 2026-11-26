@@ -1,0 +1,1 @@
+import{a0 as n}from"./index-kzVe9TEF.js";function o(r){return r instanceof Error&&r.message?r.message:"Unknown error"}function s(r){return!(r instanceof n)||r.retryable}function t(r){return r instanceof n&&r.kind==="network"}export{t as a,o as e,s as i};
