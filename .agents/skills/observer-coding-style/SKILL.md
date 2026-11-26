@@ -82,3 +82,13 @@ The observer has to keep working as federations, sessions and gateways grow.
   are untrusted. Validate URLs from that data (`https:` only) before using
   them in links or images.
 - Support light and dark mode and phone widths.
+- Write copy in sentence case, and start every piece of text with a capital
+  letter: titles, labels, values, details, badges, stamps, and each part
+  between ` · ` separators ("Seat 7 · Bound Oct 19", "Live · Updated 2 min
+  ago"). Pass relative times and enum values shown on their own through
+  `capitalize()` in `utils/format.ts`. Identifiers, keys and names keep their
+  own case.
+- Write names out in visible text ("Manifold Guardian", not "MG"); BTC, API,
+  UTC and ID stay abbreviated.
+- Use Tailwind's type scale (`text-xs` to `text-4xl`), never arbitrary sizes
+  such as `text-[10px]`.

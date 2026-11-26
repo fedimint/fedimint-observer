@@ -5,6 +5,7 @@ import type { FederationConfig } from '../../../utils/config';
 import { PageHeader } from '../../../components/ui/PageHeader';
 import { StatusPill, type Tone } from '../../../components/ui/Status';
 import { KeyChip } from '../../../components/ui/KeyChip';
+import { capitalize } from '../../../utils/format';
 
 const HEALTH: Record<FederationSummary['health'], { tone: Tone; label: string; title: string }> = {
   online: { tone: 'ok', label: 'Online', title: 'More guardians answer the observer than consensus needs' },
@@ -59,7 +60,7 @@ export function FederationHeader({ id, federation, config }: FederationHeaderPro
     ...(config?.modules.includes('lnv2') ? [{ to: `${base}/gateways/v2`, label: 'Gateways v2' }] : []),
     { to: `${base}/activity`, label: 'Activity' },
     ...(config?.modules.includes('wallet') ? [{ to: `${base}/utxos`, label: 'UTXOs' }] : []),
-    ...(config?.modules.includes('walletv2') ? [{ to: `${base}/assets`, label: 'Wallet Assets' }] : []),
+    ...(config?.modules.includes('walletv2') ? [{ to: `${base}/assets`, label: 'Wallet assets' }] : []),
     { to: `${base}/config`, label: 'Config' },
   ];
   const { list, indicator, animate } = useTabIndicator(tabs.length);
@@ -68,10 +69,10 @@ export function FederationHeader({ id, federation, config }: FederationHeaderPro
     <div className="mb-5">
       <PageHeader
         eyebrow="Federation"
-        title={federation.name || 'Unnamed Federation'}
+        title={federation.name || 'Unnamed federation'}
         badges={<>
           <StatusPill tone={health.tone} title={health.title} size="md">{health.label}</StatusPill>
-          {config && config.network !== 'unknown' && <StatusPill tone="neutral" icon={null} size="md">{config.network}</StatusPill>}
+          {config && config.network !== 'unknown' && <StatusPill tone="neutral" icon={null} size="md">{capitalize(config.network)}</StatusPill>}
         </>}
         description={<KeyChip value={id} label="federation id" head={10} tail={8} />}
       />

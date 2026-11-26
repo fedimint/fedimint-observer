@@ -46,7 +46,7 @@ export function EventTimeline({ events, emptyText }: { events: readonly Timeline
                 <span className="font-medium">{event.kind === 'live' ? 'Now' : 'History'}</span>
                 {' · '}
                 {event.end
-                  ? `${formatUtcDateTime(event.at)} → ${event.ongoing ? 'still ongoing' : formatUtcDateTime(event.end)} (${duration(event.end - event.at)}${event.ongoing ? ' so far' : ''})`
+                  ? `${formatUtcDateTime(event.at)} → ${event.ongoing ? 'Still ongoing' : formatUtcDateTime(event.end)} (${duration(event.end - event.at)}${event.ongoing ? ' so far' : ''})`
                   : formatUtcDateTime(event.at)}
               </p>
               {event.detail && <p className="mt-0.5 text-xs text-ink-3">{event.detail}</p>}

@@ -48,7 +48,7 @@ function Summary({ profile }: { profile: ManifoldGuardianProfile }) {
       <Kpi
         label="Seats"
         value={profile.seat_count.toLocaleString('en-US')}
-        detail={profile.seat_count === 0 ? 'No verified bindings' : `in ${plural(profile.federation_count, 'federation')}`}
+        detail={profile.seat_count === 0 ? 'No verified bindings' : `In ${plural(profile.federation_count, 'federation')}`}
         help="From federations' verified seat-binding directories; an advertisement alone never counts."
       />
       <Kpi
@@ -66,7 +66,7 @@ function Summary({ profile }: { profile: ManifoldGuardianProfile }) {
       <Kpi
         label="Fedimint"
         value={<span className="font-mono text-lg">{ad?.availability.fedimintd_version ?? '—'}</span>}
-        detail={ad?.software ? `MG ${ad.software.mg_version} · API ${ad.software.api_version}` : ad ? 'MG version not reported' : 'No current advertisement'}
+        detail={ad?.software ? `Manifold Guardian ${ad.software.mg_version} · API ${ad.software.api_version}` : ad ? 'Manifold Guardian version not reported' : 'No current advertisement'}
       />
     </div>
   );
@@ -91,7 +91,7 @@ function FederationsOperated({ profile }: { profile: ManifoldGuardianProfile }) 
             <div className="min-w-0">
               <Link to={`/federations/${encodeURIComponent(first.federation_id)}`} className="text-sm font-medium text-accent-ink hover:underline">{name}</Link>
               <p className="mt-0.5 text-xs text-ink-3">
-                {seats.length === 1 ? 'Seat' : 'Seats'} {seats.map((seat) => seat.peer_id).join(', ')} · bound {formatUtcDate(Math.min(...seats.map((s) => s.bound_at)) * 1000)} · verified {formatUtcDateTime(first.verified_at)}
+                {seats.length === 1 ? 'Seat' : 'Seats'} {seats.map((seat) => seat.peer_id).join(', ')} · Bound {formatUtcDate(Math.min(...seats.map((s) => s.bound_at)) * 1000)} · Verified {formatUtcDateTime(first.verified_at)}
               </p>
             </div>
             <span title={risk.detail}><StatusPill tone={risk.tone}>{risk.label} · {seats.length}/{first.federation_guardians}</StatusPill></span>
@@ -135,9 +135,7 @@ function PresenceHistory({ profile }: { profile: ManifoldGuardianProfile }) {
 function VersionHistory({ profile }: { profile: ManifoldGuardianProfile }) {
   const history = profile.version_history;
   if (history.length === 0) return <p className="text-ink-3">No versions observed yet</p>;
-  if (history.length === 1) {
-    return <p className="text-ink-2">Unchanged since first seen {formatUtcDateTime(history[0].observed_at)}</p>;
-  }
+  const advertised = profile.advertisement != null;
   return (
     <ol className="space-y-2">
       {history.map((change, index) => (
@@ -145,8 +143,11 @@ function VersionHistory({ profile }: { profile: ManifoldGuardianProfile }) {
           <span className={`mt-1.5 size-1.5 shrink-0 rounded-full ${index === 0 ? 'bg-manifold' : 'bg-line-strong'}`} aria-hidden="true" />
           <div className="min-w-0">
             <span className="font-mono text-ink">{change.fedimintd_version}</span>
-            {change.mg_version && <span className="font-mono text-ink-3"> · MG {change.mg_version}</span>}
-            <span className="block text-ink-3">{formatUtcDateTime(change.observed_at)}{index === 0 && ' · current'}</span>
+            {change.mg_version && <span className="font-mono text-ink-3"> · Manifold Guardian {change.mg_version}</span>}
+            <span className="block text-ink-3">
+              {history.length === 1 ? `First seen ${formatUtcDateTime(change.observed_at)}` : formatUtcDateTime(change.observed_at)}
+              {index === 0 && advertised && ' · Current'}
+            </span>
           </div>
         </li>
       ))}
@@ -171,13 +172,7 @@ function AdvertisedOffer({ profile }: { profile: ManifoldGuardianProfile }) {
     <dl className="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-3 gap-y-2.5 text-xs">
       {ad ? <>
         <OfferRow label="Federation sizes"><span className="tabular">{formatSizes(ad.availability.federation_sizes)} guardians</span></OfferRow>
-        <OfferRow label="Setup plans">
-          {ad.plans.length <= 1
-            ? ad.plans.length === 0
-              ? <span className="text-ink-3">No plans advertised</span>
-              : <span>{planLabel(ad.plans[0])} · <span className="font-medium tabular">{formatPriceMsats(cheapestPlanMsats(ad.plans)!)}</span></span>
-            : <PlanList plans={ad.plans} />}
-        </OfferRow>
+        <OfferRow label="Setup plans"><PlanList plans={ad.plans} /></OfferRow>
         <OfferRow label="Self-reported uptime">
           {uptime && uptimeKeys.length > 0 ? (
             <span className="tabular">
@@ -307,7 +302,7 @@ export function ManifoldOperator() {
                     <ul className="space-y-1">{ad.api_endpoints.map((endpoint) => <li key={endpoint.url} className="break-all font-mono text-xs">{endpoint.url}</li>)}</ul>
                   </TechnicalRow>
                   <TechnicalRow label="Advertisement">
-                    Kind {ad.event_kind} {ad.event_kind === 37709 ? '(v2)' : '(legacy)'} · signature {ad.signature_valid ? 'valid' : 'invalid'}
+                    Kind {ad.event_kind} {ad.event_kind === 37709 ? '(v2)' : '(legacy)'} · Signature {ad.signature_valid ? 'valid' : 'invalid'}
                     <div className="mt-1"><KeyChip value={ad.event_id} label="advertisement event id" /></div>
                   </TechnicalRow>
                   <TechnicalRow label="Validity">{formatUtcDateTime(ad.issued_at * 1000)} → {formatUtcDateTime(ad.expires_at * 1000)}</TechnicalRow>

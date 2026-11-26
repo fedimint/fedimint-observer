@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { api } from '../../../services/api';
 import { toBitcoin, formatNumber } from '../../../utils/format';
 import { Alert } from '../../../components/ui/Alert';
@@ -15,40 +16,37 @@ export function Totals() {
   const assets = activeAssetsStat(totals);
 
   return (
-    <div className="grid grid-cols-3 gap-2 sm:gap-8 text-ink px-4 sm:px-0">
-      <div className="text-center py-2 sm:py-0">
-        <div className="text-xl sm:text-4xl font-bold mb-1 sm:mb-2">
-          {loading ? '...' : formatNumber(totals?.federations || 0)}
-        </div>
-        <div className="text-[10px] sm:text-base text-ink-2">
-          <span className="sm:hidden">Federations</span>
-          <span className="hidden sm:inline">Observed Federations</span>
-        </div>
-      </div>
-      <div className="text-center border-l border-line-strong py-2 sm:py-0">
-        <div className="text-xl sm:text-4xl font-bold mb-1 sm:mb-2">
-          {loading ? '...' : formatNumber(totals?.tx_count || 0)}
-        </div>
-        <div className="text-[10px] sm:text-base text-ink-2">Total Transactions</div>
-      </div>
-      <div className="text-center border-l border-line-strong py-2 sm:py-0" title={assets.title}>
-        <div className="text-xl sm:text-4xl font-bold mb-1 sm:mb-2 flex items-center justify-center gap-1">
-          {loading ? (
-            '...'
-          ) : assets.kind === 'unavailable' ? (
-            <span className="text-sm leading-7 sm:text-2xl sm:leading-10 font-medium text-ink-2">Unavailable</span>
-          ) : (
-            <>
-              <Icon name="bitcoin" className="size-4 sm:size-10" />
-              <span className="whitespace-nowrap">{toBitcoin(assets.msat, 3)}</span>
-            </>
-          )}
-        </div>
-        <div className="text-[10px] sm:text-base text-ink-2">Total Assets</div>
-        {!loading && assets.kind === 'held' && assets.coverage && (
-          <div className="text-[10px] sm:text-sm text-ink-3">{assets.coverage}</div>
+    <div className="grid grid-cols-3 divide-x divide-line-strong text-ink">
+      <Stat label={<><span className="sm:hidden">Federations</span><span className="hidden sm:inline">Observed federations</span></>}>
+        {loading ? '…' : formatNumber(totals?.federations || 0)}
+      </Stat>
+      <Stat label="Total transactions">
+        {loading ? '…' : formatNumber(totals?.tx_count || 0)}
+      </Stat>
+      <Stat
+        label="Total assets"
+        title={assets.title}
+        note={!loading && assets.kind === 'held' ? assets.coverage : undefined}
+      >
+        {loading ? '…' : assets.kind === 'unavailable' ? (
+          <span className="text-base font-medium text-ink-2 sm:text-2xl">Unavailable</span>
+        ) : (
+          <>
+            <Icon name="bitcoin" className="size-5 sm:size-8" />
+            <span className="whitespace-nowrap">{toBitcoin(assets.msat, 3)}</span>
+          </>
         )}
-      </div>
+      </Stat>
+    </div>
+  );
+}
+
+function Stat({ label, title, note, children }: { label: ReactNode; title?: string; note?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="px-2 text-center" title={title}>
+      <div className="flex h-8 items-center justify-center gap-1.5 text-2xl font-semibold tabular sm:h-10 sm:text-4xl">{children}</div>
+      <div className="mt-1 text-xs text-ink-2 sm:mt-2 sm:text-sm">{label}</div>
+      {note && <div className="mt-0.5 text-xs text-ink-3">{note}</div>}
     </div>
   );
 }

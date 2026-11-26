@@ -51,7 +51,7 @@ export function GatewayV2Row({ gateway, timeWindow, onSelect }: { gateway: Gatew
           </div>
           <p className="mt-2 text-sm font-semibold">{gateway.samples ? `${(gateway.online_samples / gateway.samples * 100).toFixed(1)}% successful checks` : 'No probe history'}</p>
           <ProbeStrip gateway={gateway} timeWindow={timeWindow} />
-          <p className={`mt-1 text-xs ${muted}`}>{gateway.samples.toLocaleString()} probes · oldest → newest</p>
+          <p className={`mt-1 text-xs ${muted}`}>{gateway.samples.toLocaleString()} probes · Oldest → newest</p>
         </div>
         <div className="text-xs">
           <p className={`mb-2 ${muted}`}>Routing fees</p>

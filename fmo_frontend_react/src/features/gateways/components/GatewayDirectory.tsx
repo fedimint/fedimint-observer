@@ -6,6 +6,7 @@ import { SearchInput } from '../../../components/ui/SearchInput';
 import { Select } from '../../../components/ui/Select';
 import { buildUptimeStrip, GATEWAY_FILTERS, type GatewayFilter, type GatewaySort, type GatewayWithStatus, type SortDirection } from '../lib/gatewayRows';
 import { GatewayTableRow } from './GatewayTableRow';
+import { capitalize } from '../../../utils/format';
 
 interface GatewayDirectoryProps {
 
@@ -54,7 +55,7 @@ export function GatewayDirectory(props: GatewayDirectoryProps) {
         <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-start">
           <div>
             <h2 className="text-base font-medium text-ink">Gateway directory</h2>
-            <p className="mt-0.5 text-xs text-ink-3 sm:text-sm">{matched} {matched === 1 ? 'gateway' : 'gateways'} · select a gateway for its keys, endpoint, history and raw announcement.</p>
+            <p className="mt-0.5 text-xs text-ink-3 sm:text-sm">{matched} {matched === 1 ? 'gateway' : 'gateways'} · Select a gateway for its keys, endpoint, history and raw announcement.</p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <SearchInput value={search} onChange={props.onSearchChange} label="Search gateways" placeholder="Search gateway, node, endpoint" className="sm:w-64" />
@@ -73,7 +74,7 @@ export function GatewayDirectory(props: GatewayDirectoryProps) {
           options={GATEWAY_FILTERS}
           value={filter}
           onChange={props.onFilterChange}
-          renderLabel={(option) => <>{option === 'all' ? 'All active' : option}{summary && ` (${option === 'all' ? summary.total : summary[option]})`}</>}
+          renderLabel={(option) => <>{option === 'all' ? 'All active' : capitalize(option)}{summary && ` (${option === 'all' ? summary.total : summary[option]})`}</>}
         />
         <StatusLegend />
       </div>

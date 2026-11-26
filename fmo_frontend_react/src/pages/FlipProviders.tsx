@@ -13,6 +13,7 @@ import { CollectorNote } from '../features/manifold/components/CollectorNote';
 import { CursorPager } from '../components/ui/CursorPager';
 import { usePageSize } from '../hooks/usePageSize';
 import { errorMessage } from '../utils/errors';
+import { capitalize } from '../utils/format';
 
 const SOURCE_LABEL: Record<string, string> = {
   gateway: 'Lightning gateway liquidity',
@@ -76,7 +77,7 @@ function ProviderCard({ provider }: { provider: FlipProvider }) {
               <li key={item} className="flex items-center gap-1.5 text-ink-2"><Icon name="check" className="size-3 text-accent" />{sourceLabel(item)}</li>
             ))}
           </ul>
-          <p className="mt-2 text-ink-3">Networks: <span className="text-ink-2">{provider.supported_networks.join(', ') || '—'}</span></p>
+          <p className="mt-2 text-ink-3">Networks: <span className="text-ink-2">{provider.supported_networks.map(capitalize).join(', ') || '—'}</span></p>
         </div>
         <div>
           <h3 className="mb-2 text-xs font-medium text-ink-3">Accepted attesters</h3>
@@ -97,7 +98,7 @@ function ProviderCard({ provider }: { provider: FlipProvider }) {
           <dt className="text-ink-3">Relay hints</dt>
           <dd className="min-w-0">{provider.relay_hints.length ? provider.relay_hints.map((relay) => <div key={relay} className="break-all font-mono text-xs text-ink-2">{relay}</div>) : <span className="text-ink-3">None</span>}</dd>
           <dt className="text-ink-3">Advertisement</dt>
-          <dd className="min-w-0 break-words text-ink-2">Kind 37702 · signature {provider.signature_valid ? 'valid' : 'invalid'} · {formatUtcDateTime(provider.issued_at * 1000)} → {formatUtcDateTime(provider.expires_at * 1000)}</dd>
+          <dd className="min-w-0 break-words text-ink-2">Kind 37702 · Signature {provider.signature_valid ? 'valid' : 'invalid'} · {formatUtcDateTime(provider.issued_at * 1000)} → {formatUtcDateTime(provider.expires_at * 1000)}</dd>
           {(provider.display?.website || provider.display?.contact) && <>
             <dt className="text-ink-3">Self-described</dt>
             <dd className="text-ink-2">{[provider.display?.website, provider.display?.contact].filter(Boolean).join(' · ')}</dd>

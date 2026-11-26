@@ -59,7 +59,7 @@ export function Home() {
 
   return (
     <div className="pb-4">
-      <div className="my-8 sm:my-16">
+      <div className="mb-6 sm:mb-8">
         <Totals />
       </div>
 

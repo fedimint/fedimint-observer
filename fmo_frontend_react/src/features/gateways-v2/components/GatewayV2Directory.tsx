@@ -15,6 +15,7 @@ import { GATEWAY_V2_FILTERS, observedDate, visibleGateways, type GatewayV2Filter
 import { GatewayV2AvailabilityTrend } from './GatewayV2AvailabilityTrend';
 import { GatewayV2Row } from './GatewayV2Row';
 import { GatewayV2Detail } from './GatewayV2Detail';
+import { capitalize } from '../../../utils/format';
 
 const REFRESH_MS = 60_000;
 const nextAfter = (registry: GatewayV2Registry) => registry.next_after;
@@ -83,7 +84,7 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
           <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-start">
             <div>
               <h2 className="text-base font-medium text-ink">Gateway directory</h2>
-              <p className={`mt-1 text-xs ${muted}`}>{visible.length} of {gateways.length} gateways on this page · {timeWindow.toUpperCase()} observed history · search, sort and filters apply to this page; the counts on the filters cover all pages · select a gateway for its keys, fees and activity</p>
+              <p className={`mt-1 text-xs ${muted}`}>{visible.length} of {gateways.length} gateways on this page · {timeWindow.toUpperCase()} observed history · Search, sort and filters apply to this page; the counts on the filters cover all pages · Select a gateway for its keys, fees and activity</p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row">
               <SearchInput value={search} onChange={setSearch} label="Search gateways" placeholder="Search this page" className="sm:w-56" />
@@ -101,7 +102,7 @@ export function GatewayV2Directory({ id, instance, timeWindow }: GatewayV2Direct
             options={GATEWAY_V2_FILTERS}
             value={filter}
             onChange={setFilter}
-            renderLabel={(status) => <>{status === 'all' ? 'All active' : status}{totals && ` (${status === 'all' ? totals.registered : totals[status]})`}</>}
+            renderLabel={(status) => <>{status === 'all' ? 'All active' : capitalize(status)}{totals && ` (${status === 'all' ? totals.registered : totals[status]})`}</>}
           />
         </div>
         {!registry && !error && <p className={`p-8 text-center text-sm ${muted}`}>Loading gateway details…</p>}
