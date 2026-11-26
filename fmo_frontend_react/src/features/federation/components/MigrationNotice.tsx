@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { buttonClass } from '../../../components/ui/controls';
+import { Icon } from '../../../components/ui/Icon';
 import { Link } from 'react-router-dom';
 import { MIGRATION_HELP_URL, showMigrationHelp } from '../../../utils/migration';
 import { formatUtcDate, formatUtcDateTime } from '../../../utils/time';
@@ -10,14 +11,6 @@ interface MigrationNoticeProps {
   successorInvite: string;
   /** The successor, when the observer tracks it */
   successor: { id: string; name: string } | null;
-}
-
-function ArrowIcon() {
-  return (
-    <svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M5 12h14M13 6l6 6-6 6" />
-    </svg>
-  );
 }
 
 function CopyInviteButton({ invite, className }: { invite: string; className: string }) {
@@ -54,7 +47,7 @@ export function MigrationNotice({ expiry, successorInvite, successor }: Migratio
         <div className="mt-3">
           {successor ? (
             <Link to={`/federations/${successor.id}`} className={buttonClass('secondary', 'md')}>
-              View {successor.name}<ArrowIcon />
+              View {successor.name}<Icon name="arrowRight" />
             </Link>
           ) : (
             <CopyInviteButton invite={successorInvite} className={buttonClass('secondary', 'md')} />
@@ -66,10 +59,7 @@ export function MigrationNotice({ expiry, successorInvite, successor }: Migratio
 
   return (
     <div className="mb-4 flex gap-3 rounded-lg border border-accent/30 bg-accent-soft p-4">
-      <svg className="mt-0.5 size-5 shrink-0 text-accent-ink" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="11" fill="currentColor" />
-        <path d="M12 11v6M12 7.5v.01" stroke="white" strokeWidth="2.4" strokeLinecap="round" />
-      </svg>
+      <Icon name="info" className="mt-0.5 size-5 text-accent-ink" />
       <div className="min-w-0">
         <h2 className="text-base font-semibold text-accent-ink">This federation is migrating</h2>
         <p className="mt-1 text-sm text-accent-ink sm:text-base">
@@ -79,7 +69,7 @@ export function MigrationNotice({ expiry, successorInvite, successor }: Migratio
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
           {successor ? (
             <Link to={`/federations/${successor.id}`} className={buttonClass('primary', 'md')}>
-              View {successor.name}<ArrowIcon />
+              View {successor.name}<Icon name="arrowRight" />
             </Link>
           ) : (
             <CopyInviteButton invite={successorInvite} className={buttonClass('secondary', 'md')} />

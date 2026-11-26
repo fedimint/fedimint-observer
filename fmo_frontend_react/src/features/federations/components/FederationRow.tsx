@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import type { FederationActivity, FederationHealth } from '../../../types/api';
 import { Badge } from '../../../components/ui/Badge';
+import { Icon } from '../../../components/ui/Icon';
 import { asBitcoin } from '../../../utils/format';
 import { formatUtcDate, formatUtcDateTime } from '../../../utils/time';
 import { observedSessionSpan } from '../lib/federationList';
@@ -97,9 +98,7 @@ export const FederationRow = memo(function FederationRow({
                     : 'bg-accent-soft text-accent-ink ring-accent/25'
                 }`}
               >
-                <svg className="size-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <path d="M5 12h14M13 6l6 6-6 6" />
-                </svg>
+                <Icon name="arrowRight" className="size-3" strokeWidth={2.2} />
                 <span className="truncate">
                   {isShutDown ? 'Moved' : 'Migrating'}{successorName ? ` to ${successorName}` : ''}
                 </span>
