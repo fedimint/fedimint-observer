@@ -63,7 +63,7 @@ export function InfrastructureHealth({ federationId, observability, onSelectGuar
 
       <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-4">
         {loading ? (
-          Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-22 w-full rounded-lg" />)
+          Array.from({ length: 4 }, (_, i) => <Skeleton key={i} className="h-24 w-full rounded-lg xl:h-27" />)
         ) : (
           <>
             <Kpi

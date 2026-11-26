@@ -1,11 +1,13 @@
 import { useOutletContext } from 'react-router-dom';
 import type { useFederationDetails } from './useFederationDetails';
 
-type Details = NonNullable<ReturnType<typeof useFederationDetails>['data']>;
+type Resources = ReturnType<typeof useFederationDetails>;
+type Details = NonNullable<Resources['summary']['data']>;
 
 
 export interface FederationContext extends Details {
   id: string;
+  config: Resources['config']['data'];
 }
 
 /** The federation whose section is shown, loaded once by `FederationLayout` */

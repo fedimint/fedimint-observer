@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Copyable } from '../../../components/ui/Copyable';
 import { ListMessage } from '../../../components/ui/ListCard';
 import { RetryButton } from '../../../components/ui/RetryButton';
+import { Skeleton } from '../../../components/ui/States';
 import type { NostrFederation } from '../lib/federationNames';
 
 const mobileLabel = 'text-xs sm:hidden text-ink-3 block mb-1';
@@ -15,6 +16,7 @@ interface NostrFederationListProps {
 
   nameLabel: string;
   renderName: (federation: NostrFederation) => ReactNode;
+  pageSize: number;
 }
 
 function ListError({ message, onRetry }: { message: string; onRetry: () => void }) {
@@ -37,11 +39,18 @@ export function NostrListColumns({ nameLabel }: { nameLabel: string }) {
 }
 
 /** Rows of federations with their invite codes, or the list's loading, error or empty state */
-export function NostrFederationList({ federations, loading, error, onRetry, emptyText, nameLabel, renderName }: NostrFederationListProps) {
+export function NostrFederationList({ federations, loading, error, onRetry, emptyText, nameLabel, renderName, pageSize }: NostrFederationListProps) {
   return (
     <div className="divide-y divide-line">
       {loading ? (
-        <ListMessage>Loading...</ListMessage>
+        <div role="status" aria-label="Loading federations" className="divide-y divide-line">
+          {Array.from({ length: Math.min(pageSize, 8) }, (_, index) => (
+            <div key={index} className="grid h-28 items-center gap-3 px-3 sm:h-14 sm:grid-cols-2 sm:px-6">
+              <Skeleton className="h-4 w-1/2 rounded" />
+              <Skeleton className="h-5 w-4/5 rounded" />
+            </div>
+          ))}
+        </div>
       ) : error ? (
         <ListError message={`Could not load Nostr federations: ${error}`} onRetry={onRetry} />
       ) : federations.length === 0 ? (

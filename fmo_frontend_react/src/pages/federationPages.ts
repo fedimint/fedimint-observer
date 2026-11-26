@@ -16,9 +16,15 @@ export const FederationGateways = lazy(() => loaders.gateways().then((m) => ({ d
 export const FederationGuardians = lazy(() => loaders.guardians().then((m) => ({ default: m.FederationGuardians })));
 export const FederationReliability = lazy(() => loaders.reliability().then((m) => ({ default: m.FederationReliability })));
 
-/** Fetches every section's code, so switching tabs never waits on a download */
-export function prefetchFederationPages() {
-  for (const load of Object.values(loaders)) {
-    load().catch((error: unknown) => console.warn('Could not prefetch a federation page:', error));
-  }
+/** Warm just the tab a user points to or focuses. */
+export function prefetchFederationTab(section: string) {
+  const connection = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+  if (connection?.saveData || connection?.effectiveType?.endsWith('2g')) return;
+
+  const load = section === '' ? loaders.detail
+    : section === '/guardians' ? loaders.guardians
+    : section === '/reliability' ? loaders.reliability
+    : section.startsWith('/gateways') ? loaders.gateways
+    : loaders.section;
+  load().catch((error: unknown) => console.warn('Could not prefetch the federation tab:', error));
 }

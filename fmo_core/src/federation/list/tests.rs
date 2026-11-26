@@ -5,9 +5,9 @@ use fmo_api_types::{
 };
 
 use super::{
-    active_assets, activity_scale, available_assets, group_for, group_of, matches_search,
-    nostr_group_of, nostr_sort_key, rows_needing_session_ranges, sort_key, ActiveAssets,
-    FederationGroup, FederationSort, NostrGroup, SortDirection,
+    active_assets, activity_scale, available_assets, config_outline, group_for, group_of,
+    matches_search, nostr_group_of, nostr_sort_key, rows_needing_session_ranges, sort_key,
+    ActiveAssets, FederationGroup, FederationSort, NostrGroup, SortDirection,
 };
 use crate::pagination::keyset_page;
 
@@ -39,6 +39,8 @@ fn federation(
         successor: None,
         successor_id: None,
         successor_name: None,
+        module_kinds: None,
+        network: None,
     }
 }
 
@@ -327,4 +329,37 @@ fn long_names_page_through_every_order() {
         })
         .collect();
     assert_eq!(walk(&entries, nostr_sort_key).len(), entries.len());
+}
+
+#[test]
+fn config_outline_reads_module_kinds_and_the_wallet_network() {
+    let config = serde_json::json!({"modules": {
+        "0": {"kind": "ln", "network": "signet"},
+        "1": {"kind": "mint"},
+        "2": {"kind": "wallet", "network": "bitcoin"},
+        "3": {"kind": "meta"},
+    }});
+    let (mut kinds, network) = config_outline(&config);
+    kinds.sort();
+    assert_eq!(kinds, ["ln", "meta", "mint", "wallet"]);
+    assert_eq!(network.as_deref(), Some("bitcoin"));
+}
+
+#[test]
+fn config_outline_takes_the_walletv2_network_without_a_wallet_module() {
+    let config = serde_json::json!({"modules": {
+        "0": {"kind": "lnv2", "network": "signet"},
+        "1": {"kind": "walletv2", "network": "bitcoin"},
+    }});
+    assert_eq!(config_outline(&config).1.as_deref(), Some("bitcoin"));
+}
+
+#[test]
+fn config_outline_has_no_network_without_a_wallet_module() {
+    let config = serde_json::json!({"modules": {"0": {"kind": "mint"}, "1": {}}});
+    assert_eq!(
+        config_outline(&config),
+        (vec!["mint".to_owned(), "unknown".to_owned()], None)
+    );
+    assert_eq!(config_outline(&serde_json::json!({})), (Vec::new(), None));
 }

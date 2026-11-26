@@ -1145,6 +1145,8 @@ impl FederationObserver {
                         .filter(|successor_id| *successor_id != federation_id),
                     successor,
                     successor_name: None,
+                    module_kinds: None,
+                    network: None,
                 })
             })
             .collect::<anyhow::Result<Vec<FederationSummary>>>()

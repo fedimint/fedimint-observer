@@ -5,7 +5,7 @@ import { Card, CardHeader } from '../components/ui/Card';
 import { DataStamp } from '../components/ui/DataStamp';
 import { KeyChip } from '../components/ui/KeyChip';
 import { Segmented } from '../components/ui/Segmented';
-import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/States';
+import { EmptyState, ErrorState, LoadingBlock, Skeleton } from '../components/ui/States';
 import { formatUtcDateTime } from '../utils/time';
 import { useFederation } from '../features/federation/hooks/useFederation';
 import { useGuardianObservability } from '../features/guardians/hooks/useGuardianObservability';
@@ -88,8 +88,16 @@ export function FederationGuardians() {
                 <ErrorState title="Could not load the live guardian status" message="Status and latency are unknown until it loads." onRetry={live.reload} />
               </div>
             )}
-            {!config || (live.loading && !live.data) ? (
-              <LoadingBlock label="Loading guardians" rows={Math.max(config?.guardians.length ?? 4, 3)} className="px-2" />
+            {live.loading && !live.data ? (
+              <div role="status" aria-label="Loading guardians" className="space-y-2">
+                {Array.from({ length: config?.guardians.length || 4 }, (_, index) => (
+                  <div key={index} className="flex h-40 flex-col gap-3 rounded-lg border border-line p-3 md:h-14 md:flex-row md:items-center">
+                    <Skeleton className="h-5 w-2/5 rounded md:w-1/5" />
+                    <Skeleton className="h-5 w-1/4 rounded md:w-1/6" />
+                    <Skeleton className="mt-2 h-12 w-full rounded md:mt-0 md:h-5 md:flex-1" />
+                  </div>
+                ))}
+              </div>
             ) : filtered.length === 0 ? (
               <div className="px-2"><EmptyState title="No guardian matches">Try another filter or search.</EmptyState></div>
             ) : (

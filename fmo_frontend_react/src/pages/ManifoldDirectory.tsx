@@ -7,7 +7,7 @@ import { DataStamp } from '../components/ui/DataStamp';
 import { Icon } from '../components/ui/Icon';
 import { KeyChip } from '../components/ui/KeyChip';
 import { PageHeader } from '../components/ui/PageHeader';
-import { EmptyState, ErrorState, LoadingBlock } from '../components/ui/States';
+import { EmptyState, ErrorState, Skeleton } from '../components/ui/States';
 import { InfoTip } from '../components/ui/Tooltip';
 import { useManifoldGuardians } from '../features/manifold/hooks';
 import {
@@ -149,12 +149,19 @@ export function ManifoldDirectory() {
         eyebrow={<span className="text-manifold-ink">Manifold</span>}
         title="Guardian directory"
         description="Manifold Guardians that announce themselves on Nostr (kinds 37701 and 37709) as available to operate federation seats."
-        actions={head && <DataStamp kind="live" at={head.observed_at} staleAfterSeconds={900} />}
+        actions={head
+          ? <DataStamp kind="live" at={head.observed_at} staleAfterSeconds={900} />
+          : <Skeleton className="h-4 w-44 rounded" />}
       />
 
       <div className="space-y-4 sm:space-y-5">
-        {head && <CollectorNote relays={head.relays} />}
-
+        <div className="min-h-20 sm:min-h-12">
+          {head ? (
+            <CollectorNote relays={head.relays} />
+          ) : (
+            <Skeleton className="h-20 w-full rounded-xl sm:h-12" />
+          )}
+        </div>
 
         <Card padding="p-0">
           <div className="grid gap-3 border-b border-line p-4 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.6fr)_repeat(4,minmax(0,1fr))] sm:p-5">
@@ -215,7 +222,15 @@ export function ManifoldDirectory() {
             {pages.error && !pages.page ? (
               <div className="p-2"><ErrorState title="Could not load the directory" message={errorMessage(pages.error.cause)} onRetry={pages.restart} /></div>
             ) : !pages.page ? (
-              <LoadingBlock label="Loading Manifold Guardians" rows={6} className="p-2" />
+              <div role="status" aria-label="Loading Manifold Guardians" className="space-y-2 pt-2">
+                {Array.from({ length: Math.min(pageSize, 10) }, (_, index) => (
+                  <div key={index} className="flex h-52 flex-col gap-3 rounded-lg border border-line p-3 md:h-14 md:flex-row md:items-center">
+                    <Skeleton className="h-5 w-2/5 rounded md:w-1/5" />
+                    <Skeleton className="h-5 w-3/5 rounded md:w-1/5" />
+                    <Skeleton className="mt-2 h-20 w-full rounded md:mt-0 md:h-5 md:flex-1" />
+                  </div>
+                ))}
+              </div>
             ) : facets.guardians === 0 ? (
               <div className="p-2">
                 <EmptyState icon="directory" title={pages.page.observed_at ? 'No Manifold Guardian advertisements found' : 'Not synced yet'}>

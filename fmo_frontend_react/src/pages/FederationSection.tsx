@@ -18,7 +18,10 @@ function ActivitySection({ id }: { id: string }) {
 function UtxoSection({ id, config }: { id: string; config: FederationConfig | null }) {
   const hasWalletV1 = config?.modules.includes('wallet') ?? false;
   const utxos = useFederationUtxos(id, hasWalletV1);
-  const overview = useApiResource((signal) => api.getFederationOverview(id, signal), [id], { label: 'federation overview' });
+  const overview = useApiResource((signal) => api.getFederationOverview(id, signal), [id], {
+    enabled: hasWalletV1,
+    label: 'federation overview',
+  });
   if (config && !hasWalletV1) return <p className="text-sm text-ink-3">This federation has no on-chain wallet module.</p>;
   return <UtxoInventory utxos={utxos} overview={overview.data} overviewFailed={overview.failed} network={config?.network} />;
 }

@@ -6,6 +6,7 @@ import { PageHeader } from '../../../components/ui/PageHeader';
 import { StatusPill, type Tone } from '../../../components/ui/Status';
 import { KeyChip } from '../../../components/ui/KeyChip';
 import { capitalize } from '../../../utils/format';
+import { prefetchFederationTab } from '../../../pages/federationPages';
 
 const HEALTH: Record<FederationSummary['health'], { tone: Tone; label: string; title: string }> = {
   online: { tone: 'ok', label: 'Online', title: 'More guardians answer the observer than consensus needs' },
@@ -52,15 +53,17 @@ function useTabIndicator(tabCount: number) {
 export function FederationHeader({ id, federation, config }: FederationHeaderProps) {
   const base = `/federations/${encodeURIComponent(id)}`;
   const health = HEALTH[federation.health];
+  const modules = config?.modules ?? federation.module_kinds ?? [];
+  const network = config ? config.network : federation.network ?? 'unknown';
   const tabs = [
     { to: base, label: 'Overview', end: true },
     { to: `${base}/guardians`, label: 'Guardians' },
     { to: `${base}/reliability`, label: 'Reliability' },
-    ...(config?.modules.includes('ln') ? [{ to: `${base}/gateways`, label: 'Gateways', end: true }] : []),
-    ...(config?.modules.includes('lnv2') ? [{ to: `${base}/gateways/v2`, label: 'Gateways v2' }] : []),
+    ...(modules.includes('ln') ? [{ to: `${base}/gateways`, label: 'Gateways', end: true }] : []),
+    ...(modules.includes('lnv2') ? [{ to: `${base}/gateways/v2`, label: 'Gateways v2' }] : []),
     { to: `${base}/activity`, label: 'Activity' },
-    ...(config?.modules.includes('wallet') ? [{ to: `${base}/utxos`, label: 'UTXOs' }] : []),
-    ...(config?.modules.includes('walletv2') ? [{ to: `${base}/assets`, label: 'Wallet assets' }] : []),
+    ...(modules.includes('wallet') ? [{ to: `${base}/utxos`, label: 'UTXOs' }] : []),
+    ...(modules.includes('walletv2') ? [{ to: `${base}/assets`, label: 'Wallet assets' }] : []),
     { to: `${base}/config`, label: 'Config' },
   ];
   const { list, indicator, animate } = useTabIndicator(tabs.length);
@@ -72,7 +75,7 @@ export function FederationHeader({ id, federation, config }: FederationHeaderPro
         title={federation.name || 'Unnamed federation'}
         badges={<>
           <StatusPill tone={health.tone} title={health.title} size="md">{health.label}</StatusPill>
-          {config && config.network !== 'unknown' && <StatusPill tone="neutral" icon={null} size="md">{capitalize(config.network)}</StatusPill>}
+          {network !== 'unknown' && <StatusPill tone="neutral" icon={null} size="md">{capitalize(network)}</StatusPill>}
         </>}
         description={<KeyChip value={id} label="federation id" head={10} tail={8} />}
       />
@@ -83,6 +86,11 @@ export function FederationHeader({ id, federation, config }: FederationHeaderPro
               <NavLink
                 to={tab.to}
                 end={tab.end}
+                onPointerEnter={(event) => {
+                  if (event.pointerType === 'mouse') prefetchFederationTab(tab.to.slice(base.length));
+                }}
+                onPointerDown={() => prefetchFederationTab(tab.to.slice(base.length))}
+                onFocus={() => prefetchFederationTab(tab.to.slice(base.length))}
                 className={({ isActive }) =>
                   // One weight for every tab, so labels never shift when the selection moves
                   `relative inline-flex items-center rounded-t-md px-3 py-2.5 text-sm font-medium whitespace-nowrap transition-colors duration-200 ${
