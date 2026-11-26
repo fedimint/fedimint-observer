@@ -46,7 +46,7 @@ export function UptimeTrendSection({ timeWindow, points, placeholder }: UptimeTr
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h2 id="uptime-trend-heading" className="text-base font-semibold text-ink">Gateway availability trend ({timeWindow.toUpperCase()})</h2>
-          <p className="mt-0.5 text-xs text-ink-3">Each point combines every gateway poll snapshot recorded on that day · days in UTC.</p>
+          <p className="mt-0.5 text-xs text-ink-3">Each point combines every gateway poll snapshot recorded on that day. Days are in UTC.</p>
         </div>
         {points.length > 0 && <span className="text-xs text-ink-3">{points.length} day{points.length === 1 ? '' : 's'} with data</span>}
       </div>

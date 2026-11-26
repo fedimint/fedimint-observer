@@ -113,7 +113,7 @@ export function FederationGuardians() {
             <CardHeader
               id="bindings-title"
               title={<span className="inline-flex items-center gap-2">Manifold seat bindings <span className="rounded bg-manifold-soft px-1.5 py-px text-xs font-medium text-manifold-ink">Manifold</span></span>}
-              description="fedi:fman_seat_bindings from the guardians' consensus metadata, verified by the observer"
+              description="Seat bindings (fedi:fman_seat_bindings) from the guardians' consensus metadata, verified by the observer"
               meta={seatBindings.data?.observed_at ? <DataStamp kind="live" at={seatBindings.data.observed_at} staleAfterSeconds={2 * 3600} /> : undefined}
             />
             {seatBindings.failed ? (
@@ -160,7 +160,7 @@ export function FederationGuardians() {
       {selected && (
         <GuardianDetail
           row={selected}
-          federation={{ id, name: federation.name || 'Unnamed Federation' }}
+          federation={{ id, name: federation.name || 'Unnamed federation' }}
           broadcastKey={broadcastKeys[String(selected.id)] ?? null}
           history7d={history7d.data}
           matrix={matrix}

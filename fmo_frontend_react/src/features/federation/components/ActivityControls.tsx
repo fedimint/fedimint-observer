@@ -53,7 +53,7 @@ export function ActivityControls({ activity }: { activity: FederationActivity })
           onChange={activity.setFilterOutliers}
           title="Filter out values that are more than 10 times the 95th percentile"
           label="Filter extreme outliers"
-          shortLabel="Filter Outliers"
+          shortLabel="Filter outliers"
         />
       )}
       <Select className="min-w-36"

@@ -40,7 +40,7 @@ export function PageHeader({ title, eyebrow, description, badges, actions, bread
         <div className="min-w-0">
           {eyebrow && <div className="meta-label mb-2">{eyebrow}</div>}
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="min-w-0 text-xl font-medium tracking-[-0.01em] text-ink wrap-break-word sm:text-[1.75rem] sm:leading-9">{title}</h1>
+            <h1 className="min-w-0 text-xl font-medium tracking-[-0.01em] text-ink wrap-break-word sm:text-3xl sm:leading-9">{title}</h1>
             {badges}
           </div>
           {description && <p className="mt-2 max-w-3xl text-sm text-ink-3">{description}</p>}

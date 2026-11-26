@@ -10,6 +10,11 @@ export function asBitcoin(msats: number, decimals: number = 6): string {
   return `${toBitcoin(msats, decimals)} BTC`;
 }
 
+// Sentence case for an enum value or a relative time shown on its own
+export function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 // Format numbers with thousand separators
 export function formatNumber(num: number): string {
   return num.toLocaleString('en-US');

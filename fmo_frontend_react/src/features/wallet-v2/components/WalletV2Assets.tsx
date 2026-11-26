@@ -43,25 +43,25 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
 
   return (
     <div className="space-y-4">
-      <section className={`${card} p-4 sm:p-6`} aria-labelledby="wallet-details-title">
-        <h4 id="wallet-details-title" className="text-base font-semibold text-ink">About this wallet</h4>
+      <section className={`${card} p-4 sm:p-5`} aria-labelledby="wallet-details-title">
+        <h4 id="wallet-details-title" className="text-base font-medium text-ink">About this wallet</h4>
         <p className={`mt-2 text-sm ${muted}`}>Wallet v2 tracks a single federation UTXO. Deposits are merged into it, and withdrawals are peeled from it. The chart and operations below use the latest guardian-reported wallet history. Operations may still be pending on Bitcoin.</p>
       </section>
 
-      <section className={`${card} p-4 sm:p-6`} aria-labelledby="wallet-v2-title">
+      <section className={`${card} p-4 sm:p-5`} aria-labelledby="wallet-v2-title">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="flex flex-wrap items-center gap-2"><h3 id="wallet-v2-title" className="text-lg font-medium text-ink">Federation wallet</h3><span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-ink">Wallet v2</span></div>
+            <div className="flex flex-wrap items-center gap-2"><h3 id="wallet-v2-title" className="text-base font-medium text-ink">Federation wallet</h3><span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent-ink">Wallet v2</span></div>
             <p className={`mt-1 max-w-xl text-sm ${muted}`}>Deposits and withdrawals are reflected in the federation’s on-chain wallet.</p>
           </div>
-          <div className="min-w-0 sm:text-right"><p className={`text-xs ${muted}`}>Current wallet balance</p><p className="mt-1 break-all tabular text-2xl font-medium text-ink sm:text-3xl">{tile(balance == null ? 'Awaiting balance' : asBitcoin(balance, 8))}</p>
+          <div className="min-w-0 sm:text-right"><p className={`text-xs ${muted}`}>Current wallet balance</p><p className="mt-1 break-all tabular text-xl font-medium text-ink">{tile(balance == null ? 'Awaiting balance' : asBitcoin(balance, 8))}</p>
             {content === 'ready' && latest && <p className={`mt-2 text-xs font-medium ${latest.output_msat >= latest.input_msat ? 'text-ok-ink' : 'text-serious-ink'}`}>Latest operation #{latest.index}: {latest.output_msat >= latest.input_msat ? '+' : '−'}{asBitcoin(Math.abs(latest.output_msat - latest.input_msat), 8)}</p>}
           </div>
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3 border-t border-line pt-4 sm:grid-cols-3">
-          <div><p className={`text-xs ${muted}`}>Operations on this page</p><p className="mt-1 text-sm font-semibold text-ink">{tile(ordered.length)}</p></div>
-          <div><p className={`text-xs ${muted}`}>Latest operation</p><p className="mt-1 text-sm font-semibold text-ink">{tile(latest ? `#${latest.index}` : 'None yet')}</p></div>
-          <div className="col-span-2 sm:col-span-1"><p className={`text-xs ${muted}`}>Latest operation block</p><p className="mt-1 text-sm font-semibold text-ink">{tile(latest ? latest.created.toLocaleString() : '—')}</p></div>
+          <div><p className={`text-xs ${muted}`}>Operations on this page</p><p className="mt-1 text-sm font-medium text-ink">{tile(ordered.length)}</p></div>
+          <div><p className={`text-xs ${muted}`}>Latest operation</p><p className="mt-1 text-sm font-medium text-ink">{tile(latest ? `#${latest.index}` : 'None yet')}</p></div>
+          <div className="col-span-2 sm:col-span-1"><p className={`text-xs ${muted}`}>Latest operation block</p><p className="mt-1 text-sm font-medium text-ink">{tile(latest ? latest.created.toLocaleString() : '—')}</p></div>
         </div>
         <p className={`mt-3 text-xs ${muted}`}>History shows 20 operations per page.</p>
       </section>

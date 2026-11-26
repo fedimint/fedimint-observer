@@ -5,6 +5,7 @@ import { InfoTip } from '../../../components/ui/Tooltip';
 import { formatRelative, formatUtcDateTime } from '../../../utils/time';
 import { formatPriceMsats } from '../lib/directory';
 import type { AdFreshness, CredentialCheck, CredentialState, MgPlan, TrustCredential } from '../types';
+import { capitalize } from '../../../utils/format';
 
 const CREDENTIAL: Record<CredentialState, { tone: Tone; label: string; title: string }> = {
   verified: { tone: 'manifold', label: 'Verified', title: 'Every trust-credential check passed' },
@@ -37,7 +38,7 @@ export function FreshnessPill({ freshness, issuedAt }: { freshness: AdFreshness 
     <span className="inline-flex items-center gap-1.5">
       <StatusPill tone={tone} title={title} icon={freshness === 'fresh' ? 'clock' : undefined}>{label}</StatusPill>
       {issuedAt !== undefined && (
-        <span className="text-xs text-ink-3" title={formatUtcDateTime(issuedAt * 1000)}>{formatRelative(issuedAt * 1000)}</span>
+        <span className="text-xs text-ink-3" title={formatUtcDateTime(issuedAt * 1000)}>{capitalize(formatRelative(issuedAt * 1000))}</span>
       )}
     </span>
   );

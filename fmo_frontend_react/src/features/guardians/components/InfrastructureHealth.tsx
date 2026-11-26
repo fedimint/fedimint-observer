@@ -13,6 +13,7 @@ import { RESILIENCE, resilienceDetail } from '../lib/resilienceText';
 import { attention } from '../lib/attention';
 import { OperationalWarnings } from './OperationalWarnings';
 import { seatBindingsExplanation, seatBindingsSummary } from '../lib/seatBindings';
+import { capitalize } from '../../../utils/format';
 
 interface InfrastructureHealthProps {
   federationId: string;
@@ -87,7 +88,7 @@ export function InfrastructureHealth({ federationId, observability, onSelectGuar
             />
             <Kpi
               label="Last answer"
-              value={<span title={formatUtcDateTime(lastAnswer)}>{formatRelative(lastAnswer)}</span>}
+              value={<span title={formatUtcDateTime(lastAnswer)}>{capitalize(formatRelative(lastAnswer))}</span>}
               detail={lastAnswer ? formatUtcDateTime(lastAnswer) : 'No answer in the last hour'}
               help="The latest status request any guardian answered. The observer polls every guardian once a minute."
             />

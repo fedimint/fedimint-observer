@@ -31,10 +31,10 @@ export function GatewayTableRow({ gateway, strip, now, dataWindow, windowMinutes
           type="button"
           onClick={(event) => { event.stopPropagation(); onSelect(); }}
           className="block max-w-full truncate text-left font-semibold text-ink hover:underline"
-          title={gateway.lightning_alias || 'Unnamed Gateway'}
+          title={gateway.lightning_alias || 'Unnamed gateway'}
           aria-label={`Details for ${gateway.lightning_alias || 'unnamed gateway'}`}
         >
-          {gateway.lightning_alias || 'Unnamed Gateway'}
+          {gateway.lightning_alias || 'Unnamed gateway'}
         </button>
         <div className="text-xs font-mono text-ink-2 mt-1" title={gateway.gateway_id}>
           {shortMiddle(gateway.gateway_id, 8, 8, '...')}
@@ -48,7 +48,7 @@ export function GatewayTableRow({ gateway, strip, now, dataWindow, windowMinutes
           <span className={`rounded-md px-2.5 py-1 text-xs font-medium ${statusClasses(gateway.status)}`}>
             {gateway.status}
           </span>
-          <span className="whitespace-nowrap text-xs text-ink-3">{gateway.lastSeenDate ? `seen ${formatRelative(gateway.lastSeenDate, now)}` : 'never seen'}</span>
+          <span className="whitespace-nowrap text-xs text-ink-3">{gateway.lastSeenDate ? `Seen ${formatRelative(gateway.lastSeenDate, now)}` : 'Never seen'}</span>
         </div>
         <div className="mt-2 flex items-baseline justify-between gap-3">
           <span className="font-semibold text-ink">{gateway.coveragePct > 0 ? `${gateway.estimatedUptimePct.toFixed(1)}% uptime` : 'No samples'}</span>

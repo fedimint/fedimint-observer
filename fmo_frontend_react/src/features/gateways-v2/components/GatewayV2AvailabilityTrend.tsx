@@ -9,7 +9,7 @@ export function GatewayV2AvailabilityTrend({ trend, timeWindow }: { trend: Gatew
     <section className={`${card} mb-4 p-4 sm:p-5`}>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-base font-semibold">Gateway availability trend ({timeWindow.toUpperCase()})</h2>
-        <span className={`text-xs ${muted}`}>Historical API checks · gaps mean no observation · all times in UTC</span>
+        <span className={`text-xs ${muted}`}>Historical API checks · Gaps mean no observation · All times in UTC</span>
       </div>
       {hasSamples ? (
         <GatewayAvailabilityChart buckets={trend} />

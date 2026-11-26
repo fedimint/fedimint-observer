@@ -66,14 +66,14 @@ export function ActivityTab({ activity }: { activity: FederationActivity }) {
       <Panel>
         <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 mb-4 sm:mb-6">
           <div className="flex-1 min-w-0">
-            <h3 className="tabular text-2xl sm:text-3xl font-medium text-ink wrap-break-word">
+            <p className="meta-label">
+              {error ? 'Unavailable: activity could not be loaded' : chartMetric === 'volume' ? 'Total volume' : 'Total transactions'}
+            </p>
+            <h3 className="tabular mt-1 text-xl font-medium text-ink wrap-break-word">
               {error || (loading && histogram.length === 0) ? '—' : chartMetric === 'volume'
                 ? totals.volume.toFixed(6) + ' BTC'
-                : totals.count.toString()}
+                : totals.count.toLocaleString('en-US')}
             </h3>
-            <p className="text-xs sm:text-sm text-ink-3">
-              {error ? 'Unavailable: activity could not be loaded' : chartMetric === 'volume' ? 'Total Volume' : 'Total Transactions'}
-            </p>
           </div>
           <ActivityControls activity={activity} />
         </div>

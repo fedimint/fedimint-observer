@@ -6,6 +6,7 @@ import { formatRelative, formatUtcDateTime } from '../../../utils/time';
 import type { GuardianRow, GuardianState } from '../lib/guardianModel';
 import { formatMs } from '../lib/format';
 import { GuardianIdentity, GuardianStatePill, UptimeValue } from './GuardianBits';
+import { capitalize } from '../../../utils/format';
 
 type SortKey = 'id' | 'state' | 'uptime7d' | 'uptime30d' | 'latency' | 'version' | 'lastSeen' | 'session';
 
@@ -36,7 +37,7 @@ function sortRows(rows: readonly GuardianRow[], key: SortKey, ascending: boolean
 
 function LastSeen({ row }: { row: GuardianRow }) {
   if (!row.lastSeen) return <span className="text-ink-3">Not in 90 days</span>;
-  const text = row.lastSeenApproximate ? `≈ ${formatRelative(row.lastSeen)}` : formatRelative(row.lastSeen);
+  const text = row.lastSeenApproximate ? `≈ ${capitalize(formatRelative(row.lastSeen))}` : capitalize(formatRelative(row.lastSeen));
   return <span title={`${row.lastSeenApproximate ? 'Within the hour starting ' : ''}${formatUtcDateTime(row.lastSeen)}`}>{text}</span>;
 }
 

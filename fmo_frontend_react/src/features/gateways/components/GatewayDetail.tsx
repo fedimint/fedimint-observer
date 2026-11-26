@@ -6,6 +6,7 @@ import { formatMsatsCompact, shortMiddle } from '../../../utils/format';
 import { formatUtcDateTime } from '../../../utils/time';
 import { formatCompactDuration, formatRelative, statusClasses, type GatewayWithStatus, type UptimeStripStatus } from '../lib/gatewayRows';
 import { UptimeStrip } from './UptimeStrip';
+import { capitalize } from '../../../utils/format';
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -38,7 +39,7 @@ interface GatewayDetailProps {
 
 /** Everything the observer knows about one Lightning v1 gateway, in the side panel */
 export function GatewayDetail({ gateway, strip, now, dataWindow, windowMinutes, metricsWindow, onClose }: GatewayDetailProps) {
-  const name = gateway.lightning_alias || 'Unnamed Gateway';
+  const name = gateway.lightning_alias || 'Unnamed gateway';
   return (
     <Drawer
       title={name}
@@ -75,7 +76,7 @@ export function GatewayDetail({ gateway, strip, now, dataWindow, windowMinutes, 
           <Field label="Unknown">{formatCompactDuration(gateway.estimatedUnknownMinutes)}</Field>
           <Field label="First seen">{formatUtcDateTime(gateway.firstSeenDate)}</Field>
           <Field label="Last seen">
-            {gateway.lastSeenDate ? `${formatRelative(gateway.lastSeenDate, now)} · ${formatUtcDateTime(gateway.lastSeenDate)}` : 'Never'}
+            {gateway.lastSeenDate ? `${capitalize(formatRelative(gateway.lastSeenDate, now))} · ${formatUtcDateTime(gateway.lastSeenDate)}` : 'Never'}
           </Field>
         </dl>
       </Section>

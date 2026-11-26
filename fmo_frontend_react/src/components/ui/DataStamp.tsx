@@ -33,7 +33,7 @@ export function DataStamp({ kind, at, staleAfterSeconds = 300, scope, now = Date
       </span>
       {scope && <span>· {scope}</span>}
       <span>
-        · {time ? (kind === 'historical' ? `to ${exact}` : `as of ${formatRelative(time, now)}`) : 'no observation yet'}
+        · {time ? (kind === 'historical' ? `Until ${exact}` : `Updated ${formatRelative(time, now)}`) : 'No observation yet'}
       </span>
     </span>
   );
