@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { BUTTON_VARIANT } from '../../../components/ui/controls';
+import { Icon } from '../../../components/ui/Icon';
 import type { WalletV2OnChainTransaction } from '../../../types/api';
 import { asBitcoin, shortMiddle } from '../../../utils/format';
 import { explorerTxUrl } from '../../../utils/network';
@@ -38,7 +39,7 @@ export function OperationCard({ transaction, network }: { transaction: WalletV2O
           <span className={`block text-sm font-semibold ${deposit ? 'text-ok-ink' : 'text-serious-ink'}`}>{deposit ? '+' : '−'}{asBitcoin(difference, 8)}</span>
           <span className={`mt-0.5 hidden text-xs sm:block ${muted}`}>Balance {asBitcoin(transaction.output_msat, 8)}</span>
         </span>
-        <svg aria-hidden="true" className="h-4 w-4 shrink-0 text-ink-3 transition group-open:rotate-180" viewBox="0 0 20 20" fill="none"><path d="m5 7.5 5 5 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        <Icon name="chevronDown" className="size-4 text-ink-3 transition group-open:rotate-180" />
       </summary>
       <div className="border-t border-line p-3">
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
