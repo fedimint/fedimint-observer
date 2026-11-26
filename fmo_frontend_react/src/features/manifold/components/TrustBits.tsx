@@ -1,6 +1,7 @@
 import { Icon } from '../../../components/ui/Icon';
 import { KeyChip } from '../../../components/ui/KeyChip';
 import { StatusPill, type Tone } from '../../../components/ui/Status';
+import { InfoTip } from '../../../components/ui/Tooltip';
 import { formatRelative, formatUtcDateTime } from '../../../utils/time';
 import { formatPriceMsats } from '../lib/directory';
 import type { AdFreshness, CredentialCheck, CredentialState, MgPlan, TrustCredential } from '../types';
@@ -60,43 +61,58 @@ export function PlanList({ plans }: { plans: readonly MgPlan[] }) {
   );
 }
 
-const OUTCOMES = [
-  { key: 'failed', title: 'Failed', icon: 'xCircle', tone: 'text-crit' },
-  { key: 'skipped', title: 'Not run', icon: 'minusCircle', tone: 'text-ink-3' },
-  { key: 'passed', title: 'Passed', icon: 'checkCircle', tone: 'text-ok' },
-] as const;
+type Outcome = 'failed' | 'skipped' | 'passed';
 
-/** The checks grouped by outcome, then by reason, so each reason is stated once */
-function CheckGroups({ checks }: { checks: readonly CredentialCheck[] }) {
+const OUTCOMES: Record<Outcome, { title: string; icon: 'xCircle' | 'minusCircle' | 'checkCircle'; tone: string; text: string }> = {
+  failed: { title: 'failed', icon: 'xCircle', tone: 'text-crit', text: 'text-ink' },
+  skipped: { title: 'not run', icon: 'minusCircle', tone: 'text-ink-3', text: 'text-ink-2' },
+  passed: { title: 'passed', icon: 'checkCircle', tone: 'text-ok', text: 'text-ink-2' },
+};
+
+const ORDER: readonly Outcome[] = ['failed', 'skipped', 'passed'];
+
+const outcomeOf = (check: CredentialCheck): Outcome => (check.passed === true ? 'passed' : check.passed === false ? 'failed' : 'skipped');
+
+/** Problems first; a reason shared by several checks of one outcome is stated once */
+function CheckList({ checks, requiredLevel }: { checks: readonly CredentialCheck[]; requiredLevel: number }) {
+  const counts = ORDER.map((outcome) => [outcome, checks.filter((check) => outcomeOf(check) === outcome).length] as const);
+  const passed = counts.find(([outcome]) => outcome === 'passed')![1];
+  const summary = passed === checks.length
+    ? `${passed} of ${checks.length} passed`
+    : counts.filter(([, count]) => count > 0).map(([outcome, count]) => `${count} ${OUTCOMES[outcome].title}`).join(' · ');
   return (
-    <div className="space-y-3 border-t border-line pt-3">
-      {OUTCOMES.map((outcome) => {
-        const group = checks.filter((check) => (check.passed === true ? 'passed' : check.passed === false ? 'failed' : 'skipped') === outcome.key);
-        if (group.length === 0) return null;
-        const byReason = new Map<string, CredentialCheck[]>();
-        for (const check of group) byReason.set(check.detail ?? '', [...(byReason.get(check.detail ?? '') ?? []), check]);
-        return (
-          <div key={outcome.key}>
-            <h4 className="mb-2 flex items-center gap-1.5 text-xs font-medium text-ink-3">
-              <Icon name={outcome.icon} className={`size-3.5 ${outcome.tone}`} />
-              {outcome.title} · {group.length}
-            </h4>
-            <div className="space-y-2 pl-5">
-              {[...byReason].map(([reason, items]) => (
-                <div key={reason || 'none'}>
-                  <ul className="space-y-0.5 text-xs" aria-label={`${outcome.title} checks`}>
-                    {items.map((check) => (
-                      <li key={check.id} className={outcome.key === 'skipped' ? 'text-ink-2' : 'text-ink'}>{check.label}</li>
-                    ))}
-                  </ul>
-                  {reason && <p className="mt-0.5 text-xs text-ink-3">{reason}</p>}
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
+    <section aria-label="Credential checks" className="border-t border-line pt-3">
+      <div className="mb-2 flex items-baseline justify-between gap-2 text-xs">
+        <h3 className="flex items-center gap-1 font-medium text-ink">
+          Checks
+          <InfoTip label="What Verified requires" align="start">
+            A valid Nostr signature alone does not establish trust. "Verified" needs a pinned trust-root issuer, both PeerBadge proofs, no revocation at any issuer location and a trust level of at least {requiredLevel}; until every check has run and passed, the credential stays unverified.
+          </InfoTip>
+        </h3>
+        <span className="text-ink-3 tabular">{summary}</span>
+      </div>
+      <ul className="space-y-1.5 text-xs">
+        {ORDER.flatMap((outcome) => {
+          const byReason = new Map<string, CredentialCheck[]>();
+          for (const check of checks.filter((item) => outcomeOf(item) === outcome)) byReason.set(check.detail ?? '', [...(byReason.get(check.detail ?? '') ?? []), check]);
+          const group = [...byReason.values()].flat();
+          return group.map((check, index) => {
+            const style = OUTCOMES[outcome];
+            const showReason = check.detail && group[index + 1]?.detail !== check.detail;
+            return (
+              <li key={check.id} className="flex items-start gap-2">
+                <Icon name={style.icon} className={`mt-px size-3.5 ${style.tone}`} />
+                <span className="sr-only">{style.title}:</span>
+                <span className="min-w-0">
+                  <span className={style.text}>{check.label}</span>
+                  {showReason && <span className="mt-0.5 block text-ink-3">{check.detail}</span>}
+                </span>
+              </li>
+            );
+          });
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -126,10 +142,7 @@ export function TrustEvidence({ credential }: { credential: TrustCredential }) {
           <dd className="font-mono text-ink-2">{credential.schema ?? '—'}</dd>
         </dl>
       )}
-      {credential.checks.length > 0 && <CheckGroups checks={credential.checks} />}
-      <p className="text-xs leading-relaxed text-ink-3">
-        A valid Nostr signature alone does not establish trust. "Verified" needs a pinned trust-root issuer, both PeerBadge proofs, no revocation at any issuer location and a trust level of at least {credential.required_trust_level}; until every check has run and passed, the credential stays unverified.
-      </p>
+      {credential.checks.length > 0 && <CheckList checks={credential.checks} requiredLevel={credential.required_trust_level} />}
     </div>
   );
 }
