@@ -1045,15 +1045,28 @@ impl FederationObserver {
     }
 
     pub async fn list_federations(&self) -> anyhow::Result<Vec<db::Federation>> {
-        query(&self.connection().await?, "SELECT * FROM federations", &[]).await
+        self.federations(None).await
     }
 
-    async fn meta_observations(&self) -> anyhow::Result<HashMap<FederationId, MetaFields>> {
+    async fn federations(&self, only: Option<FederationId>) -> anyhow::Result<Vec<db::Federation>> {
+        query(
+            &self.connection().await?,
+            "SELECT * FROM federations WHERE $1::bytea IS NULL OR federation_id = $1",
+            &[&federation_filter(only)],
+        )
+        .await
+    }
+
+    async fn meta_observations(
+        &self,
+        only: Option<FederationId>,
+    ) -> anyhow::Result<HashMap<FederationId, MetaFields>> {
         self.connection()
             .await?
             .query(
-                "SELECT federation_id, data FROM federation_observations WHERE kind = 'meta'",
-                &[],
+                "SELECT federation_id, data FROM federation_observations
+                 WHERE kind = 'meta' AND ($1::bytea IS NULL OR federation_id = $1)",
+                &[&federation_filter(only)],
             )
             .await?
             .into_iter()
@@ -1070,8 +1083,8 @@ impl FederationObserver {
         self.federation_summaries(None).await
     }
 
-    /// One federation's summary with its config outline, from the configs
-    /// the summaries already load
+    /// One federation's summary with its config outline, reading only that
+    /// federation's rows
     pub(crate) async fn federation_summary(
         &self,
         federation_id: FederationId,
@@ -1083,45 +1096,37 @@ impl FederationObserver {
             .find(|summary| summary.id == federation_id))
     }
 
+    /// Every federation's summary, or with `only` just that federation's,
+    /// which then also carries its config outline
     async fn federation_summaries(
         &self,
-        outline_of: Option<FederationId>,
+        only: Option<FederationId>,
     ) -> anyhow::Result<Vec<FederationSummary>> {
-        let federations = self.list_federations().await?;
-        let federation_health = self.get_guardian_health_summary().await?;
-        let assets = self.federation_assets().await?;
-        let snapshots = self.asset_snapshots().await?;
-        let mut activity = self.federations_activity(7).await?;
-        let mut ratings = self.federation_ratings().await?;
+        let (
+            federations,
+            federation_health,
+            assets,
+            snapshots,
+            mut activity,
+            mut ratings,
+            mut metas,
+        ) = tokio::try_join!(
+            self.federations(only),
+            self.get_guardian_health_summary(only),
+            self.federation_assets(only),
+            self.asset_snapshots(only),
+            self.federations_activity(7, only),
+            self.federation_ratings(only),
+            self.meta_observations(only),
+        )?;
 
-        let mut metas = self.meta_observations().await?;
-        federations
+        let mut summaries = federations
             .into_iter()
             .map(|federation| {
                 let meta = metas.remove(&federation.federation_id);
-                let name = meta
-                    .as_ref()
-                    .and_then(|meta| meta.get_as::<String>("federation_name"))
-                    .or_else(|| {
-                        federation
-                            .config
-                            .global
-                            .meta
-                            .get("federation_name")
-                            .cloned()
-                    });
+                let name = meta_field(meta.as_ref(), &federation, "federation_name");
                 let expiry_timestamp = expiry_timestamp(meta.as_ref(), &federation);
-                let successor = meta
-                    .as_ref()
-                    .and_then(|meta| meta.get_as::<String>("federation_successor"))
-                    .or_else(|| {
-                        federation
-                            .config
-                            .global
-                            .meta
-                            .get("federation_successor")
-                            .cloned()
-                    });
+                let successor = meta_field(meta.as_ref(), &federation, "federation_successor");
                 (federation, name, expiry_timestamp, successor)
             })
             .map(|(federation, name, expiry_timestamp, successor)| {
@@ -1139,7 +1144,7 @@ impl FederationObserver {
                     None,
                 )
                 .to_string();
-                let (module_kinds, network) = if outline_of == Some(federation_id) {
+                let (module_kinds, network) = if only.is_some() {
                     self.summary_outline(&federation)
                 } else {
                     (None, None)
@@ -1174,18 +1179,41 @@ impl FederationObserver {
                     network,
                 })
             })
-            .collect::<anyhow::Result<Vec<FederationSummary>>>()
-            .map(|mut summaries| {
-                let names: HashMap<FederationId, String> = summaries
-                    .iter()
-                    .filter_map(|summary| Some((summary.id, summary.name.clone()?)))
-                    .collect();
-                for summary in &mut summaries {
-                    summary.successor_name =
-                        summary.successor_id.and_then(|id| names.get(&id).cloned());
+            .collect::<anyhow::Result<Vec<FederationSummary>>>()?;
+
+        let mut names: HashMap<FederationId, String> = summaries
+            .iter()
+            .filter_map(|summary| Some((summary.id, summary.name.clone()?)))
+            .collect();
+        if only.is_some() {
+            let successors: Vec<FederationId> = summaries
+                .iter()
+                .filter_map(|summary| summary.successor_id)
+                .collect();
+            for successor_id in successors {
+                if let Some(name) = self.federation_name(successor_id).await? {
+                    names.insert(successor_id, name);
                 }
-                summaries
-            })
+            }
+        }
+        for summary in &mut summaries {
+            summary.successor_name = summary.successor_id.and_then(|id| names.get(&id).cloned());
+        }
+        Ok(summaries)
+    }
+
+    async fn federation_name(&self, federation_id: FederationId) -> anyhow::Result<Option<String>> {
+        let (federations, mut metas) = tokio::try_join!(
+            self.federations(Some(federation_id)),
+            self.meta_observations(Some(federation_id)),
+        )?;
+        Ok(federations.first().and_then(|federation| {
+            meta_field(
+                metas.remove(&federation_id).as_ref(),
+                federation,
+                "federation_name",
+            )
+        }))
     }
 
     fn summary_outline(
@@ -1238,6 +1266,7 @@ impl FederationObserver {
     async fn federations_activity(
         &self,
         days: u32,
+        only: Option<FederationId>,
     ) -> anyhow::Result<HashMap<FederationId, Vec<FederationActivity>>> {
         #[derive(Debug, FromRow)]
         struct ActivityRow {
@@ -1252,8 +1281,11 @@ impl FederationObserver {
             &self.connection().await?,
             "SELECT federation_id, day, tx_count, volume_msat
              FROM federation_daily_activity
-             WHERE day > $1",
-            &[&(today - chrono::Duration::days(days.into()))],
+             WHERE day > $1 AND ($2::bytea IS NULL OR federation_id = $2)",
+            &[
+                &(today - chrono::Duration::days(days.into())),
+                &federation_filter(only),
+            ],
         )
         .await?;
 
@@ -1283,12 +1315,16 @@ impl FederationObserver {
     }
 
     /// What each federation's wallet holds: all peg-ins minus all peg-outs
-    async fn federation_assets(&self) -> anyhow::Result<HashMap<FederationId, Amount>> {
+    async fn federation_assets(
+        &self,
+        only: Option<FederationId>,
+    ) -> anyhow::Result<HashMap<FederationId, Amount>> {
         self.connection()
             .await?
             .query(
-                "SELECT federation_id, wallet_in_msat - wallet_out_msat FROM federation_totals",
-                &[],
+                "SELECT federation_id, wallet_in_msat - wallet_out_msat FROM federation_totals
+                 WHERE $1::bytea IS NULL OR federation_id = $1",
+                &[&federation_filter(only)],
             )
             .await?
             .iter()
@@ -1821,14 +1857,31 @@ impl FederationObserver {
         Ok(Some(amount))
     }
 
-    async fn asset_snapshots(&self) -> anyhow::Result<HashMap<(FederationId, String), Amount>> {
-        self.connection().await?.query(
-            "SELECT federation_id, kind, data FROM federation_observations WHERE kind LIKE 'assets:%' AND observed_at >= now() - INTERVAL '5 minutes'", &[]
-        ).await?.into_iter().map(|row| {
-            let value: serde_json::Value = row.get(2);
-            Ok(((federation_id_from_db(&row.get::<_, Vec<u8>>(0))?, row.get(1)),
-                Amount::from_msats(value.as_u64().context("Invalid asset snapshot")?)))
-        }).collect()
+    async fn asset_snapshots(
+        &self,
+        only: Option<FederationId>,
+    ) -> anyhow::Result<HashMap<(FederationId, String), Amount>> {
+        self.connection()
+            .await?
+            .query(
+                "SELECT federation_id, kind, data FROM federation_observations
+             WHERE kind LIKE 'assets:%' AND observed_at >= now() - INTERVAL '5 minutes'
+               AND ($1::bytea IS NULL OR federation_id = $1)",
+                &[&federation_filter(only)],
+            )
+            .await?
+            .into_iter()
+            .map(|row| {
+                let value: serde_json::Value = row.get(2);
+                Ok((
+                    (
+                        federation_id_from_db(&row.get::<_, Vec<u8>>(0))?,
+                        row.get(1),
+                    ),
+                    Amount::from_msats(value.as_u64().context("Invalid asset snapshot")?),
+                ))
+            })
+            .collect()
     }
 
     fn combined_assets(
@@ -1862,7 +1915,7 @@ impl FederationObserver {
     }
 
     pub async fn totals(&self) -> anyhow::Result<FedimintTotals> {
-        let health = self.get_guardian_health_summary().await?;
+        let health = self.get_guardian_health_summary(None).await?;
         self.totals_with(&health, self.active_assets(&health), ACTIVE_ASSETS_DEADLINE)
             .await
     }
@@ -1924,9 +1977,9 @@ impl FederationObserver {
         health: &BTreeMap<FederationId, FederationHealth>,
     ) -> anyhow::Result<list::ActiveAssets> {
         let federations = self.list_federations().await?;
-        let legacy = self.federation_assets().await?;
-        let snapshots = self.asset_snapshots().await?;
-        let mut metas = self.meta_observations().await?;
+        let legacy = self.federation_assets(None).await?;
+        let snapshots = self.asset_snapshots(None).await?;
+        let mut metas = self.meta_observations(None).await?;
         let now = list::unix_now();
         let rows = federations
             .iter()
@@ -2301,6 +2354,17 @@ fn expiry_timestamp(meta: Option<&MetaFields>, federation: &Federation) -> Optio
                 .get("federation_expiry_timestamp")
                 .and_then(|value| value.parse().ok())
         })
+}
+
+/// Latest observed meta field, else the config's
+fn meta_field(meta: Option<&MetaFields>, federation: &Federation, key: &str) -> Option<String> {
+    meta.and_then(|meta| meta.get_as::<String>(key))
+        .or_else(|| federation.config.global.meta.get(key).cloned())
+}
+
+/// A federation filter as a query parameter; NULL keeps every federation
+pub(crate) fn federation_filter(only: Option<FederationId>) -> Option<Vec<u8>> {
+    only.map(|federation_id| federation_id.consensus_encode_to_vec())
 }
 
 pub(crate) fn federation_id_from_db(bytes: &[u8]) -> anyhow::Result<FederationId> {

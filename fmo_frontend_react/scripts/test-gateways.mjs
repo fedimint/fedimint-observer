@@ -7,6 +7,7 @@ import {
   toGatewayRow,
 } from '../src/features/gateways/lib/gatewayRows.ts';
 import { liveLookupGate, mergeGatewayData, selectGatewayData } from '../src/features/gateways/lib/gatewaySelection.ts';
+import { gatewayViewFrom } from '../src/features/gateways/lib/gatewayView.ts';
 
 const NOW = Date.parse('2026-01-15T12:00:00Z');
 const minutesAgo = (minutes) => new Date(NOW - minutes * 60_000);
@@ -135,4 +136,15 @@ test('an offline summary is rechecked before the live registry lookup is skipped
   assert.equal(liveLookupGate('offline', { health: 'online', loading: false }), 'run');
   assert.equal(liveLookupGate('offline', { health: 'offline', loading: false }), 'offline');
   assert.equal(liveLookupGate('offline', { health: undefined, loading: false }), 'offline');
+});
+
+test('the gateway view comes from the address bar, then the stored window, then the defaults', () => {
+  const view = (search, stored = null) => gatewayViewFrom(new URLSearchParams(search), stored);
+  assert.deepEqual(view(''), { timeWindow: '7d', filter: 'all', sort: 'freshness', direction: 'desc' });
+  assert.equal(view('', '30d').timeWindow, '30d');
+  assert.equal(view('?window=24h', '30d').timeWindow, '24h');
+  assert.deepEqual(view('?window=1y&status=bogus&sort=uptime&dir=up', '90d'), {
+    timeWindow: '90d', filter: 'all', sort: 'uptime', direction: 'desc',
+  });
+  assert.deepEqual(view('?status=offline&sort=status&dir=asc'), { timeWindow: '7d', filter: 'offline', sort: 'status', direction: 'asc' });
 });

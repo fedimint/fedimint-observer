@@ -17,7 +17,7 @@ window.addEventListener('vite:preloadError', (event) => {
   }
 })
 
-prefetchFederationRoute(window.location.pathname)
+prefetchFederationRoute(window.location.pathname, window.location.search)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

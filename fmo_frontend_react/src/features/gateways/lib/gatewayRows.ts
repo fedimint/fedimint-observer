@@ -1,16 +1,20 @@
 import type { GatewayInfo, GatewayStatus, GatewayUptimeBucket, GatewayWindow } from '../../../types/api';
 
+export {
+  DEFAULT_WINDOW,
+  GATEWAY_FILTERS,
+  GATEWAY_SORTS,
+  GATEWAY_WINDOWS,
+  SORT_DIRECTIONS,
+  defaultDirection,
+  parseOption,
+  type GatewayFilter,
+  type GatewaySort,
+  type SortDirection,
+} from './gatewayView.ts';
+
 export type UptimeStripStatus = 'online' | 'degraded' | 'offline' | 'unknown';
 
-export const GATEWAY_WINDOWS: readonly GatewayWindow[] = ['24h', '7d', '30d', '90d'];
-export const GATEWAY_FILTERS = ['all', 'online', 'degraded', 'offline', 'unknown', 'retired'] as const;
-export type GatewayFilter = (typeof GATEWAY_FILTERS)[number];
-export const GATEWAY_SORTS = ['freshness', 'status', 'uptime', 'activity'] as const;
-export type GatewaySort = (typeof GATEWAY_SORTS)[number];
-export const SORT_DIRECTIONS = ['asc', 'desc'] as const;
-export type SortDirection = (typeof SORT_DIRECTIONS)[number];
-
-export const DEFAULT_WINDOW: GatewayWindow = '7d';
 export const WINDOW_MINUTES: Record<GatewayWindow, number> = {
   '24h': 24 * 60,
   '7d': 7 * 24 * 60,
@@ -156,16 +160,6 @@ export function uptimeTooltipPosition(index: number): string {
         : index > 19
           ? 'right-0 sm:right-auto sm:left-1/2 sm:-translate-x-1/2'
           : 'left-1/2 -translate-x-1/2';
-}
-
-/** One of `options` matching `value` regardless of case, or null */
-export function parseOption<T extends string>(options: readonly T[], value: string | null): T | null {
-  const lower = value?.toLowerCase();
-  return options.find((option) => option === lower) ?? null;
-}
-
-export function defaultDirection(sort: GatewaySort): SortDirection {
-  return sort === 'status' ? 'asc' : 'desc';
 }
 
 /** A gateway with the figures the page shows, as of `now` */

@@ -1,21 +1,15 @@
 import { useCallback, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { GatewayWindow } from '../../../types/api';
-import { readStorage, writeStorage } from '../../../utils/storage';
+import { writeStorage } from '../../../utils/storage';
 import {
-  DEFAULT_WINDOW,
-  GATEWAY_FILTERS,
-  GATEWAY_SORTS,
-  GATEWAY_WINDOWS,
-  SORT_DIRECTIONS,
+  WINDOW_STORAGE_KEY,
   defaultDirection,
-  parseOption,
+  gatewayViewFrom,
+  storedGatewayWindow,
   type GatewayFilter,
   type GatewaySort,
-  type SortDirection,
-} from '../lib/gatewayRows';
-
-const WINDOW_STORAGE_KEY = 'gatewayWindow';
+} from '../lib/gatewayView';
 
 type ViewChanges = Partial<Record<'window' | 'status' | 'sort' | 'dir', string | null>>;
 
@@ -23,11 +17,8 @@ type ViewChanges = Partial<Record<'window' | 'status' | 'sort' | 'dir', string |
 export function useGatewayView() {
   const [searchParams, setSearchParams] = useSearchParams();
   // Reads the stored window once when the URL omits it.
-  const [storedWindow] = useState(() => parseOption(GATEWAY_WINDOWS, readStorage(WINDOW_STORAGE_KEY)));
-  const timeWindow = parseOption(GATEWAY_WINDOWS, searchParams.get('window')) ?? storedWindow ?? DEFAULT_WINDOW;
-  const filter: GatewayFilter = parseOption(GATEWAY_FILTERS, searchParams.get('status')) ?? 'all';
-  const sort: GatewaySort = parseOption(GATEWAY_SORTS, searchParams.get('sort')) ?? 'freshness';
-  const direction: SortDirection = parseOption(SORT_DIRECTIONS, searchParams.get('dir')) ?? defaultDirection(sort);
+  const [storedWindow] = useState(storedGatewayWindow);
+  const { timeWindow, filter, sort, direction } = gatewayViewFrom(searchParams, storedWindow);
 
   // Builds from the address bar so rapid updates cannot overwrite each other.
   const updateView = useCallback((changes: ViewChanges) => {

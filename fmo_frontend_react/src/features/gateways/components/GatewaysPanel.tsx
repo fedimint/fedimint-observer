@@ -10,6 +10,7 @@ import { useGatewayView } from '../hooks/useGatewayView';
 import { useGatewayOverview } from '../hooks/useGatewayOverview';
 import { useLiveGatewayLookup } from '../hooks/useLiveGatewayLookup';
 import { liveLookupGate, selectGatewayData } from '../lib/gatewaySelection';
+import { GATEWAY_LIST } from '../lib/gatewayView';
 import { api } from '../../../services/api';
 import { useApiResource } from '../../../hooks/useApiResource';
 import {
@@ -29,7 +30,7 @@ export function GatewaysPanel({ id, federation }: { id: string; federation: Fede
   const view = useGatewayView();
   const { timeWindow } = view;
   const [gatewaySearch, setGatewaySearch] = useState('');
-  const [pageSize, setPageSize] = usePageSize('gateways-v1', 25);
+  const [pageSize, setPageSize] = usePageSize(GATEWAY_LIST);
   const search = useDebouncedValue(gatewaySearch);
   const overview = useGatewayOverview(id, timeWindow, {
     search,

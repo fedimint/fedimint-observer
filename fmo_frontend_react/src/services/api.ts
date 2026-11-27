@@ -25,6 +25,8 @@ import type {
 } from '../types/api';
 import type { SignedNostrEvent } from '../types/nostr';
 import { request, requestNoContent, requestShared, share } from './http';
+import { GATEWAY_LIST, gatewayViewFrom, storedGatewayWindow } from '../features/gateways/lib/gatewayView';
+import { storedPageSize } from '../utils/pageSize';
 
 const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
 
@@ -41,12 +43,19 @@ const urls = {
   liveHealth: (id: string) => path`/federations/${id}/health/live`,
   healthHistory: (id: string, window: GuardianHealthWindow) => `${path`/federations/${id}/health/history`}?${new URLSearchParams({ window })}`,
   seatBindings: (id: string) => path`/federations/${id}/manifold/seat-bindings`,
+  gatewayOverview: (id: string, window: GatewayWindow, list: GatewayListQuery) => {
+    const query = new URLSearchParams({ window, status: list.status, sort: list.sort, dir: list.dir, limit: String(list.limit) });
+    if (list.include) query.set('include', list.include);
+    if (list.search.trim()) query.set('search', list.search.trim());
+    if (list.after) query.set('after', list.after);
+    return `${path`/federations/${id}/gateways/overview`}?${query}`;
+  },
 };
 
 const GUARDIAN_TABS = new Set(['', 'guardians', 'reliability']);
 
 /** Starts the requests a federation page makes first, before its code has loaded */
-export function prefetchFederationRoute(pathname: string) {
+export function prefetchFederationRoute(pathname: string, search = '') {
   const match = /^\/federations\/([^/]+)\/?(.*)$/.exec(pathname);
   if (!match) return;
   const id = decodeURIComponent(match[1]);
@@ -55,6 +64,12 @@ export function prefetchFederationRoute(pathname: string) {
   if (GUARDIAN_TABS.has(tab)) {
     prefetched.push(urls.health(id), urls.liveHealth(id), urls.seatBindings(id));
     api.getGuardianHealthHistory(id, '7d').catch(() => undefined);
+  }
+  if (tab === 'gateways') {
+    const view = gatewayViewFrom(new URLSearchParams(search), storedGatewayWindow());
+    prefetched.push(urls.gatewayOverview(id, view.timeWindow, {
+      search: '', status: view.filter, sort: view.sort, dir: view.direction, limit: storedPageSize(GATEWAY_LIST),
+    }));
   }
   for (const url of prefetched) share(url, PREFETCH_SHARE_MS).catch(() => undefined);
 }
@@ -149,13 +164,8 @@ export const api = {
   },
 
 
-  getFederationGatewayOverview(id: string, window: GatewayWindow, list: GatewayListQuery, signal?: AbortSignal) {
-    const query = new URLSearchParams({ window, status: list.status, sort: list.sort, dir: list.dir, limit: String(list.limit) });
-    if (list.include) query.set('include', list.include);
-    if (list.search.trim()) query.set('search', list.search.trim());
-    if (list.after) query.set('after', list.after);
-    return request<GatewayOverview>(`${path`/federations/${id}/gateways/overview`}?${query}`, { signal });
-  },
+  getFederationGatewayOverview: (id: string, window: GatewayWindow, list: GatewayListQuery, signal?: AbortSignal) =>
+    request<GatewayOverview>(urls.gatewayOverview(id, window, list), { signal }),
 
   getFederationConfigByInvite: (inviteCode: string, signal?: AbortSignal) =>
     request<ClientConfig>(path`/config/${inviteCode}`, { signal }),

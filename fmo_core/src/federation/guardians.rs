@@ -23,7 +23,7 @@ use postgres_from_row::FromRow;
 use tracing::info;
 
 use crate::federation::endpoints::verify_and_merge_announcements;
-use crate::federation::observer::FederationObserver;
+use crate::federation::observer::{federation_filter, FederationObserver};
 use crate::util::{module_instance_id, query};
 
 mod history;
@@ -404,8 +404,10 @@ impl FederationObserver {
             .collect())
     }
 
+    /// Health of every federation, or of just `only`
     pub async fn get_guardian_health_summary(
         &self,
+        only: Option<FederationId>,
     ) -> anyhow::Result<BTreeMap<FederationId, FederationHealth>> {
         #[derive(FromRow)]
         struct FederationHealthRow {
@@ -426,6 +428,7 @@ impl FederationObserver {
                          ORDER BY h.guardian_id
                          LIMIT 1) AS guardian_id
                  FROM federations f
+                 WHERE $1::bytea IS NULL OR f.federation_id = $1
                UNION ALL
                  SELECT g.federation_id,
                         (SELECT h.guardian_id
@@ -456,7 +459,7 @@ impl FederationObserver {
              ) answered ON true
              WHERE g.guardian_id IS NOT NULL
              GROUP BY g.federation_id",
-            &[],
+            &[&federation_filter(only)],
         )
         .await?;
 
