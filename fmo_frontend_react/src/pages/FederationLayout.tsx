@@ -1,4 +1,4 @@
-import { Suspense, useMemo } from 'react';
+import { Suspense, useEffect, useMemo } from 'react';
 import { Outlet, useLocation, useParams } from 'react-router-dom';
 import { ErrorBoundary, ReloadMessage } from '../components/ui/ErrorBoundary';
 import { ErrorState, Skeleton } from '../components/ui/States';
@@ -8,9 +8,13 @@ import { useFederationDetails } from '../features/federation/hooks/useFederation
 import type { FederationContext } from '../features/federation/hooks/useFederation';
 import { errorMessage } from '../utils/errors';
 import { ApiError } from '../services/http';
+import { loadFederationTab } from './federationPages';
+import { federationOutline } from '../utils/config';
 
 /** Sections that render from the summary alone; every other one waits for the config */
 const SUMMARY_ONLY_SECTIONS = new Set(['activity', 'gateways']);
+/** Sections that render from the summary when it carries the module kinds */
+const MODULE_KIND_SECTIONS = new Set(['gateways/v2', 'assets', 'utxos']);
 
 function SectionLoading() {
   return (
@@ -32,10 +36,13 @@ export function FederationLayout() {
   const { pathname } = useLocation();
   const { summary, config } = useFederationDetails(id);
   const section = pathname.split('/').slice(3).filter(Boolean).join('/').toLowerCase();
-  const needsConfig = !SUMMARY_ONLY_SECTIONS.has(section);
+  const needsConfig = !SUMMARY_ONLY_SECTIONS.has(section)
+    && !(MODULE_KIND_SECTIONS.has(section) && summary.data?.federation.module_kinds);
+
+  useEffect(() => loadFederationTab(section), [section]);
 
   const context = useMemo<FederationContext | null>(
-    () => (summary.data ? { id, ...summary.data, config: config.data } : null),
+    () => (summary.data ? { id, ...summary.data, config: config.data, ...federationOutline(summary.data.federation, config.data) } : null),
     [id, summary.data, config.data],
   );
 
@@ -47,7 +54,7 @@ export function FederationLayout() {
 
   return (
     <div>
-      <FederationHeader id={id} federation={context.federation} config={context.config} />
+      <FederationHeader id={id} federation={context.federation} moduleKinds={context.moduleKinds} network={context.network} />
       {config.failed && (
         <div className="mb-4">
           <ErrorState title="Could not load the federation config" message={errorMessage(config.error)} onRetry={config.reload} />

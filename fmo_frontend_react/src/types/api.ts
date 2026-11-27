@@ -112,7 +112,7 @@ export interface FederationSummary {
 
   successor_name?: string | null;
   /** Set by the single-federation summary only, so its header needs no config */
-  module_kinds?: string[];
+  module_kinds?: Record<string, string>;
   network?: string;
 }
 

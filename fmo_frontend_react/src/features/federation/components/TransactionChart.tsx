@@ -1,24 +1,9 @@
 import { useMemo } from 'react';
-import ReactEChartsCore from 'echarts-for-react/lib/core';
-import * as echarts from 'echarts/core';
-import { LineChart } from 'echarts/charts';
-import {
-  GridComponent,
-  TooltipComponent,
-  DataZoomComponent,
-} from 'echarts/components';
-import { CanvasRenderer } from 'echarts/renderers';
+import { Chart } from '../../../components/ui/Chart';
 import { useTheme } from '../../../hooks/useTheme';
 import { chartTheme } from '../../reliability/lib/chartTheme';
 import type { HistogramEntry } from '../../../utils/histogram';
 
-echarts.use([
-  LineChart,
-  GridComponent,
-  TooltipComponent,
-  DataZoomComponent,
-  CanvasRenderer,
-]);
 
 
 interface TransactionChartProps {
@@ -183,25 +168,16 @@ export function TransactionChart({
   }), [baseChartOption, zoomStart, zoomEnd, colors]);
 
   return (
-    <ReactEChartsCore
-      echarts={echarts}
+    <Chart
       option={chartOption}
+      height={400}
+      features={['dataZoom']}
       notMerge={false}
-      lazyUpdate={true}
-      style={{ height: '400px', width: '100%' }}
-      opts={{ renderer: 'canvas' }}
       onEvents={{
-        dataZoom: (params: { batch?: { start: number; end: number }[]; start?: number; end?: number }) => {
-          if (params.batch && params.batch[0]) {
-            const start = params.batch[0].start;
-            const end = params.batch[0].end;
-            if (start !== undefined && end !== undefined) {
-              onZoomChange(start, end);
-            }
-          } else if (params.start !== undefined && params.end !== undefined) {
-            onZoomChange(params.start, params.end);
-          }
-        }
+        dataZoom: (params: { batch?: { start?: number; end?: number }[]; start?: number; end?: number }) => {
+          const range = params.batch?.[0] ?? params;
+          if (range.start !== undefined && range.end !== undefined) onZoomChange(range.start, range.end);
+        },
       }}
     />
   );

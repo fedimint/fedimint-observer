@@ -42,9 +42,53 @@ interface RequestOptions {
   timeoutMs?: number;
 }
 
-/** Sends a request and returns its parsed JSON body */
+const shared = new Map<string, { startedAt: number; ttlMs: number; body: Promise<unknown> }>();
+
+/** Sends a request and returns its parsed JSON body, reusing a shared GET of the same URL that is still fresh */
 export function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
-  return send(url, options, true) as Promise<T>;
+  const reused = (options.method ?? 'GET') === 'GET' && options.json === undefined ? sharedAnswer(url) : undefined;
+  return (reused ? untilAborted(reused, options.signal) : send(url, options, true)) as Promise<T>;
+}
+
+/** Starts a GET whose answer requests for the same URL reuse for `ttlMs`; a failed one is forgotten at once */
+export function share(url: string, ttlMs: number): Promise<unknown> {
+  const body = send(url, {}, true);
+  shared.set(url, { startedAt: Date.now(), ttlMs, body });
+  body.catch(() => {
+    if (shared.get(url)?.body === body) shared.delete(url);
+  });
+  return body;
+}
+
+/** A GET answered from the shared one when it is fresh, otherwise shared for `ttlMs` */
+export function requestShared<T>(url: string, ttlMs: number, signal?: AbortSignal): Promise<T> {
+  return untilAborted(sharedAnswer(url) ?? share(url, ttlMs), signal) as Promise<T>;
+}
+
+function sharedAnswer(url: string): Promise<unknown> | undefined {
+  const entry = shared.get(url);
+  if (entry && Date.now() - entry.startedAt < entry.ttlMs) return entry.body;
+  shared.delete(url);
+  return undefined;
+}
+
+function untilAborted<T>(body: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return body;
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener('abort', aborted, { once: true });
+    body.then(
+      (value) => {
+        signal.removeEventListener('abort', aborted);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', aborted);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** Sends a request whose answer has no body the caller needs */

@@ -1,5 +1,5 @@
 // Combines recorded gateway history with the federation's live registry.
-import type { GatewayInfo, GatewayWindow } from '../../../types/api';
+import type { FederationHealth, GatewayInfo, GatewayWindow } from '../../../types/api';
 
 export type GatewayWarningLevel = 'info' | 'warning' | 'error';
 
@@ -36,6 +36,15 @@ interface GatewaySources {
   dataWindow: GatewayWindow;
 
   listNarrowed?: boolean;
+}
+
+export type LiveLookupGate = 'run' | 'wait' | 'offline';
+
+/** Whether the live registry lookup runs, waits, or is skipped: an offline health from the page's summary may be old, so it is rechecked first */
+export function liveLookupGate(cached: FederationHealth, recheck: { health: FederationHealth | undefined; loading: boolean }): LiveLookupGate {
+  if (cached !== 'offline') return 'run';
+  if (recheck.health) return recheck.health === 'offline' ? 'offline' : 'run';
+  return recheck.loading ? 'wait' : 'offline';
 }
 
 /** Refreshes live details while preserving recorded timing and activity. */

@@ -1,12 +1,12 @@
 import { useSearchParams } from 'react-router-dom';
-import type { ClientConfig, GatewayWindow } from '../../../types/api';
+import type { GatewayWindow } from '../../../types/api';
 import { muted } from '../../../components/ui/styles';
 import { GATEWAY_V2_WINDOWS } from '../lib/gatewaysV2';
 import { GatewayV2Modules } from './GatewayV2Modules';
 import { GatewayV2WindowPicker } from './GatewayV2WindowPicker';
 
 /** The federation's Lightning v2 gateways, shown in a tab of the federation page */
-export function GatewaysV2Panel({ id, modules }: { id: string; modules: ClientConfig['modules'] }) {
+export function GatewaysV2Panel({ id, instances }: { id: string; instances: number[] }) {
   const [params, setParams] = useSearchParams();
   const selectedWindow = params.get('window');
   const timeWindow = GATEWAY_V2_WINDOWS.includes(selectedWindow as GatewayWindow) ? selectedWindow as GatewayWindow : '7d';
@@ -15,7 +15,6 @@ export function GatewaysV2Panel({ id, modules }: { id: string; modules: ClientCo
     next.set('window', window);
     return next;
   }, { replace: true });
-  const instances = Object.entries(modules ?? {}).filter(([, module]) => module.kind === 'lnv2').map(([instance]) => Number(instance));
 
   return (
     <div className="text-ink">

@@ -9,7 +9,9 @@ import { GatewayDetail } from './GatewayDetail';
 import { useGatewayView } from '../hooks/useGatewayView';
 import { useGatewayOverview } from '../hooks/useGatewayOverview';
 import { useLiveGatewayLookup } from '../hooks/useLiveGatewayLookup';
-import { selectGatewayData } from '../lib/gatewaySelection';
+import { liveLookupGate, selectGatewayData } from '../lib/gatewaySelection';
+import { api } from '../../../services/api';
+import { useApiResource } from '../../../hooks/useApiResource';
 import {
   buildUptimeStrip,
   WINDOW_MINUTES,
@@ -37,12 +39,13 @@ export function GatewaysPanel({ id, federation }: { id: string; federation: Fede
     limit: pageSize,
   });
   const { observed, trend, now } = overview;
-  const federationOffline = federation.health === 'offline';
-  const live = useLiveGatewayLookup({
-    invite: federation.invite,
-    offline: federationOffline,
-    federationPending: false,
+  const recheck = useApiResource((signal) => api.getFederationSummary(id, signal), [id], {
+    enabled: federation.health === 'offline',
+    label: 'federation health',
   });
+  const gate = liveLookupGate(federation.health, { health: recheck.data?.health, loading: recheck.loading });
+  const federationOffline = gate === 'offline';
+  const live = useLiveGatewayLookup(federation.invite, gate);
 
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedId = searchParams.get('gateway');
@@ -75,6 +78,7 @@ export function GatewaysPanel({ id, federation }: { id: string; federation: Fede
     if (retryBusy) return;
     focusAfterRetry.current = true;
     overview.reload();
+    if (recheck.failed) recheck.reload();
     live.retryIfFailed();
   };
 

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { api } from '../../../services/api';
 import { useApiResource } from '../../../hooks/useApiResource';
 import { startAutoRefresh } from '../../../utils/autoRefresh';
-import type { GuardianHealthHistory, GuardianHealthWindow } from '../../../types/api';
+import type { GuardianHealthWindow } from '../../../types/api';
 import type { FederationConfig } from '../../../utils/config';
 import { useGuardianHealth } from '../../federation/hooks/useGuardianHealth';
 import {
@@ -17,22 +17,6 @@ import {
 
 const LIVE_REFRESH_MS = 60_000;
 
-const HISTORY_CACHE_MS = 60_000;
-
-const historyCache = new Map<string, { at: number; data: Promise<GuardianHealthHistory> }>();
-
-function cachedHistory(id: string, window: GuardianHealthWindow, signal: AbortSignal): Promise<GuardianHealthHistory> {
-  const key = `${id}:${window}`;
-  const cached = historyCache.get(key);
-  if (cached && Date.now() - cached.at < HISTORY_CACHE_MS) return cached.data;
-  const data = api.getGuardianHealthHistory(id, window);
-  historyCache.set(key, { at: Date.now(), data });
-  data.catch(() => historyCache.delete(key));
-  return new Promise((resolve, reject) => {
-    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-    data.then(resolve, reject);
-  });
-}
 
 /** Each guardian's latest polls and peer views, refreshed every minute while the page is visible */
 export function useLiveHealth(id: string) {
@@ -48,7 +32,7 @@ export function useLiveHealth(id: string) {
 
 /** Starts loading a window before it is chosen, e.g. while its button is hovered, so choosing it is instant */
 export function prefetchGuardianHistory(id: string, window: GuardianHealthWindow) {
-  cachedHistory(id, window, new AbortController().signal).catch((error: unknown) =>
+  api.getGuardianHealthHistory(id, window).catch((error: unknown) =>
     console.warn('Could not prefetch guardian health history:', error),
   );
 }
@@ -56,7 +40,7 @@ export function prefetchGuardianHistory(id: string, window: GuardianHealthWindow
 /** Availability buckets for one window; switching windows shows a fresh load, not the old window's grid */
 
 export function useGuardianHistory(id: string, window: GuardianHealthWindow, enabled = true) {
-  const resource = useApiResource((signal) => cachedHistory(id, window, signal), [id, window], {
+  const resource = useApiResource((signal) => api.getGuardianHealthHistory(id, window, signal), [id, window], {
     enabled,
     resetOnError: true,
     label: 'guardian health history',

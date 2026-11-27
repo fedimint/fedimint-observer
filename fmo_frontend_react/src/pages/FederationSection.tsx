@@ -7,7 +7,7 @@ import { UtxoInventory } from '../features/federation/components/utxos/UtxoInven
 import { useFederation } from '../features/federation/hooks/useFederation';
 import { useFederationActivity } from '../features/federation/hooks/useFederationActivity';
 import { useFederationUtxos } from '../features/federation/hooks/useFederationUtxos';
-import type { FederationConfig } from '../utils/config';
+import { instancesOf } from '../utils/config';
 
 export type FederationSectionName = 'activity' | 'utxos' | 'assets' | 'config';
 
@@ -15,29 +15,30 @@ function ActivitySection({ id }: { id: string }) {
   return <ActivityTab activity={useFederationActivity(id)} />;
 }
 
-function UtxoSection({ id, config }: { id: string; config: FederationConfig | null }) {
-  const hasWalletV1 = config?.modules.includes('wallet') ?? false;
+function UtxoSection({ id, moduleKinds, network }: { id: string; moduleKinds: Record<string, string> | undefined; network: string }) {
+  const hasWalletV1 = instancesOf(moduleKinds ?? {}, 'wallet').length > 0;
   const utxos = useFederationUtxos(id, hasWalletV1);
   const overview = useApiResource((signal) => api.getFederationOverview(id, signal), [id], {
     enabled: hasWalletV1,
     label: 'federation overview',
   });
-  if (config && !hasWalletV1) return <p className="text-sm text-ink-3">This federation has no on-chain wallet module.</p>;
-  return <UtxoInventory utxos={utxos} overview={overview.data} overviewFailed={overview.failed} network={config?.network} />;
+  if (moduleKinds && !hasWalletV1) return <p className="text-sm text-ink-3">This federation has no on-chain wallet module.</p>;
+  return <UtxoInventory utxos={utxos} overview={overview.data} overviewFailed={overview.failed} network={network} />;
 }
 
 /** One of a federation's data sections (activity, UTXOs, wallet assets, config), under its header tabs */
 export function FederationSection({ section }: { section: FederationSectionName }) {
-  const { id, config } = useFederation();
+  const { id, config, moduleKinds, network } = useFederation();
+  const wallets = instancesOf(moduleKinds ?? {}, 'walletv2');
 
   return (
     <div>
       {section === 'activity' && <ActivitySection id={id} />}
-      {section === 'utxos' && <UtxoSection id={id} config={config} />}
+      {section === 'utxos' && <UtxoSection id={id} moduleKinds={moduleKinds} network={network} />}
       {section === 'assets' && (
-        config && !config.modules.includes('walletv2')
+        moduleKinds && wallets.length === 0
           ? <p className="text-sm text-ink-3">This federation has no Wallet v2 module.</p>
-          : <WalletV2Panel id={id} modules={config?.raw.modules ?? {}} active />
+          : <WalletV2Panel id={id} instances={wallets} network={network} active />
       )}
       {section === 'config' && <ConfigTab config={config?.raw} />}
     </div>

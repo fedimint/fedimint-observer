@@ -6,7 +6,7 @@ import {
   getGatewayStatus,
   toGatewayRow,
 } from '../src/features/gateways/lib/gatewayRows.ts';
-import { mergeGatewayData, selectGatewayData } from '../src/features/gateways/lib/gatewaySelection.ts';
+import { liveLookupGate, mergeGatewayData, selectGatewayData } from '../src/features/gateways/lib/gatewaySelection.ts';
 
 const NOW = Date.parse('2026-01-15T12:00:00Z');
 const minutesAgo = (minutes) => new Date(NOW - minutes * 60_000);
@@ -126,4 +126,13 @@ test('with nothing to show, a network failure asks to check the connection', () 
   const selection = selectGatewayData(sources({ observedError: { window: '7d', message: 'Failed to fetch', network: true } }));
   assert.equal(selection.warning.level, 'error');
   assert.equal(selection.warning.message, 'Check your connection and try again.');
+});
+
+test('an offline summary is rechecked before the live registry lookup is skipped', () => {
+  assert.equal(liveLookupGate('online', { health: undefined, loading: true }), 'run');
+  assert.equal(liveLookupGate('degraded', { health: undefined, loading: true }), 'run');
+  assert.equal(liveLookupGate('offline', { health: undefined, loading: true }), 'wait');
+  assert.equal(liveLookupGate('offline', { health: 'online', loading: false }), 'run');
+  assert.equal(liveLookupGate('offline', { health: 'offline', loading: false }), 'offline');
+  assert.equal(liveLookupGate('offline', { health: undefined, loading: false }), 'offline');
 });

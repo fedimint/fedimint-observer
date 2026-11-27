@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Context;
 use axum::extract::{Path, Query, State};
@@ -14,7 +14,6 @@ use fmo_api_types::{
 use serde::Deserialize;
 use tracing::warn;
 
-use super::observed_config_json;
 use crate::error::ClientError;
 use crate::pagination::{key_text, keyset_page, Page};
 use crate::AppState;
@@ -303,42 +302,43 @@ pub(crate) async fn get_federation_summary(
     Path(federation_id): Path<FederationId>,
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<FederationSummary>> {
-    let observer = &state.federation_observer;
-    let mut summary = observer
-        .list_federation_summaries()
+    let summary = state
+        .federation_observer
+        .federation_summary(federation_id)
         .await?
-        .into_iter()
-        .find(|federation| federation.id == federation_id)
         .ok_or_else(|| anyhow::Error::from(ClientError::not_found("Federation not found")))?;
-    let config = observed_config_json(observer, federation_id)
-        .await
-        .and_then(|config| Ok(serde_json::to_value(config)?));
-    match config {
-        Ok(config) => {
-            let (module_kinds, network) = config_outline(&config);
-            summary.module_kinds = Some(module_kinds);
-            summary.network = network;
-        }
-        Err(err) => {
-            warn!(%federation_id, ?err, "Could not outline the config of a summarized federation")
-        }
-    }
     Ok(Json(summary))
 }
 
-/// Module kinds and wallet network, read as the frontend's parseConfig does
-pub(crate) fn config_outline(config: &serde_json::Value) -> (Vec<String>, Option<String>) {
-    let modules: Vec<&serde_json::Value> = config["modules"]
+/// Module kind per instance id and wallet network, as parseConfig reads them
+pub(crate) fn config_outline(
+    config: &serde_json::Value,
+) -> (BTreeMap<u16, String>, Option<String>) {
+    let modules: BTreeMap<u16, &serde_json::Value> = config["modules"]
         .as_object()
-        .map(|modules| modules.values().collect())
+        .map(|modules| {
+            modules
+                .iter()
+                .filter_map(|(instance, module)| match instance.parse() {
+                    Ok(instance) => Some((instance, module)),
+                    Err(err) => {
+                        warn!(%instance, ?err, "Skipping a config module with a non-numeric instance id");
+                        None
+                    }
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let module_kinds = modules
         .iter()
-        .map(|module| module["kind"].as_str().unwrap_or("unknown").to_owned())
+        .map(|(instance, module)| {
+            let kind = module["kind"].as_str().unwrap_or("unknown");
+            (*instance, kind.to_owned())
+        })
         .collect();
     let network = ["wallet", "walletv2"]
         .into_iter()
-        .find_map(|kind| modules.iter().find(|module| module["kind"] == kind))
+        .find_map(|kind| modules.values().find(|module| module["kind"] == kind))
         .and_then(|module| module["network"].as_str())
         .map(str::to_owned);
     (module_kinds, network)

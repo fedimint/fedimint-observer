@@ -1,5 +1,5 @@
 import { api } from '../../../services/api';
-import { parseConfig } from '../../../utils/config';
+import { configSource, parseConfig } from '../../../utils/config';
 import { useApiResource } from '../../../hooks/useApiResource';
 
 
@@ -17,12 +17,12 @@ export function useFederationDetails(id: string) {
     { label: 'stored federation config' },
   );
   const invite = summary.data?.federation.invite;
-  const useInvite = storedConfig.failed && Boolean(invite);
+  const source = configSource(storedConfig.failed, invite);
   const inviteConfig = useApiResource(
     (signal) => api.getFederationConfigByInvite(invite ?? '', signal).then(parseConfig),
     [invite],
-    { enabled: useInvite, label: 'federation config by invite' },
+    { enabled: source === 'invite', label: 'federation config by invite' },
   );
-  const config = useInvite ? inviteConfig : storedConfig;
+  const config = { ...(source === 'invite' ? inviteConfig : storedConfig), reload: storedConfig.reload };
   return { summary, config };
 }

@@ -1067,6 +1067,26 @@ impl FederationObserver {
     }
 
     pub async fn list_federation_summaries(&self) -> anyhow::Result<Vec<FederationSummary>> {
+        self.federation_summaries(None).await
+    }
+
+    /// One federation's summary with its config outline, from the configs
+    /// the summaries already load
+    pub(crate) async fn federation_summary(
+        &self,
+        federation_id: FederationId,
+    ) -> anyhow::Result<Option<FederationSummary>> {
+        Ok(self
+            .federation_summaries(Some(federation_id))
+            .await?
+            .into_iter()
+            .find(|summary| summary.id == federation_id))
+    }
+
+    async fn federation_summaries(
+        &self,
+        outline_of: Option<FederationId>,
+    ) -> anyhow::Result<Vec<FederationSummary>> {
         let federations = self.list_federations().await?;
         let federation_health = self.get_guardian_health_summary().await?;
         let assets = self.federation_assets().await?;
@@ -1119,6 +1139,11 @@ impl FederationObserver {
                     None,
                 )
                 .to_string();
+                let (module_kinds, network) = if outline_of == Some(federation_id) {
+                    self.summary_outline(&federation)
+                } else {
+                    (None, None)
+                };
                 Ok(FederationSummary {
                     id: federation_id,
                     name,
@@ -1145,8 +1170,8 @@ impl FederationObserver {
                         .filter(|successor_id| *successor_id != federation_id),
                     successor,
                     successor_name: None,
-                    module_kinds: None,
-                    network: None,
+                    module_kinds,
+                    network,
                 })
             })
             .collect::<anyhow::Result<Vec<FederationSummary>>>()
@@ -1161,6 +1186,28 @@ impl FederationObserver {
                 }
                 summaries
             })
+    }
+
+    fn summary_outline(
+        &self,
+        federation: &Federation,
+    ) -> (Option<BTreeMap<u16, String>>, Option<String>) {
+        let config = crate::util::config_to_json(federation.config.clone(), &self.modules)
+            .and_then(|config| Ok(serde_json::to_value(config)?));
+        match config {
+            Ok(config) => {
+                let (module_kinds, network) = list::config_outline(&config);
+                (Some(module_kinds), network)
+            }
+            Err(err) => {
+                warn!(
+                    federation_id = %federation.federation_id,
+                    ?err,
+                    "Could not outline the config of a summarized federation"
+                );
+                (None, None)
+            }
+        }
     }
 
     /// Adds first and last observed session timestamps to a bounded set of

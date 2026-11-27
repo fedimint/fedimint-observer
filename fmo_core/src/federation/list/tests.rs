@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use fedimint_core::config::FederationId;
 use fedimint_core::Amount;
 use fmo_api_types::{
@@ -339,9 +341,16 @@ fn config_outline_reads_module_kinds_and_the_wallet_network() {
         "2": {"kind": "wallet", "network": "bitcoin"},
         "3": {"kind": "meta"},
     }});
-    let (mut kinds, network) = config_outline(&config);
-    kinds.sort();
-    assert_eq!(kinds, ["ln", "meta", "mint", "wallet"]);
+    let (kinds, network) = config_outline(&config);
+    assert_eq!(
+        kinds,
+        BTreeMap::from([
+            (0, "ln".to_owned()),
+            (1, "mint".to_owned()),
+            (2, "wallet".to_owned()),
+            (3, "meta".to_owned()),
+        ])
+    );
     assert_eq!(network.as_deref(), Some("bitcoin"));
 }
 
@@ -356,10 +365,17 @@ fn config_outline_takes_the_walletv2_network_without_a_wallet_module() {
 
 #[test]
 fn config_outline_has_no_network_without_a_wallet_module() {
-    let config = serde_json::json!({"modules": {"0": {"kind": "mint"}, "1": {}}});
+    let config =
+        serde_json::json!({"modules": {"0": {"kind": "mint"}, "1": {}, "x": {"kind": "ln"}}});
     assert_eq!(
         config_outline(&config),
-        (vec!["mint".to_owned(), "unknown".to_owned()], None)
+        (
+            BTreeMap::from([(0, "mint".to_owned()), (1, "unknown".to_owned())]),
+            None
+        )
     );
-    assert_eq!(config_outline(&serde_json::json!({})), (Vec::new(), None));
+    assert_eq!(
+        config_outline(&serde_json::json!({})),
+        (BTreeMap::new(), None)
+    );
 }

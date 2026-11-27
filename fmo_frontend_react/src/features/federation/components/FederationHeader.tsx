@@ -1,7 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import type { FederationSummary } from '../../../types/api';
-import type { FederationConfig } from '../../../utils/config';
 import { PageHeader } from '../../../components/ui/PageHeader';
 import { StatusPill, type Tone } from '../../../components/ui/Status';
 import { KeyChip } from '../../../components/ui/KeyChip';
@@ -17,7 +16,8 @@ const HEALTH: Record<FederationSummary['health'], { tone: Tone; label: string; t
 interface FederationHeaderProps {
   id: string;
   federation: FederationSummary;
-  config: FederationConfig | null;
+  moduleKinds: Record<string, string> | undefined;
+  network: string;
 }
 
 /** Where the selected tab sits in the tab row, for the underline that slides to it */
@@ -50,11 +50,10 @@ function useTabIndicator(tabCount: number) {
 }
 
 /** The federation's name, health and section tabs, kept while its sections change */
-export function FederationHeader({ id, federation, config }: FederationHeaderProps) {
+export function FederationHeader({ id, federation, moduleKinds, network }: FederationHeaderProps) {
   const base = `/federations/${encodeURIComponent(id)}`;
   const health = HEALTH[federation.health];
-  const modules = config?.modules ?? federation.module_kinds ?? [];
-  const network = config ? config.network : federation.network ?? 'unknown';
+  const modules = Object.values(moduleKinds ?? {});
   const tabs = [
     { to: base, label: 'Overview', end: true },
     { to: `${base}/guardians`, label: 'Guardians' },

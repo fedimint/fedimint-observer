@@ -1,11 +1,9 @@
-import { lazy, Suspense } from 'react';
 import { Alert } from '../../../components/ui/Alert';
 import { Button } from '../../../components/ui/Button';
 import { Panel } from '../../../components/ui/Panel';
 import type { FederationActivity } from '../hooks/useFederationActivity';
 import { ActivityControls } from './ActivityControls';
-
-const TransactionChart = lazy(() => import('./TransactionChart').then((module) => ({ default: module.TransactionChart })));
+import { TransactionChart } from './TransactionChart';
 
 const chartSpace = 'flex h-[400px] items-center justify-center text-center text-xs text-ink-3 sm:text-sm';
 
@@ -34,11 +32,6 @@ function ActivityChart({ activity }: { activity: FederationActivity }) {
         <span className="block text-xs text-ink-3">Days in UTC</span>
       </h4>
       <div className="w-full px-4 sm:px-0">
-        <Suspense fallback={
-          <div role="status" className={chartSpace}>
-            Loading chart…
-          </div>
-        }>
           <TransactionChart
             data={histogram}
             chartMetric={chartMetric}
@@ -48,7 +41,6 @@ function ActivityChart({ activity }: { activity: FederationActivity }) {
             zoomEnd={zoom.end}
             onZoomChange={(start, end) => setZoom({ start, end })}
           />
-        </Suspense>
       </div>
     </div>
   );
