@@ -55,7 +55,7 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
             <p className={`mt-1 max-w-xl text-sm ${muted}`}>Deposits and withdrawals are reflected in the federation’s on-chain wallet.</p>
           </div>
           <div className="min-w-0 sm:text-right"><p className={`text-xs ${muted}`}>Current wallet balance</p><p className="mt-1 break-all tabular text-xl font-medium text-ink">{tile(balance == null ? 'Awaiting balance' : asBitcoin(balance, 8))}</p>
-            {content === 'ready' && latest && <p className={`mt-2 text-xs font-medium ${latest.output_msat >= latest.input_msat ? 'text-ok-ink' : 'text-serious-ink'}`}>Latest operation #{latest.index}: {latest.output_msat >= latest.input_msat ? '+' : '−'}{asBitcoin(Math.abs(latest.output_msat - latest.input_msat), 8)}</p>}
+            <p className={`mt-2 min-h-4 text-xs font-medium ${latest && latest.output_msat >= latest.input_msat ? 'text-ok-ink' : 'text-serious-ink'}`}>{content === 'ready' && latest && `Latest operation #${latest.index}: ${latest.output_msat >= latest.input_msat ? '+' : '−'}${asBitcoin(Math.abs(latest.output_msat - latest.input_msat), 8)}`}</p>
           </div>
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3 border-t border-line pt-4 sm:grid-cols-3">
@@ -70,8 +70,8 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
         {(['chart', 'operations'] as const).map((view) => <button key={view} type="button" aria-pressed={mobileView === view} onClick={() => setMobileView(view)} className={`flex-1 ${button} border ${mobileView === view ? TOGGLE_ON : TOGGLE_OFF}`}>{view === 'chart' ? 'Chart' : 'Operations'}</button>)}
       </div>
 
-      {(observedAt || stale || balanceStale) && <p role="status" className={`text-xs ${muted}`}>
-        {observedAt ? `History observed ${formatUtcDateTime(observedAt)}.` : 'Collecting wallet history.'}
+      {(content === 'loading' || observedAt || stale || balanceStale) && <p role="status" className={`min-h-4 text-xs ${muted}`}>
+        {content === 'loading' ? '' : observedAt ? `History observed ${formatUtcDateTime(observedAt)}.` : 'Collecting wallet history.'}
         {stale && observedAt ? ' History collection is delayed; showing the last observation.' : ''}
         {balanceStale ? ` Balance collection is delayed${balanceObservedAt ? `; last observed ${formatUtcDateTime(balanceObservedAt)}` : ''}.` : ''}
       </p>}
