@@ -22,7 +22,7 @@ use tokio::time::interval;
 use tracing::{debug, info, warn};
 
 use crate::error::ClientError;
-use crate::federation::observer::{federation_id_from_db, FederationObserver};
+use crate::federation::observer::{federation_filter, federation_id_from_db, FederationObserver};
 use crate::util::query;
 use crate::AppState;
 
@@ -206,13 +206,15 @@ impl FederationObserver {
         .collect()
     }
 
-    /// Number and average of star votes of every federation that has votes.
+    /// Number and average of star votes of every federation that has votes,
+    /// or of just `only`
     pub async fn federation_ratings(
         &self,
+        only: Option<FederationId>,
     ) -> anyhow::Result<HashMap<FederationId, FederationRating>> {
         self.connection()
             .await?
-            .query(FEDERATION_RATINGS_SQL, &[])
+            .query(FEDERATION_RATINGS_SQL, &[&federation_filter(only)])
             .await?
             .iter()
             .map(|row| {
@@ -263,6 +265,7 @@ const FEDERATION_RATINGS_SQL: &str = "
     FROM (
         SELECT DISTINCT ON (federation_id, event ->> 'pubkey') federation_id, star_vote
         FROM nostr_votes
+        WHERE $1::bytea IS NULL OR federation_id = $1
         ORDER BY federation_id, event ->> 'pubkey', (event ->> 'created_at')::bigint DESC, event_id
     ) current_votes
     GROUP BY federation_id

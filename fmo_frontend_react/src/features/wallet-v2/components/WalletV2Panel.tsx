@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Select } from '../../../components/ui/Select';
 import { api } from '../../../services/api';
-import type { ClientConfig, WalletV2History } from '../../../types/api';
+import type { WalletV2History } from '../../../types/api';
 import { WalletV2Assets } from './WalletV2Assets';
 import { CursorPager } from '../../../components/ui/CursorPager';
 import { useCursorPages } from '../../../hooks/useCursorPages';
@@ -12,16 +12,15 @@ const REFRESH_MS = 60_000;
 const nextBefore = (history: WalletV2History) => history.next_before;
 
 /** `active` is false while another tab of the page is shown: the panel stays mounted with its data, but does not poll. */
-export function WalletV2Panel({ id, modules, active }: { id: string; modules: NonNullable<ClientConfig['modules']>; active: boolean }) {
-  const instances = Object.entries(modules).filter(([, config]) => config.kind === 'walletv2');
-  const [selected, setSelected] = useState(() => Number(instances[0]?.[0]));
+export function WalletV2Panel({ id, instances, network, active }: { id: string; instances: number[]; network: string; active: boolean }) {
+  const [selected, setSelected] = useState(() => Number(instances[0]));
   return <div className="space-y-4">
     {instances.length > 1 && <label className="inline-flex items-center gap-2 text-xs text-ink-3">Wallet module
       <Select value={selected} onChange={(event) => setSelected(Number(event.target.value))}>
-        {instances.map(([instance]) => <option key={instance} value={instance}>Wallet #{instance}</option>)}
+        {instances.map((instance) => <option key={instance} value={instance}>Wallet #{instance}</option>)}
       </Select>
     </label>}
-    <WalletInstance key={`${id}:${selected}`} id={id} instance={selected} network={modules[String(selected)]?.network} active={active} />
+    <WalletInstance key={`${id}:${selected}`} id={id} instance={selected} network={network} active={active} />
   </div>;
 }
 

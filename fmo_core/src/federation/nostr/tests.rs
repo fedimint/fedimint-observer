@@ -79,17 +79,26 @@ async fn edited_ratings_count_once() -> anyhow::Result<()> {
                  ('\\x07', '\\xbb', 2, '{{\"pubkey\": \"alice\", \"created_at\": 50}}');"
         ))
         .await?;
-    let ratings = client
-        .query(super::FEDERATION_RATINGS_SQL, &[])
-        .await?
-        .iter()
-        .map(|row| {
-            (
-                row.get::<_, Vec<u8>>(0),
-                (row.get::<_, i64>(1), row.get::<_, Option<f64>>(2)),
-            )
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let by_federation = |rows: Vec<tokio_postgres::Row>| {
+        rows.iter()
+            .map(|row| {
+                (
+                    row.get::<_, Vec<u8>>(0),
+                    (row.get::<_, i64>(1), row.get::<_, Option<f64>>(2)),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let ratings = by_federation(
+        client
+            .query(super::FEDERATION_RATINGS_SQL, &[&None::<Vec<u8>>])
+            .await?,
+    );
+    let only_bb = by_federation(
+        client
+            .query(super::FEDERATION_RATINGS_SQL, &[&Some(vec![0xbb_u8])])
+            .await?,
+    );
     client
         .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
         .await?;
@@ -98,5 +107,9 @@ async fn edited_ratings_count_once() -> anyhow::Result<()> {
 
     assert_eq!(ratings[&vec![0xaa]], (2, Some(4.5)));
     assert_eq!(ratings[&vec![0xbb]], (1, Some(2.0)));
+    assert_eq!(
+        only_bb,
+        std::collections::BTreeMap::from([(vec![0xbb], (1, Some(2.0)))])
+    );
     Ok(())
 }

@@ -30,7 +30,7 @@ export function UtxoToolbar({ utxos }: { utxos: FederationUtxos }) {
       </div>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <SearchInput value={utxos.search} onChange={utxos.setSearch} label="Search UTXOs" placeholder="Search outpoint, txid, address or BTC amount" className="w-full sm:w-80" />
-        <div className="whitespace-nowrap text-xs text-ink-3">
+        <div className="min-h-4 whitespace-nowrap text-xs text-ink-3">
           {!data
             ? ''
             : totalRows === 0

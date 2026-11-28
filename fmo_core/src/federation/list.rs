@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Context;
 use axum::extract::{Path, Query, State};
@@ -302,14 +302,46 @@ pub(crate) async fn get_federation_summary(
     Path(federation_id): Path<FederationId>,
     State(state): State<AppState>,
 ) -> crate::error::Result<Json<FederationSummary>> {
-    state
+    let summary = state
         .federation_observer
-        .list_federation_summaries()
+        .federation_summary(federation_id)
         .await?
+        .ok_or_else(|| anyhow::Error::from(ClientError::not_found("Federation not found")))?;
+    Ok(Json(summary))
+}
+
+/// Module kind per instance id and wallet network, as parseConfig reads them
+pub(crate) fn config_outline(
+    config: &serde_json::Value,
+) -> (BTreeMap<u16, String>, Option<String>) {
+    let modules: BTreeMap<u16, &serde_json::Value> = config["modules"]
+        .as_object()
+        .map(|modules| {
+            modules
+                .iter()
+                .filter_map(|(instance, module)| match instance.parse() {
+                    Ok(instance) => Some((instance, module)),
+                    Err(err) => {
+                        warn!(%instance, ?err, "Skipping a config module with a non-numeric instance id");
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let module_kinds = modules
+        .iter()
+        .map(|(instance, module)| {
+            let kind = module["kind"].as_str().unwrap_or("unknown");
+            (*instance, kind.to_owned())
+        })
+        .collect();
+    let network = ["wallet", "walletv2"]
         .into_iter()
-        .find(|federation| federation.id == federation_id)
-        .map(Json)
-        .ok_or_else(|| anyhow::Error::from(ClientError::not_found("Federation not found")).into())
+        .find_map(|kind| modules.values().find(|module| module["kind"] == kind))
+        .and_then(|module| module["network"].as_str())
+        .map(str::to_owned);
+    (module_kinds, network)
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]

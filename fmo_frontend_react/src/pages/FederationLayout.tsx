@@ -1,15 +1,20 @@
 import { Suspense, useEffect, useMemo } from 'react';
 import { Outlet, useLocation, useParams } from 'react-router-dom';
 import { ErrorBoundary, ReloadMessage } from '../components/ui/ErrorBoundary';
-import { Skeleton } from '../components/ui/States';
+import { ErrorState, Skeleton } from '../components/ui/States';
 import { FederationHeader } from '../features/federation/components/FederationHeader';
 import { FederationPageError, FederationPageLoading } from '../features/federation/components/FederationPageState';
 import { useFederationDetails } from '../features/federation/hooks/useFederationDetails';
 import type { FederationContext } from '../features/federation/hooks/useFederation';
-import { prefetchFederationPages } from './federationPages';
+import { errorMessage } from '../utils/errors';
+import { ApiError } from '../services/http';
+import { loadFederationTab } from './federationPages';
+import { federationOutline } from '../utils/config';
 
-/** Wait before fetching other sections' code, so it never competes with this page's data */
-const PREFETCH_DELAY_MS = 1500;
+/** Sections that render from the summary alone; every other one waits for the config */
+const SUMMARY_ONLY_SECTIONS = new Set(['activity', 'gateways']);
+/** Sections that render from the summary when it carries the module kinds */
+const MODULE_KIND_SECTIONS = new Set(['gateways/v2', 'assets', 'utxos']);
 
 function SectionLoading() {
   return (
@@ -29,32 +34,39 @@ export function FederationLayout() {
   // The router remounts this layout per federation (App.tsx), so id never changes here
   const { id = '' } = useParams<{ id: string }>();
   const { pathname } = useLocation();
-  const details = useFederationDetails(id);
+  const { summary, config } = useFederationDetails(id);
+  const section = pathname.split('/').slice(3).filter(Boolean).join('/').toLowerCase();
+  const needsConfig = !SUMMARY_ONLY_SECTIONS.has(section)
+    && !(MODULE_KIND_SECTIONS.has(section) && summary.data?.federation.module_kinds);
 
-  useEffect(() => {
-    const timer = window.setTimeout(prefetchFederationPages, PREFETCH_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, []);
+  useEffect(() => loadFederationTab(section), [section]);
 
   const context = useMemo<FederationContext | null>(
-    () => (details.data ? { id, ...details.data } : null),
-    [id, details.data],
+    () => (summary.data ? { id, ...summary.data, config: config.data, ...federationOutline(summary.data.federation, config.data) } : null),
+    [id, summary.data, config.data],
   );
 
-  if (details.loading && !context) return <FederationPageLoading />;
+  if (summary.loading && !context) return <FederationPageLoading />;
   if (!context) {
-    const notFound = details.error instanceof Error && details.error.message === 'Federation not found';
-    return <FederationPageError error={details.error} notFound={notFound || !details.failed} onRetry={details.reload} />;
+    const notFound = summary.error instanceof ApiError && summary.error.status === 404;
+    return <FederationPageError error={summary.error} notFound={notFound} onRetry={summary.reload} />;
   }
 
   return (
     <div>
-      <FederationHeader id={id} federation={context.federation} config={context.config} />
+      <FederationHeader id={id} federation={context.federation} moduleKinds={context.moduleKinds} network={context.network} />
+      {config.failed && (
+        <div className="mb-4">
+          <ErrorState title="Could not load the federation config" message={errorMessage(config.error)} onRetry={config.reload} />
+        </div>
+      )}
       <ErrorBoundary key={pathname} fallback={<ReloadMessage message="Something went wrong while showing this section." />}>
         <Suspense fallback={<SectionLoading />}>
 
           <div key={pathname} className="fmo-section-enter">
-            <Outlet context={context} />
+            {needsConfig && !context.config
+              ? config.loading && <SectionLoading />
+              : <Outlet context={context} />}
           </div>
         </Suspense>
       </ErrorBoundary>

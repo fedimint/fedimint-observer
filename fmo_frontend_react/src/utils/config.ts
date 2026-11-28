@@ -1,4 +1,4 @@
-import type { ClientConfig } from '../types/api';
+import type { ClientConfig, FederationSummary } from '../types/api';
 
 export interface ConfigGuardian {
   id: number;
@@ -15,6 +15,28 @@ export interface FederationConfig {
   raw: ClientConfig;
 }
 
+/** Module kind by instance id */
+export function kindsByInstance(modules: ClientConfig['modules']): Record<string, string> {
+  return Object.fromEntries(Object.entries(modules ?? {}).map(([instance, module]) => [instance, module.kind || 'unknown']));
+}
+
+/** Module kind by instance id and network, from the summary's outline or else the config; the kinds stay undefined until either is known */
+export function federationOutline(federation: Pick<FederationSummary, 'module_kinds' | 'network'>, config: FederationConfig | null | undefined) {
+  return {
+    moduleKinds: federation.module_kinds ?? (config ? kindsByInstance(config.raw.modules) : undefined),
+    network: config?.network ?? federation.network ?? 'unknown',
+  };
+}
+
+export function instancesOf(kinds: Record<string, string>, kind: string): number[] {
+  return Object.entries(kinds).filter(([, moduleKind]) => moduleKind === kind).map(([instance]) => Number(instance));
+}
+
+/** Which config lookup a page shows: the stored one, or the invite lookup once it failed. Retry always restarts the stored one */
+export function configSource(storedFailed: boolean, invite: string | undefined): 'stored' | 'invite' {
+  return storedFailed && invite ? 'invite' : 'stored';
+}
+
 export function parseConfig(config: ClientConfig): FederationConfig {
   const guardians = Object.entries(config.global?.api_endpoints ?? {}).map(([id, endpoint]) => ({
     id: parseInt(id),
@@ -23,7 +45,7 @@ export function parseConfig(config: ClientConfig): FederationConfig {
   }));
 
   const moduleConfigs = Object.values(config.modules ?? {});
-  const modules = moduleConfigs.map((mod) => mod.kind || 'unknown');
+  const modules = Object.values(kindsByInstance(config.modules));
 
   const walletModule = moduleConfigs.find((mod) => mod.kind === 'wallet');
   const networkModule = walletModule ?? moduleConfigs.find((mod) => mod.kind === 'walletv2');

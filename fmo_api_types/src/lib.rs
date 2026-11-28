@@ -69,6 +69,12 @@ pub struct FederationSummary {
     pub successor_id: Option<FederationId>,
     #[serde(default)]
     pub successor_name: Option<String>,
+    /// Module kind by instance id; only the single-federation summary sets it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_kinds: Option<BTreeMap<u16, String>>,
+    /// Wallet network; only the single-federation summary sets it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,6 +3,7 @@ import type { GuardianClaimedUtxoState } from '../../../../types/api';
 import { asBitcoin, shortMiddle } from '../../../../utils/format';
 import { explorerAddressUrl, explorerTxUrl } from '../../../../utils/network';
 import { ExplorerLink, TxidLinkedText } from '../../../../components/ui/ExplorerLink';
+import { Skeleton } from '../../../../components/ui/States';
 import { shortOutpoint, UTXO_KIND_STYLES, type UtxoInventoryRow } from '../../lib/utxos';
 import type { FederationUtxos } from '../../hooks/useFederationUtxos';
 
@@ -102,7 +103,14 @@ export function UtxoTable({ utxos, network }: { utxos: FederationUtxos; network:
       </thead>
       <tbody aria-busy={loading} className={`divide-y divide-line transition-opacity ${loading && data ? 'opacity-60' : ''}`}>
         {loading && !data ? (
-          <MessageRow>Loading UTXOs...</MessageRow>
+          Array.from({ length: Math.min(utxos.pageSize, 12) }, (_, index) => (
+            <tr key={index} aria-hidden="true" className="h-14">
+              <td className="px-4 sm:px-6"><Skeleton className="h-4 w-4/5 rounded" /></td>
+              <td className="hidden px-2 sm:table-cell"><Skeleton className="h-4 w-16 rounded" /></td>
+              <td className="hidden px-2 sm:table-cell"><Skeleton className="h-4 w-16 rounded" /></td>
+              <td className="px-4 sm:px-6"><Skeleton className="ml-auto h-4 w-20 rounded" /></td>
+            </tr>
+          ))
         ) : error ? (
           <MessageRow>UTXOs unavailable</MessageRow>
         ) : rows.length === 0 ? (

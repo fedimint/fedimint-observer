@@ -1,15 +1,9 @@
 import { useMemo } from 'react';
-import ReactEChartsCore from 'echarts-for-react/lib/core';
-import * as echarts from 'echarts/core';
-import { LineChart } from 'echarts/charts';
-import { GridComponent, TooltipComponent } from 'echarts/components';
-import { CanvasRenderer } from 'echarts/renderers';
+import { Chart } from '../../../components/ui/Chart';
 import { useTheme } from '../../../hooks/useTheme';
 import { chartTheme } from '../../reliability/lib/chartTheme';
 import type { WalletV2OnChainTransaction } from '../../../types/api';
 import { asBitcoin } from '../../../utils/format';
-
-echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 
 interface WalletV2ChainChartProps {
   transactions: WalletV2OnChainTransaction[];
@@ -78,5 +72,5 @@ export function WalletV2ChainChart({ transactions }: WalletV2ChainChartProps) {
     };
   }, [isDark, transactions]);
 
-  return <ReactEChartsCore echarts={echarts} option={option} notMerge lazyUpdate style={{ height: 320, width: '100%' }} />;
+  return <Chart option={option} height={320} />;
 }

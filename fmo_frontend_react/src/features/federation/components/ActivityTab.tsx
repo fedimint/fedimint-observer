@@ -1,20 +1,18 @@
-import { lazy, Suspense } from 'react';
 import { Alert } from '../../../components/ui/Alert';
 import { Button } from '../../../components/ui/Button';
 import { Panel } from '../../../components/ui/Panel';
 import type { FederationActivity } from '../hooks/useFederationActivity';
 import { ActivityControls } from './ActivityControls';
+import { TransactionChart } from './TransactionChart';
 
-const TransactionChart = lazy(() => import('./TransactionChart').then((module) => ({ default: module.TransactionChart })));
-
-const message = 'text-center text-xs sm:text-sm text-ink-3 py-12';
+const chartSpace = 'flex h-[400px] items-center justify-center text-center text-xs text-ink-3 sm:text-sm';
 
 function ActivityChart({ activity }: { activity: FederationActivity }) {
   const { histogram, loading, error, zoom, setZoom } = activity;
   const { chartMetric, movingAverageWindow, useLogScale } = activity.settings;
 
   if (loading && histogram.length === 0) {
-    return <div className={message}>Loading chart data...</div>;
+    return <div role="status" className={`mt-4 ${chartSpace}`}>Loading chart data…</div>;
   }
   if (error) {
     return (
@@ -25,7 +23,7 @@ function ActivityChart({ activity }: { activity: FederationActivity }) {
     );
   }
   if (histogram.length === 0) {
-    return <div className={message}>No activity data available</div>;
+    return <div className={chartSpace}>No activity data available</div>;
   }
   return (
     <div className={`mt-4 -mx-4 sm:mx-0 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
@@ -34,11 +32,6 @@ function ActivityChart({ activity }: { activity: FederationActivity }) {
         <span className="block text-xs text-ink-3">Days in UTC</span>
       </h4>
       <div className="w-full px-4 sm:px-0">
-        <Suspense fallback={
-          <div className="flex items-center justify-center h-[400px] text-ink-3">
-            Loading chart...
-          </div>
-        }>
           <TransactionChart
             data={histogram}
             chartMetric={chartMetric}
@@ -48,7 +41,6 @@ function ActivityChart({ activity }: { activity: FederationActivity }) {
             zoomEnd={zoom.end}
             onZoomChange={(start, end) => setZoom({ start, end })}
           />
-        </Suspense>
       </div>
     </div>
   );

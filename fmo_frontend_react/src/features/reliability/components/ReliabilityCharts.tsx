@@ -12,7 +12,7 @@ import {
 } from '../../guardians/lib/guardianModel';
 import { formatMs } from '../../guardians/lib/format';
 import { axisStyle, chartTheme, tooltipStyle } from '../lib/chartTheme';
-import { EChart } from './EChart';
+import { Chart } from '../../../components/ui/Chart';
 
 const timeLabel = (history: GuardianHealthHistory, time: number) =>
   history.window === '30d' ? formatUtcDate(time, { month: 'short', day: 'numeric' }) : formatUtcDayHour(time);
@@ -74,9 +74,10 @@ export function ReachabilityChart({ history, rows, res }: { history: GuardianHea
   }
   return (
     <>
-      <EChart
+      <Chart
         option={option}
         height={220}
+        features={['markLine']}
         label={`Guardians answering the observer over the ${history.window} window, against the consensus threshold of ${res.threshold}. ${belowThreshold} of ${polled.length} periods fell below it.`}
       />
       <p className="mt-1 text-xs text-ink-3">
@@ -129,7 +130,7 @@ export function LatencyTrendChart({ history, row }: { history: GuardianHealthHis
   };
   const values = timed.map((slot) => slot.latencyMs!);
   return (
-    <EChart
+    <Chart
       option={option}
       height={200}
       label={`Mean API latency of guardian ${row.id} over the ${history.window} window, from ${formatMs(Math.min(...values))} to ${formatMs(Math.max(...values))}.`}

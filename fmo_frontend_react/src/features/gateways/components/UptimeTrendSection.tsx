@@ -1,4 +1,5 @@
-import { lazy, Suspense, useMemo } from 'react';
+import { useMemo } from 'react';
+import { Chart } from '../../../components/ui/Chart';
 import type { EChartsOption } from 'echarts';
 import type { GatewayUptimeTrendPoint, GatewayWindow } from '../../../types/api';
 import { useTheme } from '../../../hooks/useTheme';
@@ -6,7 +7,6 @@ import { chartTheme } from '../../reliability/lib/chartTheme';
 import { formatUtcDate } from '../../../utils/time';
 import { ErrorBoundary, ReloadMessage } from '../../../components/ui/ErrorBoundary';
 
-const UptimeTrendChart = lazy(() => import('./UptimeTrendChart').then((module) => ({ default: module.UptimeTrendChart })));
 
 
 interface UptimeTrendSectionProps {
@@ -52,9 +52,7 @@ export function UptimeTrendSection({ timeWindow, points, placeholder }: UptimeTr
       </div>
       {points.length > 0 ? (
         <ErrorBoundary fallback={<div className="flex h-52 items-center justify-center"><ReloadMessage message="The availability chart could not be loaded." /></div>}>
-          <Suspense fallback={<div className="flex h-52 items-center justify-center text-sm text-ink-3">Loading chart…</div>}>
-            <UptimeTrendChart option={option} />
-          </Suspense>
+          <Chart option={option} height={210} />
         </ErrorBoundary>
       ) : (
         <div className="flex h-52 items-center justify-center text-sm text-ink-3">{placeholder}</div>

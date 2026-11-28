@@ -1,26 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../../../services/api';
 import { errorMessage } from '../../../utils/errors';
-import type { LiveLookup } from '../lib/gatewaySelection';
+import type { LiveLookup, LiveLookupGate } from '../lib/gatewaySelection';
 
 const LIVE_LOOKUP_TIMEOUT_MS = 10_000;
 
-interface LiveGatewayLookupOptions {
-
-  invite: string | undefined;
-
-  offline: boolean;
-
-  federationPending: boolean;
-}
-
-
-export function useLiveGatewayLookup({ invite, offline, federationPending }: LiveGatewayLookupOptions) {
+export function useLiveGatewayLookup(invite: string | undefined, gate: LiveLookupGate) {
   const [live, setLive] = useState<LiveLookup>({ status: 'pending' });
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    if (!invite || offline) return;
+    if (!invite || gate !== 'run') return;
     const controller = new AbortController();
     let cancelled = false;
     let timedOut = false;
@@ -47,12 +37,12 @@ export function useLiveGatewayLookup({ invite, offline, federationPending }: Liv
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [invite, offline, attempt]);
+  }, [invite, gate, attempt]);
 
   const lookup = useMemo<LiveLookup>(() => {
-    if (invite && !offline) return live;
-    return { status: federationPending ? 'pending' : 'skipped' };
-  }, [federationPending, invite, live, offline]);
+    if (invite && gate === 'run') return live;
+    return { status: gate === 'wait' ? 'pending' : 'skipped' };
+  }, [gate, invite, live]);
 
   return {
     lookup,

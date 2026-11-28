@@ -31,11 +31,9 @@ export function UtxoInventory({ utxos, overview, overviewFailed, network }: Utxo
               One row per outpoint. Guardian agreement is shown alongside the reconstructed observer record.
             </p>
           </div>
-          {utxos.data && (
-            <div className="text-xs text-ink-3">
-              {utxos.comparedIds.length} of {utxos.guardians.length} guardians compared
-            </div>
-          )}
+          <div className="min-h-4 text-xs text-ink-3">
+            {utxos.data && `${utxos.comparedIds.length} of ${utxos.guardians.length} guardians compared`}
+          </div>
         </div>
 
         <UtxoNotices utxos={utxos} overview={overview} overviewFailed={overviewFailed} />

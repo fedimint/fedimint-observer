@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
-const { ApiError, request, requestNoContent } = await import('../src/services/http.ts');
+const { ApiError, request, requestNoContent, requestShared, share } = await import('../src/services/http.ts');
+const { federationRoute } = await import('../src/utils/federationRoute.ts');
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -184,4 +185,66 @@ test('an error body that breaks off keeps the HTTP error, without the server mes
   const err = await failure(request('https://api.test/x'));
   assert.equal(err.kind, 'http');
   assert.equal(err.message, 'The observer is busy or restarting, try again in a moment');
+});
+
+function counted(status, body) {
+  const calls = { count: 0 };
+  globalThis.fetch = async () => {
+    calls.count += 1;
+    return new Response(body, { status, headers: json });
+  };
+  return calls;
+}
+
+test('a request reuses a shared GET of the same URL instead of asking again', async () => {
+  const calls = counted(200, JSON.stringify({ id: 1 }));
+  share('https://api.test/shared', 10_000);
+  assert.deepEqual(await request('https://api.test/shared'), { id: 1 });
+  assert.deepEqual(await requestShared('https://api.test/shared', 10_000), { id: 1 });
+  assert.equal(calls.count, 1);
+  await request('https://api.test/other');
+  assert.equal(calls.count, 2);
+});
+
+test('a failed shared GET is forgotten, so a retry asks again', async () => {
+  const calls = counted(503, 'busy');
+  await failure(share('https://api.test/failing', 10_000));
+  await failure(request('https://api.test/failing'));
+  assert.equal(calls.count, 2);
+});
+
+test('a shared GET is asked again once its time is up', async () => {
+  const calls = counted(200, '{}');
+  await share('https://api.test/expiring', 0);
+  await request('https://api.test/expiring');
+  assert.equal(calls.count, 2);
+});
+
+test('aborting one reader of a shared GET leaves the answer for the others', async () => {
+  const calls = counted(200, JSON.stringify({ id: 2 }));
+  const controller = new AbortController();
+  const aborted = requestShared('https://api.test/readers', 10_000, controller.signal);
+  controller.abort();
+  await failure(aborted);
+  assert.deepEqual(await requestShared('https://api.test/readers', 10_000), { id: 2 });
+  assert.deepEqual(await request('https://api.test/readers'), { id: 2 });
+  assert.equal(calls.count, 1);
+});
+
+test('a fresh request asks the server even while a shared GET is fresh', async () => {
+  const answers = [{ health: 'offline' }, { health: 'online' }];
+  let calls = 0;
+  globalThis.fetch = async () => new Response(JSON.stringify(answers[calls++]), { status: 200, headers: json });
+  await share('https://api.test/recheck', 10_000);
+  assert.deepEqual(await request('https://api.test/recheck', { fresh: true }), { health: 'online' });
+  assert.equal(calls, 2);
+  assert.deepEqual(await request('https://api.test/recheck'), { health: 'offline' });
+  assert.equal(calls, 2);
+});
+
+test('a federation path is read for prefetching, and an undecodable id is skipped', () => {
+  assert.deepEqual(federationRoute('/federations/abc%20def/Gateways/'), { id: 'abc def', tab: 'gateways' });
+  assert.deepEqual(federationRoute('/federations/abc'), { id: 'abc', tab: '' });
+  assert.equal(federationRoute('/federations/%E0%A4%A'), null);
+  assert.equal(federationRoute('/manifold/guardians'), null);
 });

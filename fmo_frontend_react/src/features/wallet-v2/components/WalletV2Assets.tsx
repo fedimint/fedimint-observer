@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { TOGGLE_OFF, TOGGLE_ON } from '../../../components/ui/controls';
 import type { WalletV2OnChainTransaction } from '../../../types/api';
 import { asBitcoin } from '../../../utils/format';
@@ -8,7 +8,7 @@ import { card, muted } from '../../../components/ui/styles';
 import { button } from '../lib/styles';
 import { OperationCard } from './OperationCard';
 
-const WalletV2ChainChart = lazy(() => import('./WalletV2ChainChart').then((module) => ({ default: module.WalletV2ChainChart })));
+import { WalletV2ChainChart } from './WalletV2ChainChart';
 
 type MobileView = 'chart' | 'operations';
 type OperationFilter = 'all' | 'deposits' | 'withdrawals';
@@ -55,7 +55,7 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
             <p className={`mt-1 max-w-xl text-sm ${muted}`}>Deposits and withdrawals are reflected in the federation’s on-chain wallet.</p>
           </div>
           <div className="min-w-0 sm:text-right"><p className={`text-xs ${muted}`}>Current wallet balance</p><p className="mt-1 break-all tabular text-xl font-medium text-ink">{tile(balance == null ? 'Awaiting balance' : asBitcoin(balance, 8))}</p>
-            {content === 'ready' && latest && <p className={`mt-2 text-xs font-medium ${latest.output_msat >= latest.input_msat ? 'text-ok-ink' : 'text-serious-ink'}`}>Latest operation #{latest.index}: {latest.output_msat >= latest.input_msat ? '+' : '−'}{asBitcoin(Math.abs(latest.output_msat - latest.input_msat), 8)}</p>}
+            <p className={`mt-2 min-h-4 text-xs font-medium ${latest && latest.output_msat >= latest.input_msat ? 'text-ok-ink' : 'text-serious-ink'}`}>{content === 'ready' && latest && `Latest operation #${latest.index}: ${latest.output_msat >= latest.input_msat ? '+' : '−'}${asBitcoin(Math.abs(latest.output_msat - latest.input_msat), 8)}`}</p>
           </div>
         </div>
         <div className="mt-5 grid grid-cols-2 gap-3 border-t border-line pt-4 sm:grid-cols-3">
@@ -70,8 +70,8 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
         {(['chart', 'operations'] as const).map((view) => <button key={view} type="button" aria-pressed={mobileView === view} onClick={() => setMobileView(view)} className={`flex-1 ${button} border ${mobileView === view ? TOGGLE_ON : TOGGLE_OFF}`}>{view === 'chart' ? 'Chart' : 'Operations'}</button>)}
       </div>
 
-      {(observedAt || stale || balanceStale) && <p role="status" className={`text-xs ${muted}`}>
-        {observedAt ? `History observed ${formatUtcDateTime(observedAt)}.` : 'Collecting wallet history.'}
+      {(content === 'loading' || observedAt || stale || balanceStale) && <p role="status" className={`min-h-4 text-xs ${muted}`}>
+        {content === 'loading' ? '' : observedAt ? `History observed ${formatUtcDateTime(observedAt)}.` : 'Collecting wallet history.'}
         {stale && observedAt ? ' History collection is delayed; showing the last observation.' : ''}
         {balanceStale ? ` Balance collection is delayed${balanceObservedAt ? `; last observed ${formatUtcDateTime(balanceObservedAt)}` : ''}.` : ''}
       </p>}
@@ -81,7 +81,7 @@ export function WalletV2Assets({ balance, transactions, loaded, error, network, 
         <h4 id="wallet-chart-title" className="text-base font-semibold text-ink">Balance history</h4>
         <p className={`mt-1 text-xs ${muted}`}>Balance after each of the latest on-chain operations.</p>
         {content === 'loading' ? <p className={`py-12 text-center text-sm ${muted}`}>Loading wallet history…</p> : content === 'unavailable' ? <p className={`py-12 text-center text-sm ${muted}`}>History is unavailable.</p> : content === 'empty' ? <p className={`py-12 text-center text-sm ${muted}`}>No on-chain operations recorded yet.</p> : <>
-          <Suspense fallback={<div className={`flex h-[320px] items-center justify-center text-sm ${muted}`}>Loading chart…</div>}><WalletV2ChainChart transactions={ordered} /></Suspense>
+          <WalletV2ChainChart transactions={ordered} />
           <div className={`flex flex-wrap gap-x-5 gap-y-2 text-xs ${muted}`}><span><span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-ok" />Deposit merged</span><span><span className="mr-2 inline-block h-2.5 w-2.5 rounded-full bg-serious" />Withdrawal peeled</span></div>
         </>}
       </section>

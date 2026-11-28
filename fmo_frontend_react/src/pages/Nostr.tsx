@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { CollapsibleCard } from '../components/ui/CollapsibleCard';
 import { ListCard } from '../components/ui/ListCard';
 import { CursorPager } from '../components/ui/CursorPager';
@@ -35,6 +35,7 @@ function GroupList({ group, label, emptyText, nameLabel, renderName, pageSize, o
         emptyText={emptyText}
         nameLabel={nameLabel}
         renderName={renderName}
+        pageSize={pageSize}
       />
       {group.page && (
         <div className="border-t border-line bg-surface px-3 py-3 sm:px-6">
@@ -59,9 +60,9 @@ function GroupList({ group, label, emptyText, nameLabel, renderName, pageSize, o
 }
 
 /** A secondary group, collapsed until opened, as on the home page */
-function CollapsibleGroup({ id, title, description, ...props }: GroupProps & { id: string; title: string; description: string }) {
+function CollapsibleGroup({ id, title, description, onOpenChange, ...props }: GroupProps & { id: string; title: string; description: string; onOpenChange: (open: boolean) => void }) {
   return (
-    <CollapsibleCard id={id} title={title} description={description} count={props.group.total}>
+    <CollapsibleCard id={id} title={title} description={description} count={props.group.total} onOpenChange={onOpenChange}>
       <GroupList {...props} />
     </CollapsibleCard>
   );
@@ -71,9 +72,11 @@ const nameOrId = (fed: NostrFederation) => fed.name || fed.id;
 
 export function Nostr() {
   const [pageSize, setPageSize] = usePageSize('nostr-federations', 25);
+  const [offlineOpen, setOfflineOpen] = useState(false);
+  const [unobservedOpen, setUnobservedOpen] = useState(false);
   const online = useNostrFederations('online', pageSize);
-  const offline = useNostrFederations('offline', pageSize);
-  const unobserved = useNostrFederations('unobserved', pageSize);
+  const offline = useNostrFederations('offline', pageSize, offlineOpen);
+  const unobserved = useNostrFederations('unobserved', pageSize, unobservedOpen);
   const pagerProps = { pageSize, onPageSizeChange: setPageSize };
 
   return (
@@ -105,6 +108,7 @@ export function Nostr() {
         title="Offline Nostr federations"
         description="Tracked federations where fewer guardians answered the observer in the last 5 minutes than consensus needs"
         group={offline}
+        onOpenChange={setOfflineOpen}
         label="Offline Nostr federation pages"
         emptyText="No offline Nostr federations"
         nameLabel="Name"
@@ -117,6 +121,7 @@ export function Nostr() {
         title="Unobserved Nostr federations"
         description="Announced via Nostr but not tracked by this observer, so their health is unknown; names come from their guardians when they answer"
         group={unobserved}
+        onOpenChange={setUnobservedOpen}
         label="Unobserved Nostr federation pages"
         emptyText="Every Nostr federation is tracked by this observer"
         nameLabel="Name / ID"

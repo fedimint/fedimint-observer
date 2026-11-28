@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseConfig } from '../src/utils/config.ts';
+import { configSource, instancesOf, kindsByInstance, parseConfig } from '../src/utils/config.ts';
 
 test('Wallet v2 supplies the network without inventing v1 finality settings', () => {
   const config = parseConfig({ modules: { 3: { kind: 'walletv2', network: 'signet' } } });
@@ -19,4 +19,22 @@ test('Wallet v1 configuration stays compatible in a mixed federation', () => {
 
 test('Missing wallet configuration stays unknown', () => {
   assert.equal(parseConfig({ modules: {} }).network, 'unknown');
+});
+
+test('module instances are found by kind, from the summary outline or the config alike', () => {
+  const kinds = kindsByInstance({ 0: { kind: 'ln' }, 1: { kind: 'lnv2' }, 4: { kind: 'lnv2' }, 5: {} });
+  assert.deepEqual(kinds, { 0: 'ln', 1: 'lnv2', 4: 'lnv2', 5: 'unknown' });
+  assert.deepEqual(instancesOf(kinds, 'lnv2'), [1, 4]);
+  assert.deepEqual(instancesOf({ 2: 'walletv2' }, 'walletv2'), [2]);
+  assert.deepEqual(instancesOf(kindsByInstance(undefined), 'lnv2'), []);
+});
+
+test('a failed stored config falls back to the invite, and each Retry tries the stored one first', () => {
+  const shown = (storedAttempt) => configSource(storedAttempt === 'failed', 'fed1invite');
+  const storedAttempts = ['loading', 'failed', 'loading', 'failed', 'loading', 'loaded'];
+  assert.deepEqual(storedAttempts.map(shown), ['stored', 'invite', 'stored', 'invite', 'stored', 'stored']);
+});
+
+test('without an invite to fall back on, a failed stored config stays the one shown', () => {
+  assert.equal(configSource(true, undefined), 'stored');
 });

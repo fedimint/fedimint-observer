@@ -10,10 +10,11 @@ interface CollapsibleCardProps {
   count?: number | null;
   className?: string;
   children: ReactNode;
+  onOpenChange?: (open: boolean) => void;
 }
 
 
-export function CollapsibleCard({ id, title, description, count, className = 'mt-6', children }: CollapsibleCardProps) {
+export function CollapsibleCard({ id, title, description, count, className = 'mt-6', children, onOpenChange }: CollapsibleCardProps) {
   const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState(false);
 
@@ -25,7 +26,8 @@ export function CollapsibleCard({ id, title, description, count, className = 'mt
         aria-controls={id}
         onClick={() => {
           setOpened(true);
-          setOpen((value) => !value);
+          setOpen(!open);
+          onOpenChange?.(!open);
         }}
         className="flex w-full items-start gap-2 bg-surface p-4 text-left transition-colors hover:bg-surface-2 sm:p-5"
       >

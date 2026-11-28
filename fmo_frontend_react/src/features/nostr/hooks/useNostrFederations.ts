@@ -8,7 +8,7 @@ const REFRESH_MS = 60_000;
 const nextAfter = (page: NostrFederationPage) => page.next_after;
 
 
-export function useNostrFederations(group: NostrGroup, limit: number) {
+export function useNostrFederations(group: NostrGroup, limit: number, lookUpMissingNames = true) {
   const fetchPage = useCallback(
     (after: string | undefined, signal: AbortSignal) => api.getNostrFederationsPage(group, limit, after, signal),
     [group, limit],
@@ -16,7 +16,7 @@ export function useNostrFederations(group: NostrGroup, limit: number) {
   const pages = useCursorPages({ fetchPage, nextCursor: nextAfter, refreshMs: REFRESH_MS });
   const [lookedUpNames, setLookedUpNames] = useState<Map<string, string>>(() => new Map());
   const rows = pages.page?.federations;
-  const unnamedKey = rows
+  const unnamedKey = rows && lookUpMissingNames
     ? JSON.stringify(rows.filter((fed) => !fed.name).map(({ id, invite }) => [id, invite]))
     : null;
 

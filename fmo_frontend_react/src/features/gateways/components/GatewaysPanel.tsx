@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import type { GatewayUptimeTrendPoint } from '../../../types/api';
+import type { FederationSummary, GatewayUptimeTrendPoint } from '../../../types/api';
 import { GatewayWarningPage } from './GatewayWarningPage';
 import { GatewayPageHeader, GatewaySummaryBar } from './GatewayPageHeader';
 import { UptimeTrendSection } from './UptimeTrendSection';
 import { GatewayDirectory } from './GatewayDirectory';
 import { GatewayDetail } from './GatewayDetail';
 import { useGatewayView } from '../hooks/useGatewayView';
-import { useGatewayFederation } from '../hooks/useGatewayFederation';
 import { useGatewayOverview } from '../hooks/useGatewayOverview';
 import { useLiveGatewayLookup } from '../hooks/useLiveGatewayLookup';
-import { selectGatewayData } from '../lib/gatewaySelection';
+import { liveLookupGate, selectGatewayData } from '../lib/gatewaySelection';
+import { GATEWAY_LIST } from '../lib/gatewayView';
+import { api } from '../../../services/api';
+import { useApiResource } from '../../../hooks/useApiResource';
 import {
   buildUptimeStrip,
   WINDOW_MINUTES,
@@ -24,12 +26,11 @@ import { useDebouncedValue } from '../../../hooks/useDebouncedValue';
 const EMPTY_TREND: GatewayUptimeTrendPoint[] = [];
 
 
-export function GatewaysPanel({ id }: { id: string }) {
+export function GatewaysPanel({ id, federation }: { id: string; federation: FederationSummary }) {
   const view = useGatewayView();
   const { timeWindow } = view;
-  const { federation, failed: federationFailed, retry: retryFederation } = useGatewayFederation(id);
   const [gatewaySearch, setGatewaySearch] = useState('');
-  const [pageSize, setPageSize] = usePageSize('gateways-v1', 25);
+  const [pageSize, setPageSize] = usePageSize(GATEWAY_LIST);
   const search = useDebouncedValue(gatewaySearch);
   const overview = useGatewayOverview(id, timeWindow, {
     search,
@@ -39,12 +40,13 @@ export function GatewaysPanel({ id }: { id: string }) {
     limit: pageSize,
   });
   const { observed, trend, now } = overview;
-  const federationOffline = federation?.health === 'offline';
-  const live = useLiveGatewayLookup({
-    invite: federation?.invite,
-    offline: federationOffline,
-    federationPending: federation === undefined && !federationFailed,
+  const recheck = useApiResource((signal) => api.recheckFederationSummary(id, signal), [id], {
+    enabled: federation.health === 'offline',
+    label: 'federation health',
   });
+  const gate = liveLookupGate(federation.health, { health: recheck.data?.health, loading: recheck.loading });
+  const federationOffline = gate === 'offline';
+  const live = useLiveGatewayLookup(federation.invite, gate);
 
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedId = searchParams.get('gateway');
@@ -65,11 +67,11 @@ export function GatewaysPanel({ id }: { id: string }) {
     observed: observed?.gateways ?? null,
     observedError: currentError,
     live: live.lookup,
-    federationFailed,
+    federationFailed: false,
     federationOffline,
     dataWindow,
     listNarrowed: Boolean(search.trim()) || view.filter !== 'all' || overview.pageNumber > 1,
-  }), [currentError, dataWindow, federationFailed, federationOffline, live.lookup, observed, search, view.filter, overview.pageNumber]);
+  }), [currentError, dataWindow, federationOffline, live.lookup, observed, search, view.filter, overview.pageNumber]);
   const gateways = selection.gateways;
 
   const retryBusy = overview.loading;
@@ -77,7 +79,7 @@ export function GatewaysPanel({ id }: { id: string }) {
     if (retryBusy) return;
     focusAfterRetry.current = true;
     overview.reload();
-    if (federationFailed) retryFederation();
+    if (recheck.failed) recheck.reload();
     live.retryIfFailed();
   };
 

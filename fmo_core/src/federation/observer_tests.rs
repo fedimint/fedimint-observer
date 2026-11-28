@@ -637,3 +637,189 @@ async fn postgres_totals_keep_the_counters_when_the_asset_read_stalls_or_fails(
     );
     Ok(())
 }
+
+fn summary_test_config(guardian_url: &str, name: Option<&str>) -> ClientConfig {
+    let (_, mut config, peer_id, ..) = endpoint_test_config();
+    config
+        .global
+        .api_endpoints
+        .get_mut(&peer_id)
+        .expect("test config has a guardian")
+        .url = SafeUrl::from_str(guardian_url).unwrap();
+    if let Some(name) = name {
+        config
+            .global
+            .meta
+            .insert("federation_name".to_owned(), name.to_owned());
+    }
+    config
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated FMO_WORK_TEST_DATABASE"]
+async fn postgres_one_federation_summary_reads_only_its_own_rows() -> anyhow::Result<()> {
+    use fedimint_core::invite_code::InviteCode;
+    use fedimint_core::Amount;
+    use fmo_api_types::FederationHealth;
+
+    let database = std::env::var("FMO_WORK_TEST_DATABASE")?;
+    let pool = crate::runtime::pool(&database, 1, false)?;
+    let alpha = summary_test_config("wss://alpha.example.com", None);
+    let bravo = summary_test_config("wss://bravo.example.com", Some("Bravo"));
+    let alpha_id = alpha.global.calculate_federation_id();
+    let bravo_id = bravo.global.calculate_federation_id();
+    assert_ne!(alpha_id, bravo_id);
+    let bravo_invite = InviteCode::new(
+        SafeUrl::from_str("wss://bravo.example.com")?,
+        PeerId::from(0),
+        bravo_id,
+        None,
+    )
+    .to_string();
+
+    let connection = pool.get().await?;
+    connection
+        .batch_execute(
+            "CREATE TEMP TABLE federations(federation_id BYTEA NOT NULL, config BYTEA NOT NULL);
+             CREATE TEMP TABLE guardian_health(
+                 federation_id BYTEA NOT NULL,
+                 time TIMESTAMP NOT NULL,
+                 guardian_id INTEGER NOT NULL,
+                 status JSONB
+             );
+             CREATE TEMP TABLE federation_totals(
+                 federation_id BYTEA NOT NULL,
+                 wallet_in_msat BIGINT NOT NULL,
+                 wallet_out_msat BIGINT NOT NULL
+             );
+             CREATE TEMP TABLE federation_observations(
+                 federation_id BYTEA NOT NULL,
+                 kind TEXT NOT NULL,
+                 data JSONB NOT NULL,
+                 observed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+             );
+             CREATE TEMP TABLE federation_daily_activity(
+                 federation_id BYTEA NOT NULL,
+                 day DATE NOT NULL,
+                 tx_count BIGINT NOT NULL,
+                 volume_msat BIGINT NOT NULL
+             );
+             CREATE TEMP TABLE nostr_votes(
+                 event_id BYTEA NOT NULL,
+                 federation_id BYTEA NOT NULL,
+                 star_vote INTEGER,
+                 event JSONB NOT NULL
+             );",
+        )
+        .await?;
+    let alpha_key = alpha_id.consensus_encode_to_vec();
+    let bravo_key = bravo_id.consensus_encode_to_vec();
+    connection
+        .execute(
+            "INSERT INTO federations VALUES ($1, $2), ($3, $4)",
+            &[
+                &alpha_key,
+                &alpha.consensus_encode_to_vec(),
+                &bravo_key,
+                &bravo.consensus_encode_to_vec(),
+            ],
+        )
+        .await?;
+    connection
+        .execute(
+            "INSERT INTO guardian_health VALUES
+                 ($1, now() AT TIME ZONE 'UTC', 0, '{\"federation\": {\"session_count\": 5}}'),
+                 ($2, (now() AT TIME ZONE 'UTC') - INTERVAL '1 hour', 0, '{\"federation\": {\"session_count\": 5}}')",
+            &[&alpha_key, &bravo_key],
+        )
+        .await?;
+    connection
+        .execute(
+            "INSERT INTO federation_totals VALUES ($1, 5000, 1000), ($2, 9000, 0)",
+            &[&alpha_key, &bravo_key],
+        )
+        .await?;
+    connection
+        .execute(
+            "INSERT INTO federation_observations (federation_id, kind, data) VALUES ($1, 'meta', $2)",
+            &[
+                &alpha_key,
+                &serde_json::json!({
+                    "federation_name": "Alpha",
+                    "federation_successor": bravo_invite,
+                }),
+            ],
+        )
+        .await?;
+    connection
+        .execute(
+            "INSERT INTO federation_daily_activity VALUES
+                 ($1, (now() AT TIME ZONE 'UTC')::date, 3, 3000),
+                 ($2, (now() AT TIME ZONE 'UTC')::date, 7, 7000)",
+            &[&alpha_key, &bravo_key],
+        )
+        .await?;
+    connection
+        .execute(
+            "INSERT INTO nostr_votes VALUES
+                 ('\\x01', $1, 4, '{\"pubkey\": \"one\", \"created_at\": 1}'),
+                 ('\\x02', $1, 2, '{\"pubkey\": \"two\", \"created_at\": 1}'),
+                 ('\\x03', $2, 5, '{\"pubkey\": \"one\", \"created_at\": 1}')",
+            &[&alpha_key, &bravo_key],
+        )
+        .await?;
+    drop(connection);
+
+    let observer = endpoint_test_observer(pool).await?;
+    let activity = |summary: &fmo_api_types::FederationSummary| {
+        summary
+            .last_7d_activity
+            .iter()
+            .fold((0, Amount::ZERO), |(count, volume), day| {
+                (
+                    count + day.num_transactions,
+                    volume + day.amount_transferred,
+                )
+            })
+    };
+
+    let summary = observer
+        .federation_summary(alpha_id)
+        .await?
+        .expect("an observed federation has a summary");
+    assert_eq!(summary.id, alpha_id);
+    assert_eq!(summary.name.as_deref(), Some("Alpha"));
+    assert_eq!(summary.health, FederationHealth::Online);
+    assert_eq!(summary.deposits, Some(Amount::from_msats(4_000)));
+    assert_eq!(activity(&summary), (3, Amount::from_msats(3_000)));
+    assert_eq!(
+        (summary.nostr_votes.count, summary.nostr_votes.avg),
+        (2, Some(3.0))
+    );
+    assert_eq!(summary.successor_id, Some(bravo_id));
+    assert_eq!(summary.successor_name.as_deref(), Some("Bravo"));
+    assert_eq!(summary.module_kinds, Some(BTreeMap::new()));
+
+    let only = Some(alpha_id);
+    assert_eq!(observer.federations(only).await?.len(), 1);
+    assert_eq!(observer.get_guardian_health_summary(only).await?.len(), 1);
+    assert_eq!(observer.federation_assets(only).await?.len(), 1);
+    assert_eq!(observer.federations_activity(7, only).await?.len(), 1);
+    assert_eq!(observer.federation_ratings(only).await?.len(), 1);
+
+    let unknown = format!("{:064x}", 7).parse::<FederationId>()?;
+    assert!(observer.federation_summary(unknown).await?.is_none());
+
+    let listed = observer.list_federation_summaries().await?;
+    assert_eq!(listed.len(), 2);
+    let bravo_listed = listed
+        .iter()
+        .find(|summary| summary.id == bravo_id)
+        .expect("the list has every federation");
+    assert_eq!(bravo_listed.health, FederationHealth::Offline);
+    assert_eq!(bravo_listed.deposits, Some(Amount::from_msats(9_000)));
+    assert_eq!(activity(bravo_listed), (7, Amount::from_msats(7_000)));
+    assert_eq!(bravo_listed.nostr_votes.count, 1);
+    assert!(listed.iter().all(|summary| summary.module_kinds.is_none()));
+    Ok(())
+}
