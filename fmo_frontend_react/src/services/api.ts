@@ -27,6 +27,7 @@ import type { SignedNostrEvent } from '../types/nostr';
 import { request, requestNoContent, requestShared, share } from './http';
 import { GATEWAY_LIST, gatewayViewFrom, storedGatewayWindow } from '../features/gateways/lib/gatewayView';
 import { storedPageSize } from '../utils/pageSize';
+import { federationRoute } from '../utils/federationRoute';
 
 const BASE_URL = import.meta.env.VITE_FMO_API_BASE_URL || 'https://observer.fedimint.org/api';
 
@@ -56,10 +57,9 @@ const GUARDIAN_TABS = new Set(['', 'guardians', 'reliability']);
 
 /** Starts the requests a federation page makes first, before its code has loaded */
 export function prefetchFederationRoute(pathname: string, search = '') {
-  const match = /^\/federations\/([^/]+)\/?(.*)$/.exec(pathname);
-  if (!match) return;
-  const id = decodeURIComponent(match[1]);
-  const tab = match[2].replace(/\/$/, '').toLowerCase();
+  const route = federationRoute(pathname);
+  if (!route) return;
+  const { id, tab } = route;
   const prefetched = [urls.summary(id), urls.config(id)];
   if (GUARDIAN_TABS.has(tab)) {
     prefetched.push(urls.health(id), urls.liveHealth(id), urls.seatBindings(id));
@@ -95,6 +95,10 @@ export const api = {
 
   getFederationSummary: (id: string, signal?: AbortSignal) =>
     request<FederationSummary>(urls.summary(id), { signal }),
+
+  /** The summary as the server has it now, never the one prefetched with the page */
+  recheckFederationSummary: (id: string, signal?: AbortSignal) =>
+    request<FederationSummary>(urls.summary(id), { signal, fresh: true }),
 
 
   getNostrFederationsPage(group: NostrGroup, limit: number, after?: string, signal?: AbortSignal) {

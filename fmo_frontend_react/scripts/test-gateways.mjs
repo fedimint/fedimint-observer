@@ -8,6 +8,7 @@ import {
 } from '../src/features/gateways/lib/gatewayRows.ts';
 import { liveLookupGate, mergeGatewayData, selectGatewayData } from '../src/features/gateways/lib/gatewaySelection.ts';
 import { gatewayViewFrom } from '../src/features/gateways/lib/gatewayView.ts';
+import { request, share } from '../src/services/http.ts';
 
 const NOW = Date.parse('2026-01-15T12:00:00Z');
 const minutesAgo = (minutes) => new Date(NOW - minutes * 60_000);
@@ -136,6 +137,24 @@ test('an offline summary is rechecked before the live registry lookup is skipped
   assert.equal(liveLookupGate('offline', { health: 'online', loading: false }), 'run');
   assert.equal(liveLookupGate('offline', { health: 'offline', loading: false }), 'offline');
   assert.equal(liveLookupGate('offline', { health: undefined, loading: false }), 'offline');
+});
+
+test('a fresh recheck after an offline prefetch starts the live registry lookup', async () => {
+  const realFetch = globalThis.fetch;
+  const answers = [{ health: 'offline' }, { health: 'online' }];
+  let calls = 0;
+  globalThis.fetch = async () => new Response(JSON.stringify(answers[calls++]), { status: 200, headers: { 'content-type': 'application/json' } });
+  try {
+    const url = 'https://api.test/federations/abc/summary';
+    share(url, 10_000);
+    const prefetched = await request(url);
+    assert.equal(liveLookupGate(prefetched.health, { health: undefined, loading: true }), 'wait');
+    const recheck = await request(url, { fresh: true });
+    assert.equal(liveLookupGate(prefetched.health, { health: recheck.health, loading: false }), 'run');
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test('the gateway view comes from the address bar, then the stored window, then the defaults', () => {

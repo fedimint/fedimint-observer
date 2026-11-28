@@ -40,13 +40,16 @@ interface RequestOptions {
 
   json?: unknown;
   timeoutMs?: number;
+  /** Ask the server even when a shared GET of the same URL is still fresh */
+  fresh?: boolean;
 }
 
 const shared = new Map<string, { startedAt: number; ttlMs: number; body: Promise<unknown> }>();
 
 /** Sends a request and returns its parsed JSON body, reusing a shared GET of the same URL that is still fresh */
 export function request<T>(url: string, options: RequestOptions = {}): Promise<T> {
-  const reused = (options.method ?? 'GET') === 'GET' && options.json === undefined ? sharedAnswer(url) : undefined;
+  const reusable = !options.fresh && (options.method ?? 'GET') === 'GET' && options.json === undefined;
+  const reused = reusable ? sharedAnswer(url) : undefined;
   return (reused ? untilAborted(reused, options.signal) : send(url, options, true)) as Promise<T>;
 }
 

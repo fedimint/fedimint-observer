@@ -40,7 +40,7 @@ export function GatewaysPanel({ id, federation }: { id: string; federation: Fede
     limit: pageSize,
   });
   const { observed, trend, now } = overview;
-  const recheck = useApiResource((signal) => api.getFederationSummary(id, signal), [id], {
+  const recheck = useApiResource((signal) => api.recheckFederationSummary(id, signal), [id], {
     enabled: federation.health === 'offline',
     label: 'federation health',
   });

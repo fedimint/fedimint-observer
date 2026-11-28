@@ -29,9 +29,12 @@ test('module instances are found by kind, from the summary outline or the config
   assert.deepEqual(instancesOf(kindsByInstance(undefined), 'lnv2'), []);
 });
 
-test('the invite lookup stands in for a failed stored config, and a retry goes back to the stored one', () => {
-  assert.equal(configSource(false, 'fed1invite'), 'stored');
-  assert.equal(configSource(true, 'fed1invite'), 'invite');
+test('a failed stored config falls back to the invite, and each Retry tries the stored one first', () => {
+  const shown = (storedAttempt) => configSource(storedAttempt === 'failed', 'fed1invite');
+  const storedAttempts = ['loading', 'failed', 'loading', 'failed', 'loading', 'loaded'];
+  assert.deepEqual(storedAttempts.map(shown), ['stored', 'invite', 'stored', 'invite', 'stored', 'stored']);
+});
+
+test('without an invite to fall back on, a failed stored config stays the one shown', () => {
   assert.equal(configSource(true, undefined), 'stored');
-  assert.equal(configSource(false, 'fed1invite'), 'stored');
 });
