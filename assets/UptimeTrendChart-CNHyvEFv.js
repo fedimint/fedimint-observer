@@ -1,1 +1,0 @@
-import{j as a}from"./index-4Ktzcxd5.js";import{b4 as s,b5 as e,a$ as r,b0 as i,b1 as l,b2 as n,b3 as o}from"./installCanvasRenderer-BpLJlS8Y.js";r([i,l,n,o]);function p({option:t}){return a.jsx(s,{echarts:e,option:t,style:{height:210},notMerge:!0,lazyUpdate:!0})}export{p as UptimeTrendChart};
